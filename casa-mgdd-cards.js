@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.5.0
+ * Version: 1.5.1
  */
 
 // ===== temperature-bento-card.js =====
@@ -2387,7 +2387,7 @@ class EnergyFlowCard extends HTMLElement {
   }
   _node(id, left, top, name) {
     return (
-      '<div class="ef-nd" style="left:' + left + ';top:' + top + ';--c:var(--ef-' + id + ')">' +
+      '<div class="ef-nd" data-n="' + id + '" style="left:' + left + ';top:' + top + ';--c:var(--ef-' + id + ')">' +
       '<span class="ef-ic">' + this._icon(id) + '</span>' +
       '<span class="ef-lab"><span class="ef-k" data-k="' + id + '">' + name + '</span>' +
       '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span></span></div>'
@@ -2405,6 +2405,8 @@ class EnergyFlowCard extends HTMLElement {
       this._node('batt', '86%', '56%', 'Batteria') +
       this._node('casa', '50%', '56%', 'Casa') +
       '</div></div>';
+    this._card = this.querySelector('.ef-card');
+    this._title = this.querySelector('.ef-title');
     this._stage = this.querySelector('.ef-stage');
     this._cv = this.querySelector('canvas');
     this._ctx = this._cv.getContext('2d');
@@ -2423,6 +2425,34 @@ class EnergyFlowCard extends HTMLElement {
     this._cv.width = this._W * dpr;
     this._cv.height = this._H * dpr;
     this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this._measure();
+  }
+
+  // rileva tema (testo chiaro => tema scuro) e misura i box dei nodi
+  _measure() {
+    if (!this._stage) return;
+    let dark = false;
+    const cs = this._title ? getComputedStyle(this._title).color : '';
+    const mm = cs && cs.match(/[\d.]+/g);
+    if (mm && mm.length >= 3) { const l = (0.299 * +mm[0] + 0.587 * +mm[1] + 0.114 * +mm[2]) / 255; dark = l > 0.6; }
+    this._dark = dark;
+    const P = this._palette();
+    if (this._card) { this._card.style.setProperty('--ef-rete', P.rete); this._card.style.setProperty('--ef-sole', P.sole); this._card.style.setProperty('--ef-batt', P.batt); this._card.style.setProperty('--ef-casa', P.casa); }
+    const sr = this._stage.getBoundingClientRect();
+    const R = {};
+    ['sole', 'rete', 'batt', 'casa'].forEach((id) => {
+      const el = this.querySelector('.ef-nd[data-n=' + id + ']');
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      R[id] = { cx: r.left - sr.left + r.width / 2, cy: r.top - sr.top + r.height / 2, hw: r.width / 2, hh: r.height / 2 };
+    });
+    this._nrects = R;
+  }
+
+  _palette() {
+    return this._dark
+      ? { rete: '#38BDF8', sole: '#F5B301', batt: '#22E39A', casa: '#8B7BFF' }
+      : { rete: '#0EA5E9', sole: '#E08A00', batt: '#0FB57E', casa: '#6D5AE6' };
   }
 
   _setNode(id, val) {
@@ -2463,33 +2493,51 @@ class EnergyFlowCard extends HTMLElement {
       this._pulses = [];
       Object.keys(flows).forEach((k) => { const n = this._pcount(flows[k]); for (let i = 0; i < n; i++) this._pulses.push({ key: k, head: i / n }); });
     }
+    this._measure();
   }
 
   _polyPx(rk) { return this._routes()[rk].p.map((p) => [p[0] * this._W, p[1] * this._H]); }
+  // sposta l'estremo (centro nodo) fino al bordo del box + gap, lungo il segmento adiacente
+  _edge(rc, toward, gap) {
+    const dx = toward[0] - rc.cx, dy = toward[1] - rc.cy;
+    if (Math.abs(dx) >= Math.abs(dy)) return [rc.cx + Math.sign(dx) * (rc.hw + gap), rc.cy];
+    return [rc.cx, rc.cy + Math.sign(dy) * (rc.hh + gap)];
+  }
+  // polilinea del percorso con estremi tagliati al bordo dei nodi (parte e arriva dal bordo, non dal centro)
+  _trimmedPoly(rk) {
+    const poly = this._polyPx(rk).map((p) => p.slice());
+    const R = this._nrects || {};
+    const ends = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'] }[rk];
+    const gap = 9;
+    if (ends && R[ends[0]] && poly.length > 1) poly[0] = this._edge(R[ends[0]], poly[1], gap);
+    if (ends && R[ends[1]] && poly.length > 1) poly[poly.length - 1] = this._edge(R[ends[1]], poly[poly.length - 2], gap);
+    return poly;
+  }
   _meta(poly) { let seg = [], L = 0; for (let i = 0; i < poly.length - 1; i++) { const d = Math.hypot(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1]); seg.push(d); L += d; } return { seg, L }; }
   _ptAt(poly, m, f) { let t = f * m.L, a = 0; for (let i = 0; i < m.seg.length; i++) { if (a + m.seg[i] >= t) { const u = m.seg[i] ? (t - a) / m.seg[i] : 0; return [poly[i][0] + (poly[i + 1][0] - poly[i][0]) * u, poly[i][1] + (poly[i + 1][1] - poly[i][1]) * u]; } a += m.seg[i]; } return poly[poly.length - 1]; }
 
+  _stroke(poly) { const ctx = this._ctx; ctx.beginPath(); ctx.moveTo(poly[0][0], poly[0][1]); for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]); ctx.stroke(); }
   _tube(poly, color) {
-    const ctx = this._ctx;
+    const ctx = this._ctx, dark = this._dark, soft = dark ? this.SOFT : this.SOFT * 0.5;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowColor = color;
-    ctx.globalAlpha = 0.15; ctx.lineWidth = 6; ctx.shadowBlur = this.SOFT;
-    ctx.beginPath(); ctx.moveTo(poly[0][0], poly[0][1]); for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]); ctx.stroke();
-    ctx.globalAlpha = 0.5; ctx.lineWidth = 1.8; ctx.shadowBlur = this.SOFT * 0.5;
-    ctx.beginPath(); ctx.moveTo(poly[0][0], poly[0][1]); for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]); ctx.stroke();
+    ctx.globalAlpha = dark ? 0.15 : 0.12; ctx.lineWidth = 6; ctx.shadowBlur = soft;
+    this._stroke(poly);
+    ctx.globalAlpha = dark ? 0.5 : 0.9; ctx.lineWidth = 1.8; ctx.shadowBlur = soft * 0.5;
+    this._stroke(poly);
   }
   _beam(poly, m, head, color) {
-    const ctx = this._ctx, steps = 26, BEAM = this.BEAM, SOFT = this.SOFT;
+    const ctx = this._ctx, steps = 26, BEAM = this.BEAM, dark = this._dark, SOFT = dark ? this.SOFT : this.SOFT * 0.5;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowColor = color;
     for (let i = 0; i < steps; i++) {
       const s0 = i / steps, h0 = head - s0 * BEAM, h1 = head - (i + 1) / steps * BEAM;
       if (h0 < 0 || h0 > 1) continue;
       const p0 = this._ptAt(poly, m, h0), p1 = this._ptAt(poly, m, Math.max(0, h1)), k = 1 - s0, g = k * k;
-      ctx.globalAlpha = g * 0.95; ctx.lineWidth = 1.2 + 4 * g; ctx.shadowBlur = SOFT * (0.5 + g);
+      ctx.globalAlpha = g * (dark ? 0.95 : 0.9); ctx.lineWidth = 1.2 + 4 * g; ctx.shadowBlur = SOFT * (0.5 + g);
       ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
     }
     if (head > 0 && head < 1) {
       const ph = this._ptAt(poly, m, head), r = 11, rg = ctx.createRadialGradient(ph[0], ph[1], 0, ph[0], ph[1], r);
-      rg.addColorStop(0, 'rgba(255,255,255,.95)'); rg.addColorStop(0.3, color); rg.addColorStop(1, 'rgba(0,0,0,0)');
+      rg.addColorStop(0, dark ? 'rgba(255,255,255,.95)' : color); rg.addColorStop(0.3, color); rg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.fillStyle = rg;
       ctx.beginPath(); ctx.arc(ph[0], ph[1], r, 0, 7); ctx.fill();
     }
@@ -2497,20 +2545,20 @@ class EnergyFlowCard extends HTMLElement {
 
   _start() {
     if (this._raf) return;
-    const NCOL = { rete: '#38BDF8', sole: '#F5B301', batt: '#22E39A', casa: '#8B7BFF' };
     const maxP = this.config.max_power || 3500;
     let last = 0;
     const loop = (ts) => {
       const dt = Math.min(50, ts - last) / 1000; last = ts;
       const ctx = this._ctx;
       if (ctx && this._W) {
+        const NCOL = this._palette();
         ctx.clearRect(0, 0, this._W, this._H);
-        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalCompositeOperation = this._dark ? 'lighter' : 'source-over';
         const routes = this._routes();
-        for (const rk in routes) if (this._routeOn(rk)) this._tube(this._polyPx(rk), NCOL[routes[rk].c]);
+        for (const rk in routes) if (this._routeOn(rk)) this._tube(this._trimmedPoly(rk), NCOL[routes[rk].c]);
         this._pulses.forEach((pl) => {
           const def = this._flowDef(pl.key); if (!def) return;
-          let poly = this._polyPx(def[0]); if (def[1]) poly = poly.slice().reverse();
+          let poly = this._trimmedPoly(def[0]); if (def[1]) poly = poly.slice().reverse();
           const m = this._meta(poly), power = this._flows[pl.key] || 0;
           const sp = 0.06 + Math.min(1, power / maxP) * 0.55;
           pl.head += dt * sp; if (pl.head > 1) pl.head -= 1;
@@ -2529,23 +2577,24 @@ class EnergyFlowCard extends HTMLElement {
       '<style>' +
       ':host{display:block}' +
       '.ef-card{--ef-rete:#38BDF8;--ef-sole:#F5B301;--ef-batt:#22E39A;--ef-casa:#8B7BFF;' +
-      'position:relative;border-radius:22px;padding:16px 18px;overflow:hidden;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;' +
-      'background:radial-gradient(120% 100% at 50% 0%,#12233b 0%,#0a1524 55%,#060b14 100%);border:1px solid rgba(120,160,220,.16);}' +
+      'position:relative;border-radius:18px;padding:14px 16px;overflow:hidden;' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
       '.ef-top{position:relative;z-index:3;display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}' +
-      '.ef-title{font-size:14px;font-weight:600;color:#9fb2cc;}' +
-      '.ef-live{display:flex;align-items:center;gap:6px;font-size:11px;color:#7f93ad;}' +
+      '.ef-title{font-size:14px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.ef-live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
       '.ef-live i{width:7px;height:7px;border-radius:50%;background:var(--ef-batt);box-shadow:0 0 8px var(--ef-batt);}' +
       '.ef-stage{position:relative;width:100%;aspect-ratio:1.9/1;}' +
       '.ef-stage canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1;}' +
       '.ef-nd{position:absolute;transform:translate(-50%,-50%);z-index:3;pointer-events:none;display:flex;align-items:center;gap:10px;' +
-      'padding:8px 13px;border-radius:14px;background:rgba(10,18,30,.78);border:1px solid rgba(140,170,210,.20);white-space:nowrap;}' +
+      'padding:8px 13px;border-radius:14px;background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.1));box-shadow:0 2px 12px -5px rgba(0,0,0,.35);white-space:nowrap;}' +
       '.ef-ic{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;flex:0 0 auto;' +
-      'background:color-mix(in srgb,var(--c) 22%,transparent);box-shadow:0 0 15px -4px var(--c),inset 0 0 9px -4px var(--c);}' +
+      'background:color-mix(in srgb,var(--c) 20%,transparent);box-shadow:0 0 15px -4px var(--c),inset 0 0 9px -4px var(--c);}' +
       '.ef-ic svg{width:22px;height:22px;stroke:var(--c);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}' +
       '.ef-lab{display:flex;flex-direction:column;line-height:1.15;}' +
-      '.ef-k{font-size:10px;letter-spacing:.05em;color:#8ea4bf;text-transform:uppercase;}' +
-      '.ef-v{font:600 16px/1 ui-monospace,"SF Mono",Consolas,monospace;color:#eef4ff;margin-top:3px;}' +
-      '.ef-v small{font-size:10px;color:#9fb2cc;font-weight:500;}' +
+      '.ef-k{font-size:11px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.ef-v{font-size:16px;font-weight:600;color:var(--primary-text-color,#1c1c1e);margin-top:3px;font-variant-numeric:tabular-nums;}' +
+      '.ef-v small{font-size:11px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
       '</style>'
     );
   }
