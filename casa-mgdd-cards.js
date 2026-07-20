@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.3.0
+ * Version: 1.4.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -1219,7 +1219,7 @@ class EnergyPowerCard extends HTMLElement {
         const path = 'history/period/' + start + '?filter_entity_id=' + entities.join(',') + '&minimal_response';
         const data = await this._hass.callApi('GET', path);
         if (this.config.layout === 'overview') {
-          this._trend = this._buildTrend(data[0], now, hours);
+          this._trendArea = this._buildTileSpark(data[0], now, hours, this.config.hero_color || '#7F77DD', 'epcov' + this._uid, 56);
         } else if (this.config.layout === 'tiles') {
           this.config.circuits.forEach((c, i) => {
             this._sparklines[c.entity] = this._buildTileSpark(data[i], now, hours, this._paletteColor(i), 'epcg' + this._uid + '_' + i);
@@ -1435,9 +1435,8 @@ class EnergyPowerCard extends HTMLElement {
       .sort((a, b) => b.val - a.val)
       .slice(0, activeCount);
 
-    const trend = this._trend;
-    const trendHtml = trend
-      ? trend.html + '<div class="trend-range"><span>Min ' + this._fmt(trend.min, ' W', 1) + '</span><span>Max ' + this._fmt(trend.max, ' W', 1) + '</span></div>'
+    const trendHtml = this._trendArea
+      ? '<div class="hero-spark">' + this._trendArea + '</div>'
       : '<div class="loading">Caricamento\u2026</div>';
 
     const pillVs = (current, prev, cap, dec) => {
@@ -1511,8 +1510,8 @@ class EnergyPowerCard extends HTMLElement {
       '</div>' +
       '<div class="pairhero">' +
       '<div class="pair">' +
-      '<div class="pairhalf"><div class="stat-l">Oggi</div><div class="stat-v">' + this._fmt(day, ' kWh', 1) + '</div>' + dayTrend + '</div>' +
-      '<div class="pairhalf pairhalf-b"><div class="stat-l">Mese</div><div class="stat-v">' + this._fmt(month, ' kWh', 0) + '</div>' + monthTrend + '</div>' +
+      '<div class="stat-tile"><div class="stat-l">Oggi</div><div class="stat-v">' + this._fmt(day, ' kWh', 1) + '</div>' + dayTrend + '</div>' +
+      '<div class="stat-tile"><div class="stat-l">Mese</div><div class="stat-v">' + this._fmt(month, ' kWh', 0) + '</div>' + monthTrend + '</div>' +
       '</div>' +
       projHtml +
       '</div>' +
@@ -1582,8 +1581,11 @@ class EnergyPowerCard extends HTMLElement {
       '.hero-v{font-size:40px;font-weight:600;letter-spacing:-1px;margin:4px 0 10px;color:var(--primary-text-color,#1c1c1e);}' +
       '.trend-bars{display:flex;align-items:flex-end;gap:3px;height:48px;}' +
       '.trend-range{display:flex;justify-content:space-between;font-size:12px;color:var(--secondary-text-color,#6b6f76);margin-top:6px;}' +
-      '.pairhero{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px 20px;margin-bottom:14px;}' +
-      '.pair{display:grid;grid-template-columns:1fr 1fr;}' +
+      '.hero-spark{margin-top:2px;}' +
+      '.hero-spark svg{display:block;width:100%;height:56px;overflow:visible;}' +
+      '.pairhero{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px;margin-bottom:14px;}' +
+      '.pair{display:grid;grid-template-columns:1fr 1fr;gap:8px;}' +
+      '.stat-tile{background:var(--secondary-background-color,rgba(0,0,0,.03));border-radius:12px;padding:10px 12px;}' +
       '.pairhalf{text-align:center;padding:0 8px;}' +
       '.pairhalf-b{border-left:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
       '.section-label{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);margin:14px 0 8px;}' +
@@ -2162,6 +2164,18 @@ class EnergyMonthlyCard extends HTMLElement {
         const xAt = (i) => padX + (i * (W - 2 * padX)) / (n - 1);
         const yAt = (v) => H - (v / vmax) * (H - padTop);
         const pts = vals.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+        // linea media (esclude il periodo in corso)
+        let avgHtml = '';
+        if (cfg.show_average !== false) {
+          const compl = vals.filter((v, i) => i !== curIdx);
+          const avg = compl.length ? compl.reduce((s, v) => s + v, 0) / compl.length : null;
+          if (avg !== null && avg > 0) {
+            const topPx = H - (avg / vmax) * (H - padTop);
+            avgHtml =
+              '<div class="emc-avg" style="top:' + topPx.toFixed(1) + 'px;border-top-color:' + cfg.color + '"></div>' +
+              '<div class="emc-avglab" style="top:' + topPx.toFixed(1) + 'px;color:' + cfg.color + '">media ' + fmt(avg) + ' ' + uom + '</div>';
+          }
+        }
         const linePath = this._smoothPath(pts);
         const areaPath = linePath + ' L' + pts[n - 1].x.toFixed(2) + ',' + H + ' L' + pts[0].x.toFixed(2) + ',' + H + ' Z';
         const nowLine =
@@ -2192,6 +2206,7 @@ class EnergyMonthlyCard extends HTMLElement {
         body =
           '<div class="emc-chart">' +
           svg +
+          avgHtml +
           '<div class="emc-hline"></div><div class="emc-hdot"></div><div class="emc-tip"></div>' +
           '</div><div class="emc-xlabels">' + labels + '</div>';
         // dati per l'hover
@@ -2271,6 +2286,8 @@ class EnergyMonthlyCard extends HTMLElement {
       '.emc-svg{display:block;width:100%;height:120px;overflow:visible;}' +
       '.emc-line{stroke-width:2;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round;}' +
       '.emc-now{stroke:var(--secondary-text-color,#8a8d93);stroke-width:1;stroke-dasharray:3 3;opacity:.4;vector-effect:non-scaling-stroke;}' +
+      '.emc-avg{position:absolute;left:0;right:0;height:0;border-top:1.5px dashed;opacity:.8;pointer-events:none;transform:translateY(-0.75px);}' +
+      '.emc-avglab{position:absolute;left:4px;transform:translateY(-50%);font-size:10px;font-weight:600;background:var(--ha-card-background,var(--card-background-color,#fff));padding:0 5px;border-radius:8px;pointer-events:none;white-space:nowrap;}' +
       '.emc-hline{position:absolute;top:0;height:120px;width:1px;background:var(--secondary-text-color,#8a8d93);opacity:0;transform:translateX(-0.5px);pointer-events:none;transition:opacity .08s;}' +
       '.emc-hdot{position:absolute;width:8px;height:8px;border-radius:50%;border:2px solid var(--ha-card-background,#fff);opacity:0;transform:translate(-50%,-50%);pointer-events:none;transition:opacity .08s;}' +
       '.emc-tip{position:absolute;opacity:0;transform:translate(-50%,-100%);pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:var(--ha-card-background,#fff);font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px;white-space:nowrap;transition:opacity .08s;z-index:2;}' +
