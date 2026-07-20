@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.2.0
+ * Version: 1.2.1
  */
 
 // ===== temperature-bento-card.js =====
@@ -1954,6 +1954,12 @@ class EnergyMonthlyCard extends HTMLElement {
     this._data = null;
     this._error = null;
     this._fetchedAt = 0;
+    // id gradiente univoco per istanza: in light DOM gli id sono globali,
+    // due card con lo stesso id condividerebbero il colore del riempimento
+    if (!this._uid) {
+      EnergyMonthlyCard._seq = (EnergyMonthlyCard._seq || 0) + 1;
+      this._uid = EnergyMonthlyCard._seq;
+    }
   }
 
   set hass(hass) {
@@ -2081,13 +2087,14 @@ class EnergyMonthlyCard extends HTMLElement {
           curIdx >= 0
             ? '<line class="emc-now" x1="' + pts[curIdx].x.toFixed(2) + '" y1="0" x2="' + pts[curIdx].x.toFixed(2) + '" y2="' + H + '"/>'
             : '';
+        const gid = 'emcgrad' + this._uid;
         const svg =
           '<svg class="emc-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
-          '<defs><linearGradient id="emcgrad" x1="0" y1="0" x2="0" y2="1">' +
+          '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
           '<stop offset="0" stop-color="' + cfg.color + '" stop-opacity="0.35"/>' +
           '<stop offset="1" stop-color="' + cfg.color + '" stop-opacity="0"/>' +
           '</linearGradient></defs>' +
-          '<path d="' + areaPath + '" fill="url(#emcgrad)" stroke="none"/>' +
+          '<path d="' + areaPath + '" fill="url(#' + gid + ')" stroke="none"/>' +
           nowLine +
           '<path class="emc-line" d="' + linePath + '" fill="none" stroke="' + cfg.color + '"/>' +
           '</svg>';
