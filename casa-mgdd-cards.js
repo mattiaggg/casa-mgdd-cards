@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.4.0
+ * Version: 1.4.1
  */
 
 // ===== temperature-bento-card.js =====
@@ -1584,8 +1584,9 @@ class EnergyPowerCard extends HTMLElement {
       '.hero-spark{margin-top:2px;}' +
       '.hero-spark svg{display:block;width:100%;height:56px;overflow:visible;}' +
       '.pairhero{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px;margin-bottom:14px;}' +
-      '.pair{display:grid;grid-template-columns:1fr 1fr;gap:8px;}' +
-      '.stat-tile{background:var(--secondary-background-color,rgba(0,0,0,.03));border-radius:12px;padding:10px 12px;}' +
+      '.pair{display:grid;grid-template-columns:1fr 1fr;gap:0;}' +
+      '.stat-tile{text-align:center;padding:2px 12px;}' +
+      '.stat-tile + .stat-tile{border-left:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
       '.pairhalf{text-align:center;padding:0 8px;}' +
       '.pairhalf-b{border-left:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
       '.section-label{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);margin:14px 0 8px;}' +
