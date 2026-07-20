@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.2.1
+ * Version: 1.3.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -1173,6 +1173,10 @@ class EnergyPowerCard extends HTMLElement {
     this._trend = null;
     this._sparklines = {};
     this._fetchedAt = 0;
+    if (!this._uid) {
+      EnergyPowerCard._seq = (EnergyPowerCard._seq || 0) + 1;
+      this._uid = EnergyPowerCard._seq;
+    }
   }
 
   set hass(hass) {
@@ -1203,8 +1207,9 @@ class EnergyPowerCard extends HTMLElement {
     if (this._fetchedAt && now - this._fetchedAt < 5 * 60 * 1000) return;
     this._fetchedAt = now;
     const entities = [];
+    const perCircuit = this.config.layout === 'circuits' || this.config.layout === 'tiles';
     if (this.config.layout === 'overview' && this.config.power_entity) entities.push(this.config.power_entity);
-    if (this.config.layout === 'circuits' && this.config.circuits) {
+    if (perCircuit && this.config.circuits) {
       this.config.circuits.forEach((c) => entities.push(c.entity));
     }
     if (entities.length && this._hass) {
@@ -1215,6 +1220,10 @@ class EnergyPowerCard extends HTMLElement {
         const data = await this._hass.callApi('GET', path);
         if (this.config.layout === 'overview') {
           this._trend = this._buildTrend(data[0], now, hours);
+        } else if (this.config.layout === 'tiles') {
+          this.config.circuits.forEach((c, i) => {
+            this._sparklines[c.entity] = this._buildTileSpark(data[i], now, hours, this._paletteColor(i), 'epcg' + this._uid + '_' + i);
+          });
         } else {
           this.config.circuits.forEach((c, i) => {
             this._sparklines[c.entity] = this._buildSparkline(data[i], now, hours, this._paletteColor(i));
@@ -1349,8 +1358,68 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _render() {
-    if (this.config.layout === 'circuits') this._renderCircuits();
+    if (this.config.layout === 'tiles') this._renderTiles();
+    else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
+  }
+
+  // sparkline area a piena larghezza per le tile (scala da zero)
+  _buildTileSpark(arr, nowMs, hours, color, gid) {
+    const pts = this._toPoints(arr);
+    if (!pts.length) return null;
+    const buckets = 20;
+    const minT = nowMs - hours * 3600 * 1000;
+    const span = hours * 3600 * 1000;
+    const f = this._fillGaps(this._bucketize(pts, buckets, minT, span)).filter((v) => v !== null);
+    if (!f.length) return null;
+    const vmax = Math.max.apply(null, f) || 1;
+    const W = 120,
+      H = 36,
+      padTop = 6,
+      n = f.length;
+    const xA = (i) => (n === 1 ? W / 2 : (i * W) / (n - 1));
+    const yA = (v) => H - (Math.max(0, v) / vmax) * (H - padTop);
+    const p = f.map((v, i) => ({ x: xA(i), y: yA(v) }));
+    const fx = (x) => x.toFixed(1);
+    let d = 'M' + fx(p[0].x) + ',' + fx(p[0].y);
+    const t = 0.18;
+    for (let i = 0; i < n - 1; i++) {
+      const a = p[i - 1] || p[i];
+      const b = p[i];
+      const c = p[i + 1];
+      const e = p[i + 2] || c;
+      d += 'C' + fx(b.x + (c.x - a.x) * t) + ',' + fx(b.y + (c.y - a.y) * t) + ' ' + fx(c.x - (e.x - b.x) * t) + ',' + fx(c.y - (e.y - b.y) * t) + ' ' + fx(c.x) + ',' + fx(c.y);
+    }
+    const areaD = n < 2 ? '' : d + ' L' + fx(p[n - 1].x) + ',' + H + ' L' + fx(p[0].x) + ',' + H + ' Z';
+    return (
+      '<svg class="epc-spark" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + color + '" stop-opacity="0.30"/>' +
+      '<stop offset="1" stop-color="' + color + '" stop-opacity="0"/></linearGradient></defs>' +
+      (areaD ? '<path d="' + areaD + '" fill="url(#' + gid + ')"/>' : '') +
+      '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    );
+  }
+
+  _renderTiles() {
+    const circuits = this.config.circuits || [];
+    const tiles = circuits
+      .map((c, i) => {
+        const v = this._num(c.entity);
+        const color = this._paletteColor(i);
+        const spark = this._sparklines[c.entity] || '<svg class="epc-spark" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>';
+        return (
+          '<div class="epc-tile" data-entity="' + c.entity + '">' +
+          '<div class="epc-tile-head"><span class="epc-dot" style="background:' + color + '"></span>' +
+          '<span class="epc-name">' + c.name + '</span></div>' +
+          '<div class="epc-val">' + this._fmt(v, '', v !== null && v < 10 ? 1 : 0) + '<span class="epc-u"> W</span></div>' +
+          '<div class="epc-sparkwrap">' + spark + '</div>' +
+          '</div>'
+        );
+      })
+      .join('');
+    this.innerHTML = this._styles() + '<div class="epc-tiles">' + tiles + '</div>';
+    this._wireClicks();
   }
 
   _renderOverview() {
@@ -1546,6 +1615,18 @@ class EnergyPowerCard extends HTMLElement {
       '.rowspark{flex:0 0 auto;}' +
       '.rowval{font-size:20px;font-weight:600;color:var(--primary-text-color,#1c1c1e);min-width:64px;text-align:right;}' +
       '.loading{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:10px 0;}' +
+      // layout tiles: 2 per riga (1 su schermi molto stretti)
+      '.epc-tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}' +
+      '@media (max-width:359px){.epc-tiles{grid-template-columns:1fr;}}' +
+      '.epc-tile{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;cursor:pointer;transition:border-color .12s;}' +
+      '.epc-tile:hover{border-color:var(--divider-color,rgba(0,0,0,.22));}' +
+      '.epc-tile-head{display:flex;align-items:center;gap:8px;min-width:0;}' +
+      '.epc-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}' +
+      '.epc-name{font-size:13px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.epc-val{font-size:24px;font-weight:600;letter-spacing:-0.5px;color:var(--primary-text-color,#1c1c1e);line-height:1;}' +
+      '.epc-u{font-size:13px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
+      '.epc-sparkwrap{width:100%;}' +
+      '.epc-spark{display:block;width:100%;height:36px;overflow:visible;}' +
       '</style>'
     );
   }
