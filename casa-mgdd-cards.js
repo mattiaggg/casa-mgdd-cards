@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.1.0
+ * Version: 1.2.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -1945,15 +1945,12 @@ customElements.define('energy-history-card', EnergyHistoryCard);
 // Card standalone: type: custom:energy-monthly-card
 class EnergyMonthlyCard extends HTMLElement {
   setConfig(config) {
-    this.config = Object.assign(
-      {
-        entity: 'sensor.energy_totale_sonoff_casa',
-        months: 12,
-        title: 'Consumo mensile',
-        color: '#7C6CF0',
-      },
-      config || {}
-    );
+    const period = config && config.period === 'day' ? 'day' : 'month';
+    const defaults =
+      period === 'day'
+        ? { entity: 'sensor.energy_totale_sonoff_casa', period: 'day', days: 14, title: 'Consumo giornaliero', color: '#EF9F27' }
+        : { entity: 'sensor.energy_totale_sonoff_casa', period: 'month', months: 12, title: 'Consumo mensile', color: '#7C6CF0' };
+    this.config = Object.assign(defaults, config || {});
     this._data = null;
     this._error = null;
     this._fetchedAt = 0;
@@ -1973,11 +1970,18 @@ class EnergyMonthlyCard extends HTMLElement {
     const now = Date.now();
     if (this._fetchedAt && now - this._fetchedAt < 10 * 60 * 1000) return;
     this._fetchedAt = now;
-    const months = Math.max(2, this.config.months || 12);
-    const start = new Date();
-    start.setMonth(start.getMonth() - (months - 1));
-    start.setDate(1);
-    start.setHours(0, 0, 0, 0);
+    const period = this.config.period === 'day' ? 'day' : 'month';
+    let start;
+    if (period === 'day') {
+      const days = Math.max(2, this.config.days || 14);
+      start = new Date(now - days * 24 * 3600 * 1000);
+    } else {
+      const months = Math.max(2, this.config.months || 12);
+      start = new Date();
+      start.setMonth(start.getMonth() - (months - 1));
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+    }
     this._error = null;
     try {
       const resp = await this._hass.callWS({
@@ -1985,7 +1989,7 @@ class EnergyMonthlyCard extends HTMLElement {
         start_time: start.toISOString(),
         end_time: new Date(now).toISOString(),
         statistic_ids: [this.config.entity],
-        period: 'month',
+        period: period,
         types: ['change'],
       });
       let arr = (resp && resp[this.config.entity]) || [];
@@ -2022,9 +2026,13 @@ class EnergyMonthlyCard extends HTMLElement {
   _render() {
     if (!this._hass) return;
     const monthLabels = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+    const dayLabels = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
     const cfg = this.config;
+    const isDay = cfg.period === 'day';
     const st = this._hass.states[cfg.entity];
     const uom = (st && st.attributes.unit_of_measurement) || 'kWh';
+    const fmt = (v) => v.toFixed(v >= 100 ? 0 : 1);
+    this._hover = null;
     let body = '';
     let bigVal = '--';
     let bigCap = '';
@@ -2043,16 +2051,22 @@ class EnergyMonthlyCard extends HTMLElement {
       const vmax = Math.max.apply(null, vals) || 1;
       const isCurrent = (d) => {
         const dt = new Date(d.start);
+        if (isDay) return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth() && dt.getDate() === now.getDate();
         return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth();
+      };
+      // etichetta completa (tooltip) per un dato
+      const fullLabel = (d) => {
+        const dt = new Date(d.start);
+        if (isDay) return dayLabels[dt.getDay()] + ' ' + dt.getDate() + ' ' + monthLabels[dt.getMonth()];
+        return monthLabels[dt.getMonth()] + ' ' + dt.getFullYear();
       };
       const curIdx = data.findIndex(isCurrent);
       const showIdx = curIdx >= 0 ? curIdx : n - 1;
-      const fmt = (v) => v.toFixed(v >= 100 ? 0 : 1);
       bigVal = fmt(vals[showIdx]) + ' ' + uom;
-      bigCap = curIdx >= 0 ? 'mese in corso' : monthLabels[new Date(data[showIdx].start).getMonth()] + ' ' + new Date(data[showIdx].start).getFullYear();
+      bigCap = curIdx >= 0 ? (isDay ? 'oggi' : 'mese in corso') : fullLabel(data[showIdx]);
 
       if (n < 2) {
-        body = '<div class="emc-loading">Servono almeno 2 mesi di storico</div>';
+        body = '<div class="emc-loading">Servono almeno 2 ' + (isDay ? 'giorni' : 'mesi') + ' di storico</div>';
       } else {
         const W = 300,
           H = 120,
@@ -2077,8 +2091,23 @@ class EnergyMonthlyCard extends HTMLElement {
           nowLine +
           '<path class="emc-line" d="' + linePath + '" fill="none" stroke="' + cfg.color + '"/>' +
           '</svg>';
-        const labels = data.map((d) => '<span>' + monthLabels[new Date(d.start).getMonth()] + '</span>').join('');
-        body = '<div class="emc-chart">' + svg + '</div><div class="emc-xlabels">' + labels + '</div>';
+        // etichette asse X: mensile tutte; giornaliero diradate per non affollare
+        const step = isDay ? (n > 10 ? Math.ceil(n / 7) : 1) : 1;
+        const labels = data
+          .map((d, i) => {
+            const dt = new Date(d.start);
+            let txt = '';
+            if (i % step === 0) txt = isDay ? String(dt.getDate()) : monthLabels[dt.getMonth()];
+            return '<span>' + txt + '</span>';
+          })
+          .join('');
+        body =
+          '<div class="emc-chart">' +
+          svg +
+          '<div class="emc-hline"></div><div class="emc-hdot"></div><div class="emc-tip"></div>' +
+          '</div><div class="emc-xlabels">' + labels + '</div>';
+        // dati per l'hover
+        this._hover = { n: n, vals: vals, vmax: vmax, uom: uom, H: H, padTop: padTop, labels: data.map(fullLabel), color: cfg.color };
       }
     }
 
@@ -2093,6 +2122,49 @@ class EnergyMonthlyCard extends HTMLElement {
       body +
       '</div>' +
       '</ha-card>';
+    this._wire();
+  }
+
+  _wire() {
+    const h = this._hover;
+    const chart = this.querySelector('.emc-chart');
+    if (!h || !chart) return;
+    const hline = chart.querySelector('.emc-hline');
+    const hdot = chart.querySelector('.emc-hdot');
+    const tip = chart.querySelector('.emc-tip');
+    hdot.style.background = h.color;
+    const fmt = (v) => v.toFixed(v >= 100 ? 0 : 1);
+    const show = (idx, rectW) => {
+      const leftPct = h.n === 1 ? 50 : (idx / (h.n - 1)) * 100;
+      const dotY = h.H - (h.vals[idx] / h.vmax) * (h.H - h.padTop); // px (svg alto 120px)
+      hline.style.left = leftPct + '%';
+      hline.style.opacity = '1';
+      hdot.style.left = leftPct + '%';
+      hdot.style.top = dotY + 'px';
+      hdot.style.opacity = '1';
+      tip.textContent = h.labels[idx] + ' · ' + fmt(h.vals[idx]) + ' ' + h.uom;
+      tip.style.left = leftPct + '%';
+      tip.style.top = Math.max(0, dotY - 10) + 'px';
+      tip.style.opacity = '1';
+    };
+    const hide = () => {
+      hline.style.opacity = '0';
+      hdot.style.opacity = '0';
+      tip.style.opacity = '0';
+    };
+    const idxFromEvent = (e) => {
+      const rect = chart.getBoundingClientRect();
+      const rel = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      return Math.min(h.n - 1, Math.max(0, Math.round(rel * (h.n - 1))));
+    };
+    chart.addEventListener('mousemove', (e) => show(idxFromEvent(e)));
+    chart.addEventListener('mouseleave', hide);
+    chart.addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length) show(idxFromEvent(e.touches[0]));
+    }, { passive: true });
+    chart.addEventListener('touchmove', (e) => {
+      if (e.touches && e.touches.length) show(idxFromEvent(e.touches[0]));
+    }, { passive: true });
   }
 
   _styles() {
@@ -2107,10 +2179,13 @@ class EnergyMonthlyCard extends HTMLElement {
       '.emc-title{font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
       '.emc-sub{font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
       '.emc-big{font-size:26px;font-weight:600;letter-spacing:-0.5px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;}' +
-      '.emc-chart{width:100%;}' +
+      '.emc-chart{width:100%;position:relative;}' +
       '.emc-svg{display:block;width:100%;height:120px;overflow:visible;}' +
       '.emc-line{stroke-width:2;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round;}' +
       '.emc-now{stroke:var(--secondary-text-color,#8a8d93);stroke-width:1;stroke-dasharray:3 3;opacity:.4;vector-effect:non-scaling-stroke;}' +
+      '.emc-hline{position:absolute;top:0;height:120px;width:1px;background:var(--secondary-text-color,#8a8d93);opacity:0;transform:translateX(-0.5px);pointer-events:none;transition:opacity .08s;}' +
+      '.emc-hdot{position:absolute;width:8px;height:8px;border-radius:50%;border:2px solid var(--ha-card-background,#fff);opacity:0;transform:translate(-50%,-50%);pointer-events:none;transition:opacity .08s;}' +
+      '.emc-tip{position:absolute;opacity:0;transform:translate(-50%,-100%);pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:var(--ha-card-background,#fff);font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px;white-space:nowrap;transition:opacity .08s;z-index:2;}' +
       '.emc-xlabels{display:flex;margin-top:6px;}' +
       '.emc-xlabels span{flex:1;font-size:10px;color:var(--secondary-text-color,#6b6f76);text-align:center;white-space:nowrap;}' +
       '.emc-loading{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:32px 0;text-align:center;}' +
