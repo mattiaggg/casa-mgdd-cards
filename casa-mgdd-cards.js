@@ -2,9 +2,10 @@
  * Casa MGDD - Custom Lovelace Cards
  * Libreria unica di card custom per la dashboard Home Assistant.
  * Contiene: temperature-bento-card, temperature-row-card, weather-alert-card,
- * energy-power-card, energy-controls-card, energy-history-card.
+ * energy-power-card, energy-controls-card, energy-history-card,
+ * energy-monthly-card.
  *
- * Version: 1.0.0
+ * Version: 1.1.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -1938,6 +1939,191 @@ EnergyHistoryCard.getStubConfig = function () {
 };
 
 customElements.define('energy-history-card', EnergyHistoryCard);
+
+// ===== energy-monthly-card.js =====
+// Area chart del consumo mensile (kWh/mese) da statistiche a lungo termine.
+// Card standalone: type: custom:energy-monthly-card
+class EnergyMonthlyCard extends HTMLElement {
+  setConfig(config) {
+    this.config = Object.assign(
+      {
+        entity: 'sensor.energy_totale_sonoff_casa',
+        months: 12,
+        title: 'Consumo mensile',
+        color: '#7C6CF0',
+      },
+      config || {}
+    );
+    this._data = null;
+    this._error = null;
+    this._fetchedAt = 0;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+    this._maybeFetch();
+  }
+
+  getCardSize() {
+    return 4;
+  }
+
+  async _maybeFetch() {
+    const now = Date.now();
+    if (this._fetchedAt && now - this._fetchedAt < 10 * 60 * 1000) return;
+    this._fetchedAt = now;
+    const months = Math.max(2, this.config.months || 12);
+    const start = new Date();
+    start.setMonth(start.getMonth() - (months - 1));
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+    this._error = null;
+    try {
+      const resp = await this._hass.callWS({
+        type: 'recorder/statistics_during_period',
+        start_time: start.toISOString(),
+        end_time: new Date(now).toISOString(),
+        statistic_ids: [this.config.entity],
+        period: 'month',
+        types: ['change'],
+      });
+      let arr = (resp && resp[this.config.entity]) || [];
+      arr = arr.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
+      this._data = arr;
+    } catch (e) {
+      this._data = [];
+      this._error = (e && e.message) || String(e);
+      console.error('energy-monthly-card: errore statistiche mensili', e);
+    }
+    this._render();
+  }
+
+  // Spline morbida (Catmull-Rom -> Bezier) su punti {x,y}
+  _smoothPath(pts) {
+    if (pts.length < 2) return '';
+    const f = (n) => n.toFixed(2);
+    let d = 'M' + f(pts[0].x) + ',' + f(pts[0].y);
+    const t = 0.18;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || p2;
+      const c1x = p1.x + (p2.x - p0.x) * t;
+      const c1y = p1.y + (p2.y - p0.y) * t;
+      const c2x = p2.x - (p3.x - p1.x) * t;
+      const c2y = p2.y - (p3.y - p1.y) * t;
+      d += 'C' + f(c1x) + ',' + f(c1y) + ' ' + f(c2x) + ',' + f(c2y) + ' ' + f(p2.x) + ',' + f(p2.y);
+    }
+    return d;
+  }
+
+  _render() {
+    if (!this._hass) return;
+    const monthLabels = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+    const cfg = this.config;
+    const st = this._hass.states[cfg.entity];
+    const uom = (st && st.attributes.unit_of_measurement) || 'kWh';
+    let body = '';
+    let bigVal = '--';
+    let bigCap = '';
+
+    if (this._error) {
+      body = '<div class="emc-loading">Errore: ' + this._error + '</div>';
+    } else if (this._data === null) {
+      body = '<div class="emc-loading">Caricamento…</div>';
+    } else if (!this._data.length) {
+      body = '<div class="emc-loading">Nessun dato statistico disponibile</div>';
+    } else {
+      const now = new Date();
+      const data = this._data;
+      const n = data.length;
+      const vals = data.map((d) => Math.max(0, d.change || 0));
+      const vmax = Math.max.apply(null, vals) || 1;
+      const isCurrent = (d) => {
+        const dt = new Date(d.start);
+        return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth();
+      };
+      const curIdx = data.findIndex(isCurrent);
+      const showIdx = curIdx >= 0 ? curIdx : n - 1;
+      const fmt = (v) => v.toFixed(v >= 100 ? 0 : 1);
+      bigVal = fmt(vals[showIdx]) + ' ' + uom;
+      bigCap = curIdx >= 0 ? 'mese in corso' : monthLabels[new Date(data[showIdx].start).getMonth()] + ' ' + new Date(data[showIdx].start).getFullYear();
+
+      if (n < 2) {
+        body = '<div class="emc-loading">Servono almeno 2 mesi di storico</div>';
+      } else {
+        const W = 300,
+          H = 120,
+          padX = 3,
+          padTop = 12;
+        const xAt = (i) => padX + (i * (W - 2 * padX)) / (n - 1);
+        const yAt = (v) => H - (v / vmax) * (H - padTop);
+        const pts = vals.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+        const linePath = this._smoothPath(pts);
+        const areaPath = linePath + ' L' + pts[n - 1].x.toFixed(2) + ',' + H + ' L' + pts[0].x.toFixed(2) + ',' + H + ' Z';
+        const nowLine =
+          curIdx >= 0
+            ? '<line class="emc-now" x1="' + pts[curIdx].x.toFixed(2) + '" y1="0" x2="' + pts[curIdx].x.toFixed(2) + '" y2="' + H + '"/>'
+            : '';
+        const svg =
+          '<svg class="emc-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+          '<defs><linearGradient id="emcgrad" x1="0" y1="0" x2="0" y2="1">' +
+          '<stop offset="0" stop-color="' + cfg.color + '" stop-opacity="0.35"/>' +
+          '<stop offset="1" stop-color="' + cfg.color + '" stop-opacity="0"/>' +
+          '</linearGradient></defs>' +
+          '<path d="' + areaPath + '" fill="url(#emcgrad)" stroke="none"/>' +
+          nowLine +
+          '<path class="emc-line" d="' + linePath + '" fill="none" stroke="' + cfg.color + '"/>' +
+          '</svg>';
+        const labels = data.map((d) => '<span>' + monthLabels[new Date(d.start).getMonth()] + '</span>').join('');
+        body = '<div class="emc-chart">' + svg + '</div><div class="emc-xlabels">' + labels + '</div>';
+      }
+    }
+
+    this.innerHTML =
+      this._styles() +
+      '<ha-card class="emc-flat">' +
+      '<div class="emc-card">' +
+      '<div class="emc-top">' +
+      '<div class="emc-titles"><span class="emc-title">' + cfg.title + '</span>' + (bigCap ? '<span class="emc-sub">' + bigCap + '</span>' : '') + '</div>' +
+      '<div class="emc-big">' + bigVal + '</div>' +
+      '</div>' +
+      body +
+      '</div>' +
+      '</ha-card>';
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:transparent!important;border:none!important;box-shadow:none!important;}' +
+      '.emc-flat{--ha-card-box-shadow:none;box-shadow:none;border:none;background:transparent;border-radius:0;padding:0;display:block;}' +
+      // niente selettore generico ".card": collide con i wrapper della sezione (light DOM)
+      '.emc-card{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:18px;}' +
+      '.emc-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px;}' +
+      '.emc-titles{display:flex;flex-direction:column;gap:2px;min-width:0;}' +
+      '.emc-title{font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.emc-sub{font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.emc-big{font-size:26px;font-weight:600;letter-spacing:-0.5px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;}' +
+      '.emc-chart{width:100%;}' +
+      '.emc-svg{display:block;width:100%;height:120px;overflow:visible;}' +
+      '.emc-line{stroke-width:2;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round;}' +
+      '.emc-now{stroke:var(--secondary-text-color,#8a8d93);stroke-width:1;stroke-dasharray:3 3;opacity:.4;vector-effect:non-scaling-stroke;}' +
+      '.emc-xlabels{display:flex;margin-top:6px;}' +
+      '.emc-xlabels span{flex:1;font-size:10px;color:var(--secondary-text-color,#6b6f76);text-align:center;white-space:nowrap;}' +
+      '.emc-loading{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:32px 0;text-align:center;}' +
+      '</style>'
+    );
+  }
+}
+
+EnergyMonthlyCard.getStubConfig = function () {
+  return { entity: 'sensor.energy_totale_sonoff_casa', months: 12, title: 'Consumo mensile' };
+};
+
+customElements.define('energy-monthly-card', EnergyMonthlyCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'energy-history-card',
