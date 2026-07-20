@@ -18,7 +18,7 @@ Il file `casa-mgdd-cards.js` registra più elementi custom in un'unica risorsa.
 ## Installazione via HACS
 
 1. HACS → menu ⋮ → **Custom repositories**.
-2. URL: `https://github.com/<utente>/casa-mgdd-cards`, categoria **Dashboard**.
+2. URL: `https://github.com/mattiaggg/casa-mgdd-cards`, categoria **Dashboard**.
 3. Installa **Casa MGDD Cards**.
 4. HACS aggiunge automaticamente la risorsa Lovelace.
 5. Ricarica la pagina (Ctrl/Cmd + F5).
