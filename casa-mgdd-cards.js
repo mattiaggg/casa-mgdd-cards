@@ -1,0 +1,1947 @@
+/*
+ * Casa MGDD - Custom Lovelace Cards
+ * Libreria unica di card custom per la dashboard Home Assistant.
+ * Contiene: temperature-bento-card, temperature-row-card, weather-alert-card,
+ * energy-power-card, energy-controls-card, energy-history-card.
+ *
+ * Version: 1.0.0
+ */
+
+// ===== temperature-bento-card.js =====
+class TemperatureBentoCard extends HTMLElement {
+  setConfig(config) {
+    if (!config.rooms || !Array.isArray(config.rooms)) {
+      throw new Error('Config "rooms" mancante o non valida');
+    }
+    this.config = config;
+    this._chartSvg = null;
+    this._sparklines = {};
+    this._historyFetchedAt = 0;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+    this._maybeFetchHistory();
+  }
+
+  getCardSize() {
+    return 6;
+  }
+
+  _num(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  _fmt(v, deg) {
+    if (v === null) return '--';
+    return v.toFixed(1) + (deg || '\u00b0C');
+  }
+
+  _colorFor(t) {
+    if (t === null) return '#8a8d93';
+    if (t < 18) return '#378ADD';
+    if (t < 22) return '#1D9E75';
+    if (t < 27) return '#BA7517';
+    return '#E24B4A';
+  }
+
+  _iconThermo(size) {
+    const s = size || 22;
+    return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v10.5a3.5 3.5 0 1 1-4 0V4a2 2 0 1 1 4 0Z"/><circle cx="12" cy="17.3" r="1.15" fill="currentColor" stroke="none"/></svg>';
+  }
+
+  _iconHome(size) {
+    const s = size || 28;
+    return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-9"/><path d="M12 20v-4"/></svg>';
+  }
+
+  async _maybeFetchHistory() {
+    const isList = this.config.layout === 'list';
+    const dayEntity = this.config.zona_giorno;
+    const nightEntity = this.config.zona_notte;
+    const wantChart = dayEntity && nightEntity;
+    const wantSpark = isList;
+    if (!wantChart && !wantSpark) return;
+    const now = Date.now();
+    if (this._historyFetchedAt && now - this._historyFetchedAt < 5 * 60 * 1000) return;
+    this._historyFetchedAt = now;
+    const hours = wantChart ? this.config.chart_hours || 48 : this.config.spark_hours || 24;
+    const entities = [];
+    if (wantChart) entities.push(dayEntity, nightEntity);
+    if (wantSpark) this.config.rooms.forEach((r) => { if (r.temp) entities.push(r.temp); });
+    if (!entities.length || !this._hass) return;
+    const start = new Date(now - hours * 3600 * 1000).toISOString();
+    try {
+      const path = 'history/period/' + start + '?filter_entity_id=' + entities.join(',') + '&minimal_response';
+      const data = await this._hass.callApi('GET', path);
+      let idx = 0;
+      if (wantChart) {
+        this._chartSvg = this._buildChartSvg(data[idx], data[idx + 1], now, hours);
+        idx += 2;
+      }
+      if (wantSpark) {
+        this.config.rooms.forEach((r) => {
+          if (r.temp) {
+            this._sparklines[r.temp] = this._buildSparkline(data[idx], now, hours);
+            idx += 1;
+          }
+        });
+      }
+      this._render();
+    } catch (e) {
+      /* silent: history unavailable, keep loading state */
+    }
+  }
+
+  _toPoints(arr) {
+    return (arr || [])
+      .map((p) => ({ t: new Date(p.last_changed).getTime(), v: parseFloat(p.state) }))
+      .filter((p) => !Number.isNaN(p.v));
+  }
+
+  _bucketize(pts, buckets, minT, span) {
+    const out = [];
+    for (let i = 0; i < buckets; i++) out.push([]);
+    pts.forEach((p) => {
+      let idx = Math.floor(((p.t - minT) / span) * buckets);
+      if (idx < 0) idx = 0;
+      if (idx >= buckets) idx = buckets - 1;
+      out[idx].push(p.v);
+    });
+    return out.map((a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null));
+  }
+
+  _fillGaps(arr) {
+    let last = null;
+    const res = arr.map((v) => {
+      if (v !== null) last = v;
+      return last;
+    });
+    let next = null;
+    for (let i = res.length - 1; i >= 0; i--) {
+      if (res[i] !== null) next = res[i];
+      else res[i] = next;
+    }
+    return res;
+  }
+
+  _buildBars(vals, ramp, minT, span, buckets) {
+    if (!vals.length) return '';
+    const vmin = Math.min.apply(null, vals);
+    const vmax = Math.max.apply(null, vals);
+    const range = vmax - vmin || 1;
+    const bars = vals
+      .map((v, i) => {
+        const t = (v - vmin) / range;
+        const heightPct = 30 + t * 70;
+        const idx = Math.round(t * (ramp.length - 1));
+        const bucketTime = new Date(minT + (i + 0.5) * (span / buckets));
+        const timeLabel = bucketTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        return (
+          '<div class="bar-seg" data-t="' + timeLabel + '" data-v="' + v.toFixed(1) + '\u00b0" style="flex:1;background:' +
+          ramp[idx] + ';border-radius:2px;height:' + heightPct.toFixed(0) + '%;"></div>'
+        );
+      })
+      .join('');
+    return '<div class="bars">' + bars + '</div>';
+  }
+
+  _wireTooltips() {
+    const containers = this.querySelectorAll('.bars');
+    containers.forEach((container) => {
+      let tip = container.querySelector('.bartip');
+      if (!tip) {
+        tip = document.createElement('div');
+        tip.className = 'bartip';
+        tip.style.cssText =
+          'position:absolute;pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:#fff;font-size:11px;font-weight:500;padding:3px 7px;border-radius:6px;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:2;transform:translate(-50%,-100%);top:-6px;';
+        container.appendChild(tip);
+      }
+      const showTip = (seg) => {
+        tip.textContent = seg.getAttribute('data-t') + ' \u00b7 ' + seg.getAttribute('data-v');
+        tip.style.left = seg.offsetLeft + seg.offsetWidth / 2 + 'px';
+        tip.style.opacity = '1';
+      };
+      const hideTip = () => {
+        tip.style.opacity = '0';
+      };
+      container.addEventListener('mousemove', (e) => {
+        const seg = e.target.closest('.bar-seg');
+        if (seg) showTip(seg);
+        else hideTip();
+      });
+      container.addEventListener('mouseleave', hideTip);
+      container.addEventListener('click', (e) => {
+        const seg = e.target.closest('.bar-seg');
+        if (!seg) return;
+        showTip(seg);
+        clearTimeout(container._hideTimer);
+        container._hideTimer = setTimeout(hideTip, 2000);
+      });
+    });
+  }
+
+  _buildChartSvg(dayArr, nightArr, nowMs, hours) {
+    const dayPoints = this._toPoints(dayArr);
+    const nightPoints = this._toPoints(nightArr);
+    const buckets = 24;
+    const maxT = nowMs;
+    const minT = nowMs - hours * 3600 * 1000;
+    const span = maxT - minT || 1;
+    const dayF = this._fillGaps(this._bucketize(dayPoints, buckets, minT, span)).filter((v) => v !== null);
+    const nightF = this._fillGaps(this._bucketize(nightPoints, buckets, minT, span)).filter((v) => v !== null);
+    if (!dayF.length && !nightF.length) return null;
+    const dayVal = this._num(this.config.zona_giorno);
+    const nightVal = this._num(this.config.zona_notte);
+    const amberRamp = ['#FAEEDA', '#FAC775', '#EF9F27', '#BA7517'];
+    const blueRamp = ['#E6F1FB', '#B5D4F4', '#85B7EB', '#378ADD'];
+    const dayBars = dayF.length ? this._buildBars(dayF, amberRamp, minT, span, buckets) : '';
+    const nightBars = nightF.length ? this._buildBars(nightF, blueRamp, minT, span, buckets) : '';
+    return (
+      '<div class="zonecard zday"><div class="zc-top"><span class="zc-label">Zona giorno</span><span class="zc-tag">' + hours + 'h</span></div>' +
+      '<div class="zc-val">' + this._fmt(dayVal) + '</div>' + dayBars + '</div>' +
+      '<div class="zonecard znight"><div class="zc-top"><span class="zc-label">Zona notte</span><span class="zc-tag">' + hours + 'h</span></div>' +
+      '<div class="zc-val">' + this._fmt(nightVal) + '</div>' + nightBars + '</div>'
+    );
+  }
+
+  _buildSparkline(arr, nowMs, hours) {
+    const pts = this._toPoints(arr);
+    if (!pts.length) return null;
+    const buckets = 12;
+    const maxT = nowMs;
+    const minT = nowMs - hours * 3600 * 1000;
+    const span = maxT - minT || 1;
+    const f = this._fillGaps(this._bucketize(pts, buckets, minT, span));
+    const vals = f.filter((v) => v !== null);
+    if (!vals.length) return null;
+    const vmin = Math.min.apply(null, vals);
+    const vmax = Math.max.apply(null, vals);
+    const range = vmax - vmin || 1;
+    const W = 60;
+    const H = 22;
+    const pad = 3;
+    const x = (i) => (i / (buckets - 1)) * W;
+    const y = (v) => H - pad - ((v - vmin) / range) * (H - pad * 2);
+    const last = vals[vals.length - 1];
+    const color = this._colorFor(last);
+    const path = f
+      .map((v, i) => (v === null ? null : (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ',' + y(v).toFixed(1)))
+      .filter(Boolean)
+      .join(' ');
+    if (!path) return null;
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="60" height="22"><path d="' + path + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  }
+
+  _render() {
+    if (this.config.layout === 'list') {
+      this._renderList();
+    } else {
+      this._renderBento();
+    }
+  }
+
+  _renderList() {
+    const rooms = this.config.rooms;
+    // colonne: default 1 / 2 / 3, sovrascrivibili con grid_columns (max) e breakpoint via config
+    const bp2 = this.config.grid_bp_2 || 560;
+    const bp3 = this.config.grid_bp_3 || 900;
+    const maxCols = this.config.grid_columns || 3;
+    // NB: classi prefissate .tr-* per evitare collisioni con i wrapper della sezione (card in light DOM)
+    const roomsHtml = rooms
+      .map((r) => {
+        const t = this._num(r.temp);
+        const hum = this._num(r.hum);
+        const c = this._colorFor(t);
+        const spark = this._sparklines[r.temp] || '<svg viewBox="0 0 60 22" width="60" height="22"></svg>';
+        return (
+          '<div class="tr-room" data-entity="' + r.temp + '">' +
+          '<div class="tr-ava" style="background:' + c + '22;color:' + c + '">' + this._iconThermo(18) + '</div>' +
+          '<div class="tr-info"><div class="tr-name">' + r.name + '</div>' +
+          '<div class="tr-hum">' + (hum === null ? '' : hum.toFixed(0) + '% umidit\u00e0') + '</div></div>' +
+          '<div class="tr-spark">' + spark + '</div>' +
+          '<div class="tr-val">' + this._fmt(t, '\u00b0') + '</div>' +
+          '</div>'
+        );
+      })
+      .join('');
+
+    this.innerHTML =
+      '<style>' +
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
+      ':host{display:block;}' +
+      // colonne dinamiche in base alla larghezza REALE della card (container query): 1 -> 2 -> 3
+      // il container-type è impostato via JS sull'host (light DOM: :host non si applica)
+      '.tr-grid{display:grid;grid-template-columns:1fr;gap:10px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '@container (min-width:' + bp2 + 'px){.tr-grid{grid-template-columns:repeat(' + Math.min(2, maxCols) + ',1fr);}}' +
+      '@container (min-width:' + bp3 + 'px){.tr-grid{grid-template-columns:repeat(' + maxCols + ',1fr);}}' +
+      '.tr-room{display:flex;align-items:center;gap:12px;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:14px;padding:11px 14px;cursor:pointer;}' +
+      '.tr-room:active{opacity:.6;}' +
+      '.tr-ava{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}' +
+      '.tr-info{flex:1;min-width:0;}' +
+      '.tr-name{font-size:14px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.tr-hum{font-size:12px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.tr-spark{flex:0 0 auto;}' +
+      '.tr-val{font-size:18px;font-weight:600;color:var(--primary-text-color,#1c1c1e);min-width:52px;text-align:right;flex:0 0 auto;}' +
+      '</style>' +
+      '<div class="tr-grid">' + roomsHtml + '</div>';
+    // light DOM: :host non funziona, quindi il container query si àncora all'elemento host
+    this.style.display = 'block';
+    this.style.containerType = 'inline-size';
+    this._wireRowClicks();
+  }
+
+  _openMoreInfo(entityId) {
+    if (!entityId) return;
+    const event = new CustomEvent('hass-more-info', {
+      detail: { entityId: entityId },
+      bubbles: true,
+      composed: true,
+    });
+    this.dispatchEvent(event);
+  }
+
+  _wireRowClicks() {
+    this.querySelectorAll('.tr-room[data-entity]').forEach((row) => {
+      row.addEventListener('click', () => this._openMoreInfo(row.getAttribute('data-entity')));
+    });
+  }
+
+  _renderBento() {
+    const rooms = this.config.rooms;
+    const temps = rooms.map((r) => this._num(r.temp));
+    const valid = temps.filter((v) => v !== null);
+    const avg = valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : null;
+
+    let hotIdx = -1;
+    let coldIdx = -1;
+    temps.forEach((t, i) => {
+      if (t === null) return;
+      if (hotIdx === -1 || t > temps[hotIdx]) hotIdx = i;
+      if (coldIdx === -1 || t < temps[coldIdx]) coldIdx = i;
+    });
+    const hot = hotIdx >= 0 ? rooms[hotIdx] : null;
+    const cold = coldIdx >= 0 ? rooms[coldIdx] : null;
+    const hotVal = hotIdx >= 0 ? temps[hotIdx] : null;
+    const coldVal = coldIdx >= 0 ? temps[coldIdx] : null;
+
+    const thermo = this._iconThermo(22);
+    const home = this._iconHome(18);
+    const hours = this.config.chart_hours || 48;
+
+    const chartInner = this._chartSvg || '<div class="chart-loading">Caricamento\u2026</div>';
+
+    this.innerHTML =
+      '<style>' +
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
+      ':host{display:block;}' +
+      '.wrap{--ha-card-box-shadow:none;box-shadow:none;border:none;background:transparent;padding:0;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '.top2{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;}' +
+      '.colA{display:grid;gap:12px;align-content:start;}' +
+      '.colB{display:grid;gap:12px;align-content:start;}' +
+      '.hero{background:var(--ha-card-background,var(--card-background-color,#fff));border-radius:18px;padding:16px;display:flex;flex-direction:column;justify-content:center;gap:6px;border:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
+      '.hero .lbl{display:flex;align-items:center;gap:6px;color:var(--secondary-text-color,#6b6f76);font-size:13px;font-weight:600;}' +
+      '.hero .val{font-size:38px;font-weight:600;color:var(--primary-text-color,#1c1c1e);letter-spacing:-1px;}' +
+      '.hero .cap{font-size:12px;color:var(--secondary-text-color,#6b6f76);opacity:.85;}' +
+      '.hotcoldgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}' +
+      '.mini{border-radius:18px;padding:16px;display:flex;flex-direction:column;justify-content:center;gap:6px;}' +
+      '.mini .lbl{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;}' +
+      '.mini .val{font-size:26px;font-weight:600;letter-spacing:-0.5px;}' +
+      '.mini .cap{font-size:12px;opacity:.85;}' +
+      '.zonecard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px;}' +
+      '.zc-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px;}' +
+      '.zc-label{font-size:12px;font-weight:600;color:var(--primary-text-color,#1c1c1e);}' +
+      '.zc-tag{font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.zc-val{font-size:26px;font-weight:600;color:var(--primary-text-color,#1c1c1e);letter-spacing:-0.5px;margin-bottom:8px;}' +
+      '.bars{position:relative;display:flex;align-items:flex-end;gap:3px;height:36px;}' +
+      '.chart-loading{grid-column:1/-1;font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:30px 0;text-align:center;}' +
+      '@media (max-width:700px){.top2{grid-template-columns:1fr;}}' +
+      '</style>' +
+      '<ha-card class="wrap">' +
+      '<div class="top2">' +
+      '<div class="colA">' +
+      '<div class="hero"><div class="lbl">' + home + '<span>Media casa</span></div>' +
+      '<div class="val">' + this._fmt(avg) + '</div>' +
+      '<div class="cap">' + rooms.length + ' stanze monitorate</div></div>' +
+      '<div class="hotcoldgrid">' +
+      '<div class="mini" style="background:#E24B4A1c;color:#B93C3C"><div class="lbl">' + thermo + '<span>Pi\u00f9 calda</span></div>' +
+      '<div class="val">' + this._fmt(hotVal) + '</div>' +
+      '<div class="cap">' + (hot ? hot.name : '') + '</div></div>' +
+      '<div class="mini" style="background:#378ADD1c;color:#2B6CAE"><div class="lbl">' + thermo + '<span>Pi\u00f9 fredda</span></div>' +
+      '<div class="val">' + this._fmt(coldVal) + '</div>' +
+      '<div class="cap">' + (cold ? cold.name : '') + '</div></div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="colB">' + chartInner + '</div>' +
+      '</div>' +
+      '</ha-card>';
+    this._wireTooltips();
+  }
+}
+
+TemperatureBentoCard.getStubConfig = function () {
+  return {
+    layout: 'bento',
+    rooms: [
+      { name: 'Soggiorno', temp: 'sensor.temperature', hum: 'sensor.humidity' }
+    ],
+  };
+};
+
+TemperatureBentoCard.getConfigElement = function () {
+  return document.createElement('temperature-bento-card-editor');
+};
+
+class TemperatureBentoCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = Object.assign({ layout: 'bento', rooms: [] }, config || {});
+    if (!Array.isArray(this._config.rooms)) this._config.rooms = [];
+    if (this._built) this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._built) {
+      this._built = true;
+      this._render();
+    } else {
+      this.querySelectorAll('ha-entity-picker').forEach((p) => { p.hass = hass; });
+    }
+  }
+
+  _emit() {
+    this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: this._config }, bubbles: true, composed: true }));
+  }
+
+  _set(key, val) {
+    const c = Object.assign({}, this._config);
+    if (val === '' || val === undefined || val === null) delete c[key];
+    else c[key] = val;
+    this._config = c;
+    this._emit();
+  }
+
+  _setRoom(i, key, val) {
+    const rooms = this._config.rooms.map((r) => Object.assign({}, r));
+    if (val === '' || val === undefined || val === null) delete rooms[i][key];
+    else rooms[i][key] = val;
+    this._config = Object.assign({}, this._config, { rooms: rooms });
+    this._emit();
+  }
+
+  _addRoom() {
+    const rooms = this._config.rooms.concat([{ name: '', temp: '', hum: '' }]);
+    this._config = Object.assign({}, this._config, { rooms: rooms });
+    this._emit();
+    this._render();
+  }
+
+  _delRoom(i) {
+    const rooms = this._config.rooms.slice();
+    rooms.splice(i, 1);
+    this._config = Object.assign({}, this._config, { rooms: rooms });
+    this._emit();
+    this._render();
+  }
+
+  _moveRoom(i, d) {
+    const j = i + d;
+    const rooms = this._config.rooms.slice();
+    if (j < 0 || j >= rooms.length) return;
+    const t = rooms[i]; rooms[i] = rooms[j]; rooms[j] = t;
+    this._config = Object.assign({}, this._config, { rooms: rooms });
+    this._emit();
+    this._render();
+  }
+
+  _mkEntity(label, value, cb) {
+    const p = document.createElement('ha-entity-picker');
+    p.hass = this._hass;
+    p.label = label;
+    p.includeDomains = ['sensor'];
+    p.allowCustomEntity = true;
+    p.value = value || '';
+    p.style.width = '100%';
+    p.addEventListener('value-changed', (e) => { e.stopPropagation(); cb(e.detail.value); });
+    return p;
+  }
+
+  _mkText(label, value, cb) {
+    const t = document.createElement('ha-textfield');
+    t.label = label;
+    t.value = value || '';
+    t.style.width = '100%';
+    t.addEventListener('input', (e) => cb(e.target.value));
+    return t;
+  }
+
+  _mkNum(label, value, placeholder, cb) {
+    const t = document.createElement('ha-textfield');
+    t.label = label;
+    t.type = 'number';
+    t.value = value !== undefined && value !== null ? String(value) : '';
+    t.placeholder = String(placeholder);
+    t.style.width = '100%';
+    t.addEventListener('input', (e) => { const v = e.target.value; cb(v === '' ? '' : Number(v)); });
+    return t;
+  }
+
+  _mkIcon(icon, cb) {
+    const b = document.createElement('ha-icon-button');
+    b.innerHTML = '<ha-icon icon="' + icon + '"></ha-icon>';
+    b.addEventListener('click', cb);
+    return b;
+  }
+
+  _render() {
+    if (!this._config) this._config = { layout: 'bento', rooms: [] };
+    const layout = this._config.layout || 'bento';
+    this.innerHTML =
+      '<style>' +
+      '.bento-ed{display:flex;flex-direction:column;gap:16px;padding:8px 2px;}' +
+      '.ed-field{display:flex;flex-direction:column;}' +
+      '.ed-cond{display:flex;flex-direction:column;gap:12px;}' +
+      '.ed-title{font-weight:600;font-size:13px;margin:4px 0 -4px;}' +
+      '.ed-lbl{font-size:12px;color:var(--secondary-text-color,#6b6f76);margin-bottom:4px;}' +
+      '.rooms{display:flex;flex-direction:column;gap:10px;}' +
+      '.room{display:flex;flex-direction:column;gap:8px;border:1px solid var(--divider-color,rgba(0,0,0,.12));border-radius:10px;padding:12px;}' +
+      '.room-head{display:flex;align-items:center;justify-content:space-between;}' +
+      '.room-head .t{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.room-head .b{display:flex;}' +
+      'ha-textfield,ha-entity-picker{width:100%;display:block;}' +
+      '.add{align-self:flex-start;margin-top:2px;}' +
+      '</style>' +
+      '<div class="bento-ed">' +
+      '<div class="ed-field"><span class="ed-lbl">Layout</span><select id="s-layout" style="padding:9px;border-radius:6px;border:1px solid var(--divider-color,rgba(0,0,0,.2));background:var(--card-background-color,#fff);color:var(--primary-text-color,#1c1c1e);font-size:14px;"></select></div>' +
+      '<div class="ed-cond" id="s-cond"></div>' +
+      '<div class="ed-title">Stanze</div>' +
+      '<div class="rooms" id="s-rooms"></div>' +
+      '<mwc-button class="add" id="s-add" outlined label="+ Aggiungi stanza"></mwc-button>' +
+      '</div>';
+
+    // layout select
+    const sel = this.querySelector('#s-layout');
+    [['bento', 'Riepilogo (media + caldo/freddo + zone)'], ['list', 'Lista stanze']].forEach((o) => {
+      const op = document.createElement('option');
+      op.value = o[0]; op.textContent = o[1];
+      if (layout === o[0]) op.selected = true;
+      sel.appendChild(op);
+    });
+    sel.addEventListener('change', () => { this._set('layout', sel.value); this._render(); });
+
+    // campi condizionali per layout
+    const cond = this.querySelector('#s-cond');
+    if (layout === 'bento') {
+      cond.appendChild(this._mkEntity('Zona giorno (sensore medio)', this._config.zona_giorno, (v) => this._set('zona_giorno', v)));
+      cond.appendChild(this._mkEntity('Zona notte (sensore medio)', this._config.zona_notte, (v) => this._set('zona_notte', v)));
+      cond.appendChild(this._mkNum('Ore grafico zone (default 48)', this._config.chart_hours, 48, (v) => this._set('chart_hours', v)));
+    } else {
+      cond.appendChild(this._mkNum('Ore sparkline (default 24)', this._config.spark_hours, 24, (v) => this._set('spark_hours', v)));
+      cond.appendChild(this._mkNum('Colonne massime (default 3)', this._config.grid_columns, 3, (v) => this._set('grid_columns', v)));
+      cond.appendChild(this._mkNum('Larghezza per passare a 2 col. (px, default 560)', this._config.grid_bp_2, 560, (v) => this._set('grid_bp_2', v)));
+      cond.appendChild(this._mkNum('Larghezza per passare a 3 col. (px, default 900)', this._config.grid_bp_3, 900, (v) => this._set('grid_bp_3', v)));
+    }
+
+    // lista stanze
+    const rc = this.querySelector('#s-rooms');
+    this._config.rooms.forEach((r, i) => {
+      const row = document.createElement('div'); row.className = 'room';
+      const head = document.createElement('div'); head.className = 'room-head';
+      const t = document.createElement('span'); t.className = 't'; t.textContent = 'Stanza ' + (i + 1);
+      const b = document.createElement('span'); b.className = 'b';
+      b.appendChild(this._mkIcon('mdi:arrow-up', () => this._moveRoom(i, -1)));
+      b.appendChild(this._mkIcon('mdi:arrow-down', () => this._moveRoom(i, 1)));
+      b.appendChild(this._mkIcon('mdi:delete', () => this._delRoom(i)));
+      head.appendChild(t); head.appendChild(b);
+      row.appendChild(head);
+      row.appendChild(this._mkText('Nome stanza', r.name, (v) => this._setRoom(i, 'name', v)));
+      row.appendChild(this._mkEntity('Temperatura', r.temp, (v) => this._setRoom(i, 'temp', v)));
+      row.appendChild(this._mkEntity('Umidità (opz.)', r.hum, (v) => this._setRoom(i, 'hum', v)));
+      rc.appendChild(row);
+    });
+    const add = this.querySelector('#s-add');
+    add.addEventListener('click', () => this._addRoom());
+  }
+}
+customElements.define('temperature-bento-card-editor', TemperatureBentoCardEditor);
+
+customElements.define('temperature-bento-card', TemperatureBentoCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'temperature-bento-card',
+  name: 'Temperature Bento',
+  description: 'Card temperature: media casa, calda/fredda, zona giorno/notte, o vista lista stanze. Editor visuale + YAML.',
+});
+
+// ===== temperature-row-card.js =====
+class TemperatureRowCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    if (this._built) this._syncValues();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._built) this._build();
+    else this._syncHass();
+  }
+
+  _build() {
+    this._built = true;
+    this.innerHTML =
+      '<div style="display:flex;flex-direction:column;gap:16px;padding:8px 2px;">' +
+      '<div id="f-entity"></div>' +
+      '<div id="f-hum"></div>' +
+      '<div id="f-name"></div>' +
+      '</div>';
+
+    const entityPicker = document.createElement('ha-entity-picker');
+    entityPicker.hass = this._hass;
+    entityPicker.label = 'Sensore temperatura (obbligatorio)';
+    entityPicker.includeDomains = ['sensor'];
+    entityPicker.value = this._config.entity || '';
+    entityPicker.addEventListener('value-changed', (e) => {
+      e.stopPropagation();
+      this._updateConfig('entity', e.detail.value);
+    });
+    this.querySelector('#f-entity').appendChild(entityPicker);
+    this._entityPicker = entityPicker;
+
+    const humPicker = document.createElement('ha-entity-picker');
+    humPicker.hass = this._hass;
+    humPicker.label = 'Sensore umidit\u00e0 (opzionale)';
+    humPicker.includeDomains = ['sensor'];
+    humPicker.value = this._config.hum_entity || '';
+    humPicker.addEventListener('value-changed', (e) => {
+      e.stopPropagation();
+      this._updateConfig('hum_entity', e.detail.value);
+    });
+    this.querySelector('#f-hum').appendChild(humPicker);
+    this._humPicker = humPicker;
+
+    const nameField = document.createElement('ha-textfield');
+    nameField.label = 'Nome (opzionale, altrimenti usa il nome dell\u2019entit\u00e0)';
+    nameField.value = this._config.name || '';
+    nameField.style.width = '100%';
+    nameField.addEventListener('input', (e) => {
+      this._updateConfig('name', e.target.value);
+    });
+    this.querySelector('#f-name').appendChild(nameField);
+    this._nameField = nameField;
+  }
+
+  _syncHass() {
+    if (this._entityPicker) this._entityPicker.hass = this._hass;
+    if (this._humPicker) this._humPicker.hass = this._hass;
+  }
+
+  _syncValues() {
+    if (this._entityPicker && this._entityPicker.value !== (this._config.entity || '')) this._entityPicker.value = this._config.entity || '';
+    if (this._humPicker && this._humPicker.value !== (this._config.hum_entity || '')) this._humPicker.value = this._config.hum_entity || '';
+    if (this._nameField && this._nameField.value !== (this._config.name || '')) this._nameField.value = this._config.name || '';
+  }
+
+  _updateConfig(key, value) {
+    this._config = Object.assign({}, this._config, { [key]: value });
+    const event = new CustomEvent('config-changed', { detail: { config: this._config }, bubbles: true, composed: true });
+    this.dispatchEvent(event);
+  }
+}
+customElements.define('temperature-row-card-editor', TemperatureRowCardEditor);
+
+class TemperatureRowCard extends HTMLElement {
+  setConfig(config) {
+    this.config = config || {};
+    this._sparkline = null;
+    this._fetchedAt = 0;
+  }
+
+  static getConfigElement() {
+    return document.createElement('temperature-row-card-editor');
+  }
+
+  static getStubConfig() {
+    return { entity: '', hum_entity: '', name: '' };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+    this._maybeFetchHistory();
+  }
+
+  getCardSize() {
+    return 1;
+  }
+
+  _num(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  _fmt(v) {
+    return v === null ? '--' : v.toFixed(1) + '\u00b0';
+  }
+
+  _colorFor(t) {
+    if (t === null) return '#8a8d93';
+    if (t < 18) return '#378ADD';
+    if (t < 22) return '#1D9E75';
+    if (t < 27) return '#BA7517';
+    return '#E24B4A';
+  }
+
+  _iconThermo() {
+    return '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v10.5a3.5 3.5 0 1 1-4 0V4a2 2 0 1 1 4 0Z"/><circle cx="12" cy="17.3" r="1.15" fill="currentColor" stroke="none"/></svg>';
+  }
+
+  async _maybeFetchHistory() {
+    const now = Date.now();
+    if (this._fetchedAt && now - this._fetchedAt < 5 * 60 * 1000) return;
+    if (!this._hass || !this.config.entity) return;
+    this._fetchedAt = now;
+    const hours = this.config.spark_hours || 24;
+    const start = new Date(now - hours * 3600 * 1000).toISOString();
+    try {
+      const data = await this._hass.callApi('GET', 'history/period/' + start + '?filter_entity_id=' + this.config.entity + '&minimal_response');
+      this._sparkline = this._buildSparkline(data[0]);
+      this._render();
+    } catch (e) {
+      /* keep placeholder */
+    }
+  }
+
+  _toPoints(arr) {
+    return (arr || [])
+      .map((p) => ({ t: new Date(p.last_changed).getTime(), v: parseFloat(p.state) }))
+      .filter((p) => !Number.isNaN(p.v));
+  }
+
+  _buildSparkline(arr) {
+    const pts = this._toPoints(arr);
+    if (!pts.length) return null;
+    const buckets = 12;
+    const minT = Math.min.apply(null, pts.map((p) => p.t));
+    const maxT = Math.max.apply(null, pts.map((p) => p.t));
+    const span = maxT - minT || 1;
+    const out = [];
+    for (let i = 0; i < buckets; i++) out.push([]);
+    pts.forEach((p) => {
+      let idx = Math.floor(((p.t - minT) / span) * buckets);
+      if (idx < 0) idx = 0;
+      if (idx >= buckets) idx = buckets - 1;
+      out[idx].push(p.v);
+    });
+    const bucketed = out.map((a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null));
+    let last = null;
+    const filled = bucketed.map((v) => {
+      if (v !== null) last = v;
+      return last;
+    });
+    let next = null;
+    for (let i = filled.length - 1; i >= 0; i--) {
+      if (filled[i] !== null) next = filled[i];
+      else filled[i] = next;
+    }
+    const vals = filled.filter((v) => v !== null);
+    if (!vals.length) return null;
+    const vmin = Math.min.apply(null, vals);
+    const vmax = Math.max.apply(null, vals);
+    const range = vmax - vmin || 1;
+    const W = 60;
+    const H = 22;
+    const pad = 3;
+    const x = (i) => (i / (buckets - 1)) * W;
+    const y = (v) => H - pad - ((v - vmin) / range) * (H - pad * 2);
+    const lastVal = vals[vals.length - 1];
+    const color = this._colorFor(lastVal);
+    const path = filled
+      .map((v, i) => (v === null ? null : (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ',' + y(v).toFixed(1)))
+      .filter(Boolean)
+      .join(' ');
+    if (!path) return null;
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="60" height="22"><path d="' + path + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  }
+
+  _openMoreInfo(entityId) {
+    if (!entityId) return;
+    const event = new CustomEvent('hass-more-info', { detail: { entityId: entityId }, bubbles: true, composed: true });
+    this.dispatchEvent(event);
+  }
+
+  _render() {
+    if (!this.config.entity) {
+      this.innerHTML = '<div style="padding:16px;color:var(--secondary-text-color,#6b6f76);font-size:13px;">Seleziona un sensore di temperatura nelle impostazioni della card.</div>';
+      return;
+    }
+    const t = this._num(this.config.entity);
+    const hum = this._num(this.config.hum_entity);
+    const color = this._colorFor(t);
+    const s = this._hass && this._hass.states[this.config.entity];
+    const name = this.config.name || (s && s.attributes && s.attributes.friendly_name) || this.config.entity;
+    const spark = this._sparkline || '<svg viewBox="0 0 60 22" width="60" height="22"></svg>';
+
+    this.innerHTML =
+      '<style>' +
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
+      ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
+      '.row{display:flex;align-items:center;gap:14px;padding:10px 0;cursor:pointer;}' +
+      '.avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}' +
+      '.rowinfo{flex:1;min-width:0;}' +
+      '.rowname{font-size:15px;color:var(--primary-text-color,#1c1c1e);}' +
+      '.rowhum{font-size:13px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.rowspark{flex:0 0 auto;}' +
+      '.rowval{font-size:20px;font-weight:600;color:var(--primary-text-color,#1c1c1e);min-width:56px;text-align:right;}' +
+      '</style>' +
+      '<div class="wrap"><div class="row">' +
+      '<div class="avatar" style="background:' + color + '22;color:' + color + '">' + this._iconThermo() + '</div>' +
+      '<div class="rowinfo"><div class="rowname">' + name + '</div>' +
+      (hum === null ? '' : '<div class="rowhum">' + hum.toFixed(0) + '% umidit\u00e0</div>') +
+      '</div>' +
+      '<div class="rowspark">' + spark + '</div>' +
+      '<div class="rowval">' + this._fmt(t) + '</div>' +
+      '</div></div>';
+    const row = this.querySelector('.row');
+    if (row) row.addEventListener('click', () => this._openMoreInfo(this.config.entity));
+  }
+}
+
+customElements.define('temperature-row-card', TemperatureRowCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'temperature-row-card',
+  name: 'Temperatura Riga Singola',
+  description: 'Una riga con temperatura, umidit\u00e0 opzionale e mini grafico per una stanza. Configurabile interamente dall\u2019interfaccia (nessun YAML necessario). Aggiungine pi\u00f9 di una e impilale per ricreare una lista completa.',
+});
+
+// ===== weather-alert-card.js =====
+class WeatherAlertCard extends HTMLElement {
+  setConfig(config) {
+    if (!config.weather_entity) {
+      throw new Error('Config "weather_entity" mancante');
+    }
+    this.config = config;
+    this._forecast = null;
+    this._forecastFetchedAt = 0;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+    this._maybeFetchForecast();
+  }
+
+  getCardSize() {
+    return 4;
+  }
+
+  _num(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  _state(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    return s || null;
+  }
+
+  _fmt(v, deg) {
+    if (v === null || v === undefined) return '--';
+    return Math.round(v) + (deg || '\u00b0');
+  }
+
+  async _maybeFetchForecast() {
+    const now = Date.now();
+    if (this._forecastFetchedAt && now - this._forecastFetchedAt < 5 * 60 * 1000) return;
+    this._forecastFetchedAt = now;
+    try {
+      const hourlyResp = await this._hass.callWS({
+        type: 'call_service',
+        domain: 'weather',
+        service: 'get_forecasts',
+        service_data: { entity_id: this.config.weather_entity, type: 'hourly' },
+        return_response: true,
+      });
+      const hourlyList = hourlyResp && hourlyResp.response && hourlyResp.response[this.config.weather_entity] && hourlyResp.response[this.config.weather_entity].forecast;
+      this._forecast = hourlyList || null;
+    } catch (e) {
+      this._forecast = null;
+    }
+    try {
+      const dailyResp = await this._hass.callWS({
+        type: 'call_service',
+        domain: 'weather',
+        service: 'get_forecasts',
+        service_data: { entity_id: this.config.weather_entity, type: 'daily' },
+        return_response: true,
+      });
+      const dailyList = dailyResp && dailyResp.response && dailyResp.response[this.config.weather_entity] && dailyResp.response[this.config.weather_entity].forecast;
+      this._dailyForecast = dailyList || null;
+    } catch (e) {
+      this._dailyForecast = null;
+    }
+    this._render();
+  }
+
+  _iconFor(condition, size) {
+    const s = size || 20;
+    const c = condition || '';
+    const svg = (inner) => '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '">' + inner + '</svg>';
+    const sun = '<circle cx="12" cy="12" r="5" fill="#EF9F27"/><g stroke="#EF9F27" stroke-width="2" stroke-linecap="round"><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.5 4.5l2 2M17.5 17.5l2 2M4.5 19.5l2-2M17.5 6.5l2-2"/></g>';
+    const moon = '<path d="M18 15.5A7.5 7.5 0 1 1 8.7 5.2a6 6 0 0 0 9.3 10.3Z" fill="#7F77DD"/>';
+    const partly = '<circle cx="9" cy="9" r="4" fill="#EF9F27"/><path d="M6.5 19h11a3.3 3.3 0 0 0 .4-6.6 4.6 4.6 0 0 0-8.8-1.6A3.7 3.7 0 0 0 6.5 19Z" fill="#D3D1C7" stroke="#888780" stroke-width="0.5"/>';
+    const cloud = '<path d="M5 18h13a3.6 3.6 0 0 0 .5-7.1A5.2 5.2 0 0 0 8.5 8 4.3 4.3 0 0 0 5 18Z" fill="#B4B2A9" stroke="#5F5E5A" stroke-width="0.5"/>';
+    const rainCloud = '<path d="M5 14h13a3.6 3.6 0 0 0 .5-7.1A5.2 5.2 0 0 0 8.5 4 4.3 4.3 0 0 0 5 14Z" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>';
+    const rainDrops = '<g stroke="#378ADD" stroke-width="2" stroke-linecap="round"><path d="M8 18v3M12 18v3M16 18v3"/></g>';
+    const stormCloud = '<path d="M5 13h13a3.6 3.6 0 0 0 .5-7.1A5.2 5.2 0 0 0 8.5 3 4.3 4.3 0 0 0 5 13Z" fill="#8a8d93" stroke="#444441" stroke-width="0.5"/>';
+    const bolt = '<path d="M13 12l-3.5 5h3.5l-2 5" fill="#F7C1C1" stroke="#E24B4A" stroke-width="1.2" stroke-linejoin="round"/>';
+    const snowDots = '<g fill="#378ADD"><circle cx="8" cy="19" r="1.4"/><circle cx="12" cy="20" r="1.4"/><circle cx="16" cy="19" r="1.4"/></g>';
+    if (c === 'sunny') return svg(sun);
+    if (c === 'clear-night') return svg(moon);
+    if (c === 'partlycloudy') return svg(partly);
+    if (c === 'cloudy' || c === 'fog' || c === 'exceptional') return svg(cloud);
+    if (c === 'rainy' || c === 'pouring') return svg(rainCloud + rainDrops);
+    if (c === 'lightning' || c === 'lightning-rainy' || c === 'hail') return svg(stormCloud + bolt);
+    if (c === 'snowy' || c === 'snowy-rainy') return svg(rainCloud + snowDots);
+    if (c === 'windy' || c === 'windy-variant') return svg(cloud);
+    return svg(cloud);
+  }
+
+  _iconTriangle(color, size) {
+    const s = size || 22;
+    return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 3 20h18L12 4Z"/><path d="M12 10v4"/><circle cx="12" cy="17" r="0.6" fill="' + color + '" stroke="none"/></svg>';
+  }
+
+  _iconStorm(color, size) {
+    const s = size || 22;
+    return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14a4 4 0 0 1 .5-7.97A5.5 5.5 0 0 1 17 8a4 4 0 0 1 0 6"/><path d="M13 12l-3 4h3l-2 3"/></svg>';
+  }
+
+  _dpcColors(level) {
+    if (level >= 4) return { bg: '#FCEBEB', text: '#791F1F', icon: '#E24B4A' };
+    if (level >= 3) return { bg: '#FCEBEB', text: '#A32D2D', icon: '#E24B4A' };
+    return { bg: '#FAEEDA', text: '#854F0B', icon: '#EF9F27' };
+  }
+
+  _buildDemoBanners() {
+    const dpcColors = this._dpcColors(3);
+    const dpcBanner =
+      '<div class="banner" style="background:' + dpcColors.bg + '">' +
+      '<div class="banner-icon" style="color:' + dpcColors.icon + '">' + this._iconTriangle(dpcColors.icon) + '</div>' +
+      '<div class="banner-body">' +
+      '<div class="banner-title" style="color:' + dpcColors.text + '">Temporali \u2014 ALLERTA ARANCIONE</div>' +
+      '<div class="banner-sub" style="color:' + dpcColors.text + '">Protezione Civile \u00b7 Bacino del Livenza e del Lemene (demo)</div>' +
+      '</div>' +
+      '<span class="banner-tag" style="color:' + dpcColors.text + '">Elevato</span>' +
+      '</div>';
+    const rainBanner =
+      '<div class="banner" style="background:#FCEBEB">' +
+      '<div class="banner-icon" style="color:#E24B4A">' + this._iconStorm('#E24B4A') + '</div>' +
+      '<div class="banner-body">' +
+      '<div class="banner-title" style="color:#791F1F">Possibili temporali nelle prossime 6 ore (demo)</div>' +
+      '<div class="banner-sub" style="color:#791F1F">iLMeteo.it \u00b7 ~8.4mm previsti</div>' +
+      '</div>' +
+      '<span class="banner-tag" style="color:#791F1F">Alto</span>' +
+      '</div>';
+    return [dpcBanner, rainBanner];
+  }
+
+  _buildDpcBanners() {
+    const entities = this.config.dpc_entities || [];
+    const banners = [];
+    entities.forEach((eid) => {
+      const s = this._state(eid);
+      if (!s || s.state !== 'on') return;
+      const a = s.attributes || {};
+      const level = a.level || 2;
+      const c = this._dpcColors(level);
+      const label = { 2: 'Moderato', 3: 'Elevato', 4: 'Alto' }[level] || 'Attivo';
+      const when = eid.endsWith('_domani') ? 'Domani' : (eid.endsWith('_oggi') ? 'Oggi' : '');
+      banners.push(
+        '<div class="banner" style="background:' + c.bg + '">' +
+        '<div class="banner-icon" style="color:' + c.icon + '">' + this._iconTriangle(c.icon) + '</div>' +
+        '<div class="banner-body">' +
+        '<div class="banner-title" style="color:' + c.text + '">' + (a.risk || 'Allerta') + ' \u2014 ' + (a.alert || '') + (when ? ' \u00b7 ' + when : '') + '</div>' +
+        '<div class="banner-sub" style="color:' + c.text + '">Protezione Civile \u00b7 ' + (a.zone_name || '') + '</div>' +
+        '</div>' +
+        '<span class="banner-tag" style="color:' + c.text + '">' + label + '</span>' +
+        '</div>'
+      );
+    });
+    return banners;
+  }
+
+  _buildRainBanner() {
+    if (!this._forecast) return '';
+    const hours = this.config.rain_alert_hours || 6;
+    const threshold = this.config.rain_alert_mm != null ? this.config.rain_alert_mm : 3;
+    const now = Date.now();
+    const window = this._forecast.filter((f) => {
+      const t = new Date(f.datetime).getTime();
+      return t >= now && t <= now + hours * 3600 * 1000;
+    });
+    if (!window.length) return '';
+    const totalMm = window.reduce((sum, f) => sum + (f.precipitation || 0), 0);
+    const stormy = window.some((f) => ['lightning', 'lightning-rainy', 'hail'].indexOf(f.condition) >= 0);
+    if (!stormy && totalMm < threshold) return '';
+    const severe = stormy || totalMm >= threshold * 2;
+    const bg = severe ? '#FCEBEB' : '#FAEEDA';
+    const text = severe ? '#791F1F' : '#854F0B';
+    const icon = severe ? '#E24B4A' : '#EF9F27';
+    const label = severe ? 'Alto' : 'Moderato';
+    const title = stormy ? 'Possibili temporali nelle prossime ' + hours + ' ore' : 'Pioggia intensa nelle prossime ' + hours + ' ore';
+    return (
+      '<div class="banner" style="background:' + bg + '">' +
+      '<div class="banner-icon" style="color:' + icon + '">' + this._iconStorm(icon) + '</div>' +
+      '<div class="banner-body">' +
+      '<div class="banner-title" style="color:' + text + '">' + title + '</div>' +
+      '<div class="banner-sub" style="color:' + text + '">iLMeteo.it \u00b7 ~' + totalMm.toFixed(1) + 'mm previsti</div>' +
+      '</div>' +
+      '<span class="banner-tag" style="color:' + text + '">' + label + '</span>' +
+      '</div>'
+    );
+  }
+
+  _buildHourlyRow() {
+    if (!this._forecast) return '<div class="strip-loading">Caricamento\u2026</div>';
+    const count = this.config.hourly_count || 5;
+    const points = this._forecast.slice(0, count);
+    return points
+      .map((f) => {
+        const d = new Date(f.datetime);
+        const hh = d.getHours().toString().padStart(2, '0');
+        return (
+          '<div class="hour">' +
+          '<div class="hour-t">' + hh + '</div>' +
+          '<div class="hour-icon">' + this._iconFor(f.condition, 40) + '</div>' +
+          '<div class="hour-v">' + this._fmt(f.temperature, '\u00b0') + '</div>' +
+          '</div>'
+        );
+      })
+      .join('');
+  }
+
+  _buildDailyList() {
+    if (!this._dailyForecast || this._dailyForecast.length < 2) return '<div class="strip-loading">Caricamento\u2026</div>';
+    const count = this.config.daily_count || 4;
+    const dayNames = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
+    const days = this._dailyForecast.slice(1, 1 + count);
+    return days
+      .map((f, i) => {
+        const d = new Date(f.datetime);
+        const label = i === 0 ? 'Domani' : dayNames[d.getDay()];
+        return (
+          '<div class="day-row">' +
+          '<span class="day-label">' + label + '</span>' +
+          '<span class="day-icon">' + this._iconFor(f.condition, 18) + '</span>' +
+          '<span class="day-range">' + this._fmt(f.templow, '\u00b0') + '/' + this._fmt(f.temperature, '\u00b0') + '</span>' +
+          '</div>'
+        );
+      })
+      .join('');
+  }
+
+  _render() {
+    const w = this._state(this.config.weather_entity);
+    const cond = w ? w.state : null;
+    const temp = w && w.attributes ? w.attributes.temperature : null;
+    const condLabels = {
+      sunny: 'Sereno',
+      'clear-night': 'Sereno',
+      partlycloudy: 'Poco nuvoloso',
+      cloudy: 'Nuvoloso',
+      fog: 'Nebbia',
+      rainy: 'Pioggia',
+      pouring: 'Pioggia intensa',
+      lightning: 'Temporale',
+      'lightning-rainy': 'Temporale',
+      hail: 'Grandine',
+      snowy: 'Neve',
+      'snowy-rainy': 'Pioggia e neve',
+      windy: 'Ventoso',
+      'windy-variant': 'Ventoso',
+      exceptional: 'Condizioni estreme',
+    };
+    const condLabel = condLabels[cond] || cond || '';
+
+    const banners = this.config.demo_alert ? this._buildDemoBanners() : this._buildDpcBanners();
+    const rainBanner = this.config.demo_alert ? '' : this._buildRainBanner();
+    if (rainBanner) banners.push(rainBanner);
+    const bannersHtml = banners.join('');
+
+    const hourlyHtml = this._buildHourlyRow();
+    const dailyHtml = this._buildDailyList();
+
+    this.innerHTML =
+      '<style>' +
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
+      ':host{display:block;}' +
+      '.wrap{font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '.banners{display:flex;flex-direction:column;gap:8px;margin-bottom:' + (banners.length ? '12px' : '0') + ';}' +
+      '.banner{border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;}' +
+      '.banner-icon{flex:0 0 auto;display:flex;}' +
+      '.banner-body{flex:1;min-width:0;}' +
+      '.banner-title{font-size:13px;font-weight:600;}' +
+      '.banner-sub{font-size:11px;opacity:0.85;margin-top:1px;}' +
+      '.banner-tag{font-size:11px;font-weight:600;background:var(--card-background-color,#fff);padding:3px 10px;border-radius:20px;flex:0 0 auto;}' +
+      '.weathercard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px 18px;cursor:pointer;}' +
+      '.weathercard:active{opacity:0.7;}' +
+      '.wc-top{display:flex;justify-content:space-between;align-items:center;}' +
+      '.wc-loc{font-size:12px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.wc-temp{font-size:44px;font-weight:600;letter-spacing:-1px;color:var(--primary-text-color,#1c1c1e);margin-top:2px;}' +
+      '.wc-cond{font-size:13px;color:var(--secondary-text-color,#6b6f76);margin-top:2px;}' +
+      '.wc-split{display:grid;grid-template-columns:1.4fr 1fr;gap:0;margin-top:14px;padding-top:14px;border-top:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
+      '.wc-hours{padding-right:16px;display:flex;flex-direction:column;justify-content:center;}' +
+      '.wc-days{border-left:1px solid var(--divider-color,rgba(0,0,0,.08));padding-left:16px;}' +
+      '.section-label{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-bottom:12px;}' +
+      '.hour-row{display:flex;}' +
+      '.hour{text-align:center;flex:1;}' +
+      '.hour-t{font-size:12px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.hour-icon{margin:6px auto;display:flex;justify-content:center;}' +
+      '.hour-v{font-size:17px;font-weight:500;color:var(--primary-text-color,#1c1c1e);}' +
+      '.day-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;}' +
+      '.day-label{font-size:12px;color:var(--secondary-text-color,#6b6f76);width:52px;}' +
+      '.day-icon{display:flex;}' +
+      '.day-range{font-size:13px;font-weight:500;color:var(--primary-text-color,#1c1c1e);}' +
+      '.strip-loading{font-size:12px;color:var(--secondary-text-color,#6b6f76);}' +
+      '@media (max-width:520px){.wc-split{grid-template-columns:1fr;}.wc-hours{padding-right:0;padding-bottom:14px;}.wc-days{border-left:none;padding-left:0;border-top:1px solid var(--divider-color,rgba(0,0,0,.08));padding-top:14px;}}' +
+      '</style>' +
+      '<div class="wrap">' +
+      (bannersHtml ? '<div class="banners">' + bannersHtml + '</div>' : '') +
+      '<div class="weathercard">' +
+      '<div class="wc-top"><div>' +
+      '<div class="wc-loc">' + (this.config.title || 'Casa') + ' \u00b7 iLMeteo.it</div>' +
+      '<div class="wc-temp">' + this._fmt(temp) + '</div>' +
+      '<div class="wc-cond">' + condLabel + '</div>' +
+      '</div>' + this._iconFor(cond, 52) + '</div>' +
+      '<div class="wc-split">' +
+      '<div class="wc-hours"><div class="section-label">Prossime ore</div><div class="hour-row">' + hourlyHtml + '</div></div>' +
+      '<div class="wc-days"><div class="section-label">Prossimi giorni</div>' + dailyHtml + '</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>';
+    const wc = this.querySelector('.weathercard');
+    if (wc) {
+      wc.addEventListener('click', () => this._openMoreInfo(this.config.weather_entity));
+    }
+  }
+
+  _openMoreInfo(entityId) {
+    if (!entityId) return;
+    const event = new CustomEvent('hass-more-info', {
+      detail: { entityId: entityId },
+      bubbles: true,
+      composed: true,
+    });
+    this.dispatchEvent(event);
+  }
+}
+
+WeatherAlertCard.getStubConfig = function () {
+  return {
+    weather_entity: 'weather.home',
+    dpc_entities: [],
+  };
+};
+
+customElements.define('weather-alert-card', WeatherAlertCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'weather-alert-card',
+  name: 'Meteo e Allerte',
+  description: 'Card meteo (ore/giorni) con banner allerta Protezione Civile e rischio pioggia/temporale. Config manuale via YAML.',
+});
+
+// ===== energy-power-card.js =====
+class EnergyPowerCard extends HTMLElement {
+  setConfig(config) {
+    this.config = config;
+    this._trend = null;
+    this._sparklines = {};
+    this._fetchedAt = 0;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+    this._maybeFetchHistory();
+  }
+
+  getCardSize() {
+    return 5;
+  }
+
+  _num(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  _fmt(v, unit, dec) {
+    if (v === null || v === undefined) return '--';
+    return v.toFixed(dec === undefined ? 0 : dec) + (unit || '');
+  }
+
+  async _maybeFetchHistory() {
+    const now = Date.now();
+    if (this._fetchedAt && now - this._fetchedAt < 5 * 60 * 1000) return;
+    this._fetchedAt = now;
+    const entities = [];
+    if (this.config.layout === 'overview' && this.config.power_entity) entities.push(this.config.power_entity);
+    if (this.config.layout === 'circuits' && this.config.circuits) {
+      this.config.circuits.forEach((c) => entities.push(c.entity));
+    }
+    if (entities.length && this._hass) {
+      const hours = this.config.history_hours || 24;
+      const start = new Date(now - hours * 3600 * 1000).toISOString();
+      try {
+        const path = 'history/period/' + start + '?filter_entity_id=' + entities.join(',') + '&minimal_response';
+        const data = await this._hass.callApi('GET', path);
+        if (this.config.layout === 'overview') {
+          this._trend = this._buildTrend(data[0], now, hours);
+        } else {
+          this.config.circuits.forEach((c, i) => {
+            this._sparklines[c.entity] = this._buildSparkline(data[i], now, hours, this._paletteColor(i));
+          });
+        }
+      } catch (e) {
+        /* keep loading state */
+      }
+    }
+    const statsEntity = this.config.total_energy_entity || this.config.energy_day_entity;
+    if (this.config.layout === 'overview' && statsEntity && this._hass) {
+      const nowD = new Date(now);
+      // confronto equo: ieri fino alla stessa ora
+      try {
+        const yStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate() - 1);
+        const yEnd = new Date(now - 24 * 3600 * 1000);
+        const resp = await this._hass.callWS({
+          type: 'recorder/statistics_during_period',
+          start_time: yStart.toISOString(),
+          end_time: yEnd.toISOString(),
+          statistic_ids: [statsEntity],
+          period: 'hour',
+          types: ['change'],
+        });
+        const list = (resp && resp[statsEntity]) || [];
+        if (list.length) this._yesterday = list.reduce((s, r) => s + (r.change || 0), 0);
+      } catch (e) {
+        /* comparison optional, ignore errors */
+      }
+      // confronto equo: mese precedente fino allo stesso giorno/ora
+      try {
+        const pmStart = new Date(nowD.getFullYear(), nowD.getMonth() - 1, 1);
+        let pmEnd = new Date(nowD.getFullYear(), nowD.getMonth() - 1, nowD.getDate(), nowD.getHours(), nowD.getMinutes());
+        const curStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1);
+        if (pmEnd > curStart) pmEnd = curStart;
+        const respM = await this._hass.callWS({
+          type: 'recorder/statistics_during_period',
+          start_time: pmStart.toISOString(),
+          end_time: pmEnd.toISOString(),
+          statistic_ids: [statsEntity],
+          period: 'hour',
+          types: ['change'],
+        });
+        const listM = (respM && respM[statsEntity]) || [];
+        if (listM.length) this._lastMonth = listM.reduce((s, r) => s + (r.change || 0), 0);
+      } catch (e) {
+        /* comparison optional, ignore errors */
+      }
+    }
+    this._render();
+  }
+
+  _toPoints(arr) {
+    return (arr || [])
+      .map((p) => ({ t: new Date(p.last_changed).getTime(), v: parseFloat(p.state) }))
+      .filter((p) => !Number.isNaN(p.v));
+  }
+
+  _bucketize(pts, buckets, minT, span) {
+    const out = [];
+    for (let i = 0; i < buckets; i++) out.push([]);
+    pts.forEach((p) => {
+      let idx = Math.floor(((p.t - minT) / span) * buckets);
+      if (idx < 0) idx = 0;
+      if (idx >= buckets) idx = buckets - 1;
+      out[idx].push(p.v);
+    });
+    return out.map((a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null));
+  }
+
+  _fillGaps(arr) {
+    let last = null;
+    const res = arr.map((v) => {
+      if (v !== null) last = v;
+      return last;
+    });
+    let next = null;
+    for (let i = res.length - 1; i >= 0; i--) {
+      if (res[i] !== null) next = res[i];
+      else res[i] = next;
+    }
+    return res;
+  }
+
+  _buildTrend(arr, nowMs, hours) {
+    const pts = this._toPoints(arr);
+    if (!pts.length) return null;
+    const buckets = 24;
+    const minT = nowMs - hours * 3600 * 1000;
+    const span = hours * 3600 * 1000;
+    const f = this._fillGaps(this._bucketize(pts, buckets, minT, span)).filter((v) => v !== null);
+    if (!f.length) return null;
+    const vmin = Math.min.apply(null, f);
+    const vmax = Math.max.apply(null, f);
+    const range = vmax - vmin || 1;
+    const ramp = ['#CDE9B9', '#EF9F27', '#D85A30', '#B93C3C'];
+    const bars = f
+      .map((v) => {
+        const t = (v - vmin) / range;
+        const heightPct = 20 + t * 80;
+        const idx = Math.round(t * (ramp.length - 1));
+        return '<div style="flex:1;background:' + ramp[idx] + ';border-radius:2px;height:' + heightPct.toFixed(0) + '%;"></div>';
+      })
+      .join('');
+    const html = '<div class="trend-bars">' + bars + '</div>';
+    return { html: html, min: vmin, max: vmax };
+  }
+
+  _paletteColor(i) {
+    const palette = ['#EF9F27', '#378ADD', '#639922', '#7F77DD', '#D85A30', '#D4537E', '#1D9E75', '#BA7517'];
+    return palette[i % palette.length];
+  }
+
+  _buildSparkline(arr, nowMs, hours, color) {
+    const pts = this._toPoints(arr);
+    if (!pts.length) return null;
+    const buckets = 16;
+    const minT = nowMs - hours * 3600 * 1000;
+    const span = hours * 3600 * 1000;
+    const f = this._fillGaps(this._bucketize(pts, buckets, minT, span)).filter((v) => v !== null);
+    if (!f.length) return null;
+    const vmin = Math.min.apply(null, f);
+    const vmax = Math.max.apply(null, f);
+    const range = vmax - vmin || 1;
+    const W = 60;
+    const H = 22;
+    const pad = 3;
+    const x = (i) => (i / (f.length - 1)) * W;
+    const y = (v) => H - pad - ((v - vmin) / range) * (H - pad * 2);
+    const line = f.map((v, i) => (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ',' + y(v).toFixed(1)).join(' ');
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="60" height="22"><path d="' + line + '" fill="none" stroke="' + (color || '#EF9F27') + '" stroke-width="1.6"/></svg>';
+  }
+
+  _render() {
+    if (this.config.layout === 'circuits') this._renderCircuits();
+    else this._renderOverview();
+  }
+
+  _renderOverview() {
+    const power = this._num(this.config.power_entity);
+    const day = this._num(this.config.energy_day_entity);
+    const month = this._num(this.config.energy_month_entity);
+    const circuits = this.config.circuits || [];
+    const threshold = this.config.active_threshold != null ? this.config.active_threshold : 1;
+    const activeCount = this.config.active_count || 6;
+    const active = circuits
+      .map((c) => ({ name: c.name, val: this._num(c.entity), entity: c.entity }))
+      .filter((c) => c.val !== null && c.val > threshold)
+      .sort((a, b) => b.val - a.val)
+      .slice(0, activeCount);
+
+    const trend = this._trend;
+    const trendHtml = trend
+      ? trend.html + '<div class="trend-range"><span>Min ' + this._fmt(trend.min, ' W', 1) + '</span><span>Max ' + this._fmt(trend.max, ' W', 1) + '</span></div>'
+      : '<div class="loading">Caricamento\u2026</div>';
+
+    const pillVs = (current, prev, cap, dec) => {
+      if (current === null || prev === undefined || prev === null || prev <= 0) return '<div class="pair-trend">\u2014</div>';
+      const diff = current - prev;
+      const up = diff > 0;
+      const arrow = up ? '\u2191' : '\u2193';
+      const cls = up ? 'pill-up' : 'pill-down';
+      return (
+        '<div><span class="pill ' + cls + '">' + arrow + ' ' + Math.abs(diff).toFixed(dec) + ' kWh</span></div>' +
+        '<div class="pill-cap">' + cap + '</div>'
+      );
+    };
+    const monthNames = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
+    const nowD = new Date();
+    const prevMonthName = monthNames[(nowD.getMonth() + 11) % 12];
+    const dayTrend = pillVs(day, this._yesterday, 'vs ieri, stessa ora', 1);
+    const monthTrend = pillVs(month, this._lastMonth, 'vs ' + prevMonthName + ', stesso giorno', 0);
+    let projHtml = '';
+    if (month !== null) {
+      const monthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1);
+      const monthEnd = new Date(nowD.getFullYear(), nowD.getMonth() + 1, 1);
+      const frac = (nowD - monthStart) / (monthEnd - monthStart);
+      if (frac > 0.03) {
+        projHtml = '<div class="proj"><span>Proiezione fine mese</span><b>~' + Math.round(month / frac) + ' kWh</b></div>';
+      }
+    }
+
+    const monitored = circuits.map((c) => this._num(c.entity)).filter((v) => v !== null);
+    const monitoredSum = monitored.reduce((a, b) => a + b, 0);
+    const other = power !== null && power - monitoredSum > 1 ? power - monitoredSum : null;
+    const pctOf = (v) => (power ? Math.round((v / power) * 100) + '%' : '');
+    // barra di composizione: segmenti proporzionali sul totale
+    const compSegs = active
+      .map((c) => {
+        const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
+        const w = power ? (c.val / power) * 100 : 0;
+        return '<div style="width:' + w.toFixed(1) + '%;background:' + color + '"></div>';
+      })
+      .join('');
+    const compBar = active.length && power ? '<div class="comp">' + compSegs + '<div style="flex:1;background:var(--divider-color,rgba(0,0,0,.08))"></div></div>' : '';
+    const activeHtml =
+      active
+        .map((c) => {
+          const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
+          return (
+            '<div class="load-row" data-entity="' + c.entity + '">' +
+            '<span class="load-dot" style="background:' + color + '"></span>' +
+            '<span class="load-name">' + c.name + '</span>' +
+            '<span class="load-pct">' + pctOf(c.val) + '</span>' +
+            '<span class="load-w">' + this._fmt(c.val, ' W', c.val < 10 ? 1 : 0) + '</span>' +
+            '</div>'
+          );
+        })
+        .join('') +
+      (other !== null && active.length
+        ? '<div class="load-row load-other">' +
+          '<span class="load-dot" style="background:var(--divider-color,rgba(0,0,0,.08))"></span>' +
+          '<span class="load-name">Altro (non monitorato)</span>' +
+          '<span class="load-pct">' + pctOf(other) + '</span>' +
+          '<span class="load-w">~' + other.toFixed(0) + ' W</span>' +
+          '</div>'
+        : '');
+
+    this.innerHTML =
+      this._styles() +
+      '<div class="hero">' +
+      '<div class="hero-top"><span class="hero-l">' + (this.config.title || 'Consumo casa') + '</span><span class="hero-tag">' + (this.config.history_hours || 24) + 'h</span></div>' +
+      '<div class="hero-v">' + this._fmt(power, ' W', power !== null && power < 10 ? 1 : 0) + '</div>' +
+      trendHtml +
+      '</div>' +
+      '<div class="pairhero">' +
+      '<div class="pair">' +
+      '<div class="pairhalf"><div class="stat-l">Oggi</div><div class="stat-v">' + this._fmt(day, ' kWh', 1) + '</div>' + dayTrend + '</div>' +
+      '<div class="pairhalf pairhalf-b"><div class="stat-l">Mese</div><div class="stat-v">' + this._fmt(month, ' kWh', 0) + '</div>' + monthTrend + '</div>' +
+      '</div>' +
+      projHtml +
+      '</div>' +
+      (activeHtml
+        ? '<div class="loadlist">' +
+          '<div class="load-top"><span class="hero-l">Carichi attivi adesso</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
+          compBar +
+          activeHtml +
+          '</div>'
+        : '');
+    this._wireClicks();
+  }
+
+  _openMoreInfo(entityId) {
+    if (!entityId) return;
+    const event = new CustomEvent('hass-more-info', { detail: { entityId: entityId }, bubbles: true, composed: true });
+    this.dispatchEvent(event);
+  }
+
+  _wireClicks() {
+    this.querySelectorAll('[data-entity]').forEach((el) => {
+      el.addEventListener('click', () => this._openMoreInfo(el.getAttribute('data-entity')));
+    });
+  }
+
+  _iconBolt() {
+    return '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>';
+  }
+
+  _iconDots() {
+    return '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>';
+  }
+
+  _renderCircuits() {
+    const circuits = this.config.circuits || [];
+    const bolt = this._iconBolt();
+    const rows = circuits
+      .map((c, i) => {
+        const v = this._num(c.entity);
+        const color = this._paletteColor(i);
+        const spark = this._sparklines[c.entity] || '<svg viewBox="0 0 60 22" width="60" height="22"></svg>';
+        const dim = '';
+        const isLast = i === circuits.length - 1;
+        return (
+          '<div class="row" data-entity="' + c.entity + '"' + dim + (isLast ? '' : ' data-border') + '>' +
+          '<div class="avatar" style="background:' + color + '22;color:' + color + '">' + bolt + '</div>' +
+          '<div class="rowinfo"><div class="rowname">' + c.name + '</div></div>' +
+          '<div class="rowspark">' + spark + '</div>' +
+          '<div class="rowval">' + this._fmt(v, ' W', v !== null && v < 10 ? 1 : 0) + '</div>' +
+          '</div>'
+        );
+      })
+      .join('');
+    this.innerHTML = this._styles() + '<div class="wrap">' + rows + '</div>';
+    this._wireClicks();
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
+      ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '.hero{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:20px;margin-bottom:10px;}' +
+      '.hero-top{display:flex;justify-content:space-between;align-items:baseline;}' +
+      '.hero-l{font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.hero-tag{font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.hero-v{font-size:40px;font-weight:600;letter-spacing:-1px;margin:4px 0 10px;color:var(--primary-text-color,#1c1c1e);}' +
+      '.trend-bars{display:flex;align-items:flex-end;gap:3px;height:48px;}' +
+      '.trend-range{display:flex;justify-content:space-between;font-size:12px;color:var(--secondary-text-color,#6b6f76);margin-top:6px;}' +
+      '.pairhero{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px 20px;margin-bottom:14px;}' +
+      '.pair{display:grid;grid-template-columns:1fr 1fr;}' +
+      '.pairhalf{text-align:center;padding:0 8px;}' +
+      '.pairhalf-b{border-left:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
+      '.section-label{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);margin:14px 0 8px;}' +
+      '.stat-l{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.stat-v{font-size:24px;font-weight:600;letter-spacing:-0.5px;margin-top:4px;color:var(--primary-text-color,#1c1c1e);}' +
+      '.pair-trend{font-size:12px;margin-top:4px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.pill{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;border-radius:20px;padding:3px 9px;margin-top:7px;}' +
+      '.pill-down{color:#1D9E75;background:#1D9E751f;}' +
+      '.pill-up{color:#E24B4A;background:#E24B4A1f;}' +
+      '.pill-cap{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:5px;}' +
+      '.proj{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-top:14px;padding-top:10px;border-top:1px solid var(--divider-color,rgba(0,0,0,.07));display:flex;justify-content:space-between;}' +
+      '.proj b{color:var(--primary-text-color,#1c1c1e);font-weight:600;}' +
+      '.loadlist{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px 6px;}' +
+      '.load-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px;}' +
+      '.comp{display:flex;height:6px;border-radius:3px;overflow:hidden;margin-bottom:5px;}' +
+      '.load-row{display:flex;align-items:center;gap:10px;padding:10px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
+      '.load-row:last-child{border-bottom:none;}' +
+      '.load-other{opacity:.65;cursor:default;}' +
+      '.load-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}' +
+      '.load-name{flex:1;min-width:0;font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.load-pct{font-size:11px;color:var(--secondary-text-color,#6b6f76);width:38px;text-align:right;flex:0 0 auto;}' +
+      '.load-w{font-size:15px;font-weight:600;color:var(--primary-text-color,#1c1c1e);width:56px;text-align:right;flex:0 0 auto;}' +
+      '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
+      '.row{display:flex;align-items:center;gap:14px;padding:12px 0;cursor:pointer;}' +
+      '.row[data-border]{border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
+      '.avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}' +
+      '.rowinfo{flex:1;min-width:0;}' +
+      '.rowname{font-size:15px;color:var(--primary-text-color,#1c1c1e);}' +
+      '.rowspark{flex:0 0 auto;}' +
+      '.rowval{font-size:20px;font-weight:600;color:var(--primary-text-color,#1c1c1e);min-width:64px;text-align:right;}' +
+      '.loading{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:10px 0;}' +
+      '</style>'
+    );
+  }
+}
+
+EnergyPowerCard.getStubConfig = function () {
+  return {
+    layout: 'overview',
+    power_entity: 'sensor.power',
+    energy_day_entity: 'sensor.energy_day',
+    energy_month_entity: 'sensor.energy_month',
+    total_energy_entity: 'sensor.energy_total',
+    circuits: [],
+  };
+};
+
+customElements.define('energy-power-card', EnergyPowerCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'energy-power-card',
+  name: 'Energy Panoramica/Circuiti',
+  description: 'Consumo istantaneo con trend, oggi/mese, carichi attivi, oppure lista circuiti con sparkline. Config manuale via YAML.',
+});
+
+// ===== energy-controls-card.js =====
+class EnergyControlsCard extends HTMLElement {
+  setConfig(config) {
+    this.config = config;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  getCardSize() {
+    return 4;
+  }
+
+  _num(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  _state(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    return s || null;
+  }
+
+  _fmt(v, unit, dec) {
+    if (v === null || v === undefined) return '--';
+    return v.toFixed(dec === undefined ? 0 : dec) + (unit || '');
+  }
+
+  _toggle(entityId) {
+    if (!entityId || !this._hass) return;
+    this._hass.callService('switch', 'toggle', { entity_id: entityId });
+  }
+
+  _openMoreInfo(entityId) {
+    if (!entityId) return;
+    const event = new CustomEvent('hass-more-info', { detail: { entityId: entityId }, bubbles: true, composed: true });
+    this.dispatchEvent(event);
+  }
+
+  _render() {
+    if (this.config.layout === 'ups') this._renderUps();
+    else this._renderSwitches();
+  }
+
+  _renderSwitches() {
+    const items = this.config.switches || [];
+    const rows = items
+      .map((it) => {
+        const s = this._state(it.entity);
+        const on = s && s.state === 'on';
+        const knobStyle = on
+          ? 'background:#639922;'
+          : 'background:var(--card-background-color,#fff);border:1px solid var(--divider-color,rgba(0,0,0,.15));';
+        const dotStyle = on ? 'right:2px;background:#fff;' : 'left:2px;background:var(--secondary-text-color,#8a8d93);';
+        return (
+          '<div class="row" data-entity="' + it.entity + '">' +
+          '<span class="row-name" style="' + (on ? '' : 'color:var(--secondary-text-color,#6b6f76)') + '">' + it.name + '</span>' +
+          '<div class="toggle" data-toggle="' + it.entity + '" style="' + knobStyle + '"><div class="knob" style="' + dotStyle + '"></div></div>' +
+          '</div>'
+        );
+      })
+      .join('');
+    this.innerHTML = this._styles() + '<div class="grid2">' + rows + '</div>';
+    this.querySelectorAll('.row').forEach((row) => {
+      row.addEventListener('click', (e) => {
+        const entity = row.getAttribute('data-entity');
+        if (e.target.closest('.toggle')) this._toggle(entity);
+        else this._openMoreInfo(entity);
+      });
+    });
+  }
+
+  _renderUps() {
+    const c = this.config.ups || {};
+    const battery = this._num(c.battery_entity);
+    const load = this._num(c.load_entity);
+    const status = this._state(c.status_entity);
+    const timeLeft = this._num(c.time_left_entity);
+    const power = this._num(c.power_entity);
+    const energy = this._num(c.energy_entity);
+    const stats = [
+      { l: 'Batteria', v: this._fmt(battery, '%', 0), color: battery !== null && battery >= 90 ? '#639922' : undefined },
+      { l: 'Carico', v: this._fmt(load, '%', 0) },
+      { l: 'Stato', v: status ? (status.state === 'ONLINE' ? 'Online' : status.state) : '--', color: status && status.state === 'ONLINE' ? '#639922' : undefined },
+      { l: 'Autonomia', v: timeLeft !== null ? Math.round(timeLeft) + ' min' : '--' },
+      { l: 'Potenza', v: this._fmt(power, ' W', 0) },
+      { l: 'Energia', v: this._fmt(energy, ' kWh', 1) },
+    ];
+    const html = stats
+      .map((s) => '<div class="stat"><div class="stat-l">' + s.l + '</div><div class="stat-v"' + (s.color ? ' style="color:' + s.color + '"' : '') + '>' + s.v + '</div></div>')
+      .join('');
+    this.innerHTML = this._styles() + '<div class="grid2">' + html + '</div>';
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
+      ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}' +
+      '.row{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;}' +
+      '.row-name{font-size:14px;font-weight:500;color:var(--primary-text-color,#1c1c1e);}' +
+      '.toggle{width:38px;height:22px;border-radius:12px;position:relative;flex:0 0 auto;transition:background .15s;}' +
+      '.knob{width:17px;height:17px;border-radius:50%;position:absolute;top:2px;transition:left .15s,right .15s;}' +
+      '.stat{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:16px;}' +
+      '.stat-l{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.stat-v{font-size:22px;font-weight:600;letter-spacing:-0.5px;margin-top:4px;color:var(--primary-text-color,#1c1c1e);}' +
+      '</style>'
+    );
+  }
+}
+
+EnergyControlsCard.getStubConfig = function () {
+  return {
+    layout: 'switches',
+    switches: [],
+  };
+};
+
+customElements.define('energy-controls-card', EnergyControlsCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'energy-controls-card',
+  name: 'Energy Interruttori/UPS',
+  description: 'Griglia di interruttori accendi/spegni, oppure statistiche UPS. Config manuale via YAML.',
+});
+
+// ===== energy-history-card.js =====
+class EnergyHistoryCard extends HTMLElement {
+  setConfig(config) {
+    if (!config.entity) throw new Error('Config "entity" mancante');
+    this.config = config;
+    this._daily = null;
+    this._monthly = null;
+    this._fetchedAt = 0;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+    this._maybeFetch();
+  }
+
+  getCardSize() {
+    return 4;
+  }
+
+  async _maybeFetch() {
+    const now = Date.now();
+    if (this._fetchedAt && now - this._fetchedAt < 10 * 60 * 1000) return;
+    this._fetchedAt = now;
+    const daysToShow = this.config.days_to_show || 14;
+    const monthsToShow = this.config.months_to_show || 7;
+    const nowIso = new Date(now).toISOString();
+    this._dailyError = null;
+    this._monthlyError = null;
+    try {
+      const dailyStart = new Date(now - daysToShow * 24 * 3600 * 1000).toISOString();
+      const dailyResp = await this._hass.callWS({
+        type: 'recorder/statistics_during_period',
+        start_time: dailyStart,
+        end_time: nowIso,
+        statistic_ids: [this.config.entity],
+        period: 'day',
+        types: ['change'],
+      });
+      this._daily = (dailyResp && dailyResp[this.config.entity]) || [];
+    } catch (e) {
+      this._daily = [];
+      this._dailyError = (e && e.message) || String(e);
+      console.error('energy-history-card: errore statistiche giornaliere', e);
+    }
+    try {
+      const monthlyStart = new Date(now - monthsToShow * 31 * 24 * 3600 * 1000).toISOString();
+      const monthlyResp = await this._hass.callWS({
+        type: 'recorder/statistics_during_period',
+        start_time: monthlyStart,
+        end_time: nowIso,
+        statistic_ids: [this.config.entity],
+        period: 'month',
+        types: ['change'],
+      });
+      this._monthly = (monthlyResp && monthlyResp[this.config.entity]) || [];
+    } catch (e) {
+      this._monthly = [];
+      this._monthlyError = (e && e.message) || String(e);
+      console.error('energy-history-card: errore statistiche mensili', e);
+    }
+    this._render();
+  }
+
+  _bars(data, labelFn, tipFn, ramp, errorMsg, opts) {
+    if (errorMsg) return '<div class="loading">Errore: ' + errorMsg + '</div>';
+    if (data === null) return '<div class="loading">Caricamento\u2026</div>';
+    if (!data.length) return '<div class="loading">Nessun dato statistico disponibile per questo periodo</div>';
+    const o = opts || {};
+    const vals = data.map((d) => d.change || 0);
+    const vmin = Math.min.apply(null, vals);
+    const vmax = Math.max.apply(null, vals) || 1;
+    const range = vmax - vmin || 1;
+    // base fissa: altezza proporzionale al valore reale (scala da zero)
+    const bars = data
+      .map((d, i) => {
+        const val = d.change || 0;
+        const heightPct = (val / vmax) * 100;
+        const idx = Math.round(((val - vmin) / range) * (ramp.length - 1));
+        const tip = tipFn(d, i);
+        const partial = o.isCurrent && o.isCurrent(d) ? ' bar-partial' : '';
+        return (
+          '<div class="bcol"><div class="bar' + partial + '" data-t="' + tip.t + '" data-v="' + tip.v + '" style="height:' + heightPct.toFixed(1) + '%;background:' + ramp[idx] + '"></div></div>'
+        );
+      })
+      .join('');
+    let avgLine = '';
+    if (o.avg !== null && o.avg !== undefined && o.avg > 0 && o.avg <= vmax) {
+      const topPct = (1 - o.avg / vmax) * 100;
+      avgLine = '<div class="avgline" style="top:' + topPct.toFixed(1) + '%"><span>media ' + o.avgFmt + '</span></div>';
+    }
+    const labels = data.map((d, i) => '<span>' + (labelFn(d, i) || '') + '</span>').join('');
+    return '<div class="bars">' + avgLine + bars + '</div><div class="xlabels">' + labels + '</div>';
+  }
+
+  _wireTooltips() {
+    const containers = this.querySelectorAll('.bars');
+    containers.forEach((container) => {
+      let tip = container.querySelector('.bartip');
+      if (!tip) {
+        tip = document.createElement('div');
+        tip.className = 'bartip';
+        tip.style.cssText =
+          'position:absolute;pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:#fff;font-size:11px;font-weight:500;padding:3px 8px;border-radius:6px;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:2;transform:translate(-50%,-100%);top:-6px;';
+        container.appendChild(tip);
+      }
+      const showTip = (bar) => {
+        tip.textContent = bar.getAttribute('data-t') + ' \u00b7 ' + bar.getAttribute('data-v');
+        tip.style.left = bar.offsetLeft + bar.offsetWidth / 2 + 'px';
+        tip.style.opacity = '1';
+      };
+      const hideTip = () => {
+        tip.style.opacity = '0';
+      };
+      container.addEventListener('mousemove', (e) => {
+        const bar = e.target.closest('.bar');
+        if (bar) showTip(bar);
+        else hideTip();
+      });
+      container.addEventListener('mouseleave', hideTip);
+      container.addEventListener('click', (e) => {
+        const bar = e.target.closest('.bar');
+        if (!bar) return;
+        showTip(bar);
+        clearTimeout(container._hideTimer);
+        container._hideTimer = setTimeout(hideTip, 2000);
+      });
+    });
+  }
+
+  _render() {
+    const dayLabels = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
+    const monthLabels = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+    const amberRamp = ['#FAEEDA', '#FAC775', '#EF9F27', '#BA7517'];
+    const blueRamp = ['#E6F1FB', '#B5D4F4', '#85B7EB', '#378ADD'];
+    const now = new Date();
+    const isSameDay = (d) => {
+      const dt = new Date(d.start);
+      return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth() && dt.getDate() === now.getDate();
+    };
+    const isSameMonth = (d) => {
+      const dt = new Date(d.start);
+      return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth();
+    };
+    const completedDaily = this._daily ? this._daily.filter((d) => !isSameDay(d)) : [];
+    const completedMonthly = this._monthly ? this._monthly.filter((d) => !isSameMonth(d)) : [];
+    const dailyAvg = completedDaily.length ? completedDaily.reduce((s, d) => s + (d.change || 0), 0) / completedDaily.length : null;
+    const monthlyAvg = completedMonthly.length ? completedMonthly.reduce((s, d) => s + (d.change || 0), 0) / completedMonthly.length : null;
+    const dailyHtml = this._bars(
+      this._daily,
+      (d, i) => {
+        if (isSameDay(d)) return 'oggi';
+        const showEvery = this.config.daily_label_every || 2;
+        if (i % showEvery !== 0) return '';
+        const dt = new Date(d.start);
+        return dt.getDate() + ' ' + dt.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '');
+      },
+      (d) => {
+        const dt = new Date(d.start);
+        const label = dayLabels[dt.getDay()] + ' ' + dt.getDate() + ' ' + dt.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '');
+        return { t: label, v: (d.change || 0).toFixed(1) + ' kWh' };
+      },
+      amberRamp,
+      this._dailyError,
+      { avg: dailyAvg, avgFmt: dailyAvg !== null ? dailyAvg.toFixed(1) : '', isCurrent: isSameDay }
+    );
+    const monthlyHtml = this._bars(
+      this._monthly,
+      (d) => {
+        const dt = new Date(d.start);
+        return monthLabels[dt.getMonth()];
+      },
+      (d) => {
+        const dt = new Date(d.start);
+        const label = monthLabels[dt.getMonth()] + ' ' + dt.getFullYear();
+        return { t: label, v: (d.change || 0).toFixed(0) + ' kWh' };
+      },
+      blueRamp,
+      this._monthlyError,
+      { avg: monthlyAvg, avgFmt: monthlyAvg !== null ? monthlyAvg.toFixed(0) : '', isCurrent: isSameMonth }
+    );
+
+    this.innerHTML =
+      this._styles() +
+      '<ha-card class="flat">' +
+      '<div class="hcard">' +
+      '<div class="card-top"><span class="card-label">Consumo giornaliero</span><span class="card-tag">' + (this.config.days_to_show || 14) + 'gg</span></div>' +
+      '<div class="card-total">' + (dailyAvg !== null ? dailyAvg.toFixed(1) + ' kWh/g' : '--') + '</div>' +
+      '<div class="card-sub">media, esclude oggi</div>' +
+      dailyHtml +
+      '</div>' +
+      '<div class="hcard">' +
+      '<div class="card-top"><span class="card-label">Consumo mensile</span><span class="card-tag">' + (this.config.months_to_show || 7) + ' mesi</span></div>' +
+      '<div class="card-total">' + (monthlyAvg !== null ? monthlyAvg.toFixed(0) + ' kWh/mese' : '--') + '</div>' +
+      '<div class="card-sub">media, esclude mese in corso</div>' +
+      monthlyHtml +
+      '</div>' +
+      '</ha-card>';
+    this._wireTooltips();
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
+      ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:transparent!important;border:none!important;box-shadow:none!important;}' +
+      '.flat{--ha-card-box-shadow:none;box-shadow:none;border:none;background:transparent;border-radius:0;padding:0;display:block;}' +
+      // NB: niente selettore generico ".card" — collide con i wrapper .card dello shadow root della sezione (le card sono in light DOM)
+      '.hcard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:18px;margin-bottom:12px;}' +
+      '.hcard:last-child{margin-bottom:0;}' +
+      '.card-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px;}' +
+      '.card-label{font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.card-tag{font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.card-total{font-size:26px;font-weight:600;letter-spacing:-0.5px;margin:4px 0 2px;color:var(--primary-text-color,#1c1c1e);}' +
+      '.card-sub{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-bottom:12px;}' +
+      '.bars{position:relative;display:flex;align-items:flex-end;gap:3px;height:90px;}' +
+      '.bcol{flex:1;display:flex;align-items:flex-end;height:100%;}' +
+      '.bar{width:100%;border-radius:3px 3px 0 0;min-height:3px;}' +
+      '.bar-partial{opacity:.45;background-image:repeating-linear-gradient(-45deg,transparent 0 3px,rgba(255,255,255,.55) 3px 5px);}' +
+      '.avgline{position:absolute;left:0;right:0;border-top:1px dashed var(--secondary-text-color,rgba(0,0,0,.3));opacity:.55;pointer-events:none;}' +
+      '.avgline span{position:absolute;right:0;top:-14px;font-size:9px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.xlabels{display:flex;gap:3px;margin-top:6px;height:13px;}' +
+      '.xlabels span{flex:1;font-size:10px;color:var(--secondary-text-color,#6b6f76);text-align:center;white-space:nowrap;}' +
+      '.loading{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:24px 0;text-align:center;}' +
+      '</style>'
+    );
+  }
+}
+
+EnergyHistoryCard.getStubConfig = function () {
+  return {
+    entity: 'sensor.energy_total',
+  };
+};
+
+customElements.define('energy-history-card', EnergyHistoryCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'energy-history-card',
+  name: 'Energy Storico',
+  description: 'Consumo giornaliero e mensile da statistiche a lungo termine. Config manuale via YAML.',
+});
+
