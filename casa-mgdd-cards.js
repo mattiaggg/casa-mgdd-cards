@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.4.1
+ * Version: 1.5.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -2310,5 +2310,255 @@ window.customCards.push({
   type: 'energy-history-card',
   name: 'Energy Storico',
   description: 'Consumo giornaliero e mensile da statistiche a lungo termine. Config manuale via YAML.',
+});
+
+// ===== energy-flow-card.js =====
+// Flusso energia neon (Rete/Solare/Batteria/Casa) con linee dritte e luce che scorre.
+// type: custom:energy-flow-card
+class EnergyFlowCard extends HTMLElement {
+  setConfig(config) {
+    this.config = Object.assign({ title: 'Flusso energia', max_power: 3500, threshold: 5 }, config || {});
+    this._built = false;
+    this._flows = {};
+    this._pulses = [];
+    this._akeys = '';
+    this._raf = null;
+    this._W = 0;
+    this._H = 0;
+    this.BEAM = 0.42;
+    this.SOFT = 16;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._built) this._build();
+    this._compute();
+    if (this.isConnected) this._start();
+  }
+
+  connectedCallback() { if (this._built) this._start(); }
+  disconnectedCallback() { this._stop(); }
+  getCardSize() { return 6; }
+
+  _num(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  _routes() {
+    return {
+      rete_casa: { p: [[0.14, 0.56], [0.5, 0.56]], c: 'rete' },
+      batt_casa: { p: [[0.86, 0.56], [0.5, 0.56]], c: 'batt' },
+      sole_casa: { p: [[0.5, 0.17], [0.5, 0.56]], c: 'sole' },
+      sole_batt: { p: [[0.5, 0.17], [0.86, 0.17], [0.86, 0.56]], c: 'sole' },
+    };
+  }
+  // flowKey -> [routeKey, reverse, colorKey]
+  _flowDef(key) {
+    const F = {
+      rete_casa: ['rete_casa', false, 'rete'],
+      casa_rete: ['rete_casa', true, 'rete'],
+      batt_casa: ['batt_casa', false, 'batt'],
+      casa_batt: ['batt_casa', true, 'batt'],
+      sole_casa: ['sole_casa', false, 'sole'],
+      sole_batt: ['sole_batt', false, 'sole'],
+    };
+    return F[key];
+  }
+  _routeOn(rk) {
+    const c = this.config;
+    if (rk === 'rete_casa') return !!c.grid_power;
+    if (rk === 'sole_casa' || rk === 'sole_batt') return !!c.solar_power;
+    if (rk === 'batt_casa') return !!c.battery_power;
+    return false;
+  }
+
+  _icon(k) {
+    const I = {
+      sole: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>',
+      rete: '<path d="M6 22 12 2l6 20"/><path d="M9 22 12 2l3 20"/><path d="M6.8 8h10.4M7.7 13h8.6M8.6 18h6.8"/>',
+      batt: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M6.5 10.5v3M10 10.5v3"/>',
+      casa: '<path d="M4 11 12 4l8 7"/><path d="M6 10v9h12v-9"/>',
+    };
+    return '<svg viewBox="0 0 24 24">' + I[k] + '</svg>';
+  }
+  _node(id, left, top, name) {
+    return (
+      '<div class="ef-nd" style="left:' + left + ';top:' + top + ';--c:var(--ef-' + id + ')">' +
+      '<span class="ef-ic">' + this._icon(id) + '</span>' +
+      '<span class="ef-lab"><span class="ef-k" data-k="' + id + '">' + name + '</span>' +
+      '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span></span></div>'
+    );
+  }
+
+  _build() {
+    this.innerHTML =
+      this._styles() +
+      '<div class="ef-card"><div class="ef-top"><span class="ef-title">' + this.config.title + '</span>' +
+      '<span class="ef-live"><i></i>ora</span></div>' +
+      '<div class="ef-stage"><canvas></canvas>' +
+      this._node('sole', '50%', '17%', 'Solare') +
+      this._node('rete', '14%', '56%', 'Rete') +
+      this._node('batt', '86%', '56%', 'Batteria') +
+      this._node('casa', '50%', '56%', 'Casa') +
+      '</div></div>';
+    this._stage = this.querySelector('.ef-stage');
+    this._cv = this.querySelector('canvas');
+    this._ctx = this._cv.getContext('2d');
+    this._ro = new ResizeObserver(() => this._resize());
+    this._ro.observe(this._stage);
+    this._resize();
+    this._built = true;
+  }
+
+  _resize() {
+    if (!this._stage) return;
+    const r = this._stage.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    this._W = r.width;
+    this._H = r.height;
+    this._cv.width = this._W * dpr;
+    this._cv.height = this._H * dpr;
+    this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  _setNode(id, val) {
+    const v = this.querySelector('[data-v=' + id + ']');
+    const u = this.querySelector('[data-u=' + id + ']');
+    if (!v) return;
+    if (val === null || val === undefined) { v.textContent = '—'; u.textContent = ''; return; }
+    const a = Math.abs(val);
+    if (a >= 1000) { v.textContent = (val / 1000).toFixed(1); u.textContent = 'kW'; }
+    else { v.textContent = String(Math.round(val)); u.textContent = 'W'; }
+  }
+
+  _pcount(power) {
+    const r = power / (this.config.max_power || 3500);
+    return r > 0.5 ? 3 : r > 0.2 ? 2 : 1;
+  }
+
+  _compute() {
+    const c = this.config;
+    const g = this._num(c.grid_power), s = this._num(c.solar_power), b = this._num(c.battery_power), soc = this._num(c.battery_soc), h = this._num(c.house_power);
+    this._setNode('sole', s);
+    this._setNode('rete', g === null ? null : Math.abs(g));
+    this._setNode('batt', b === null ? null : Math.abs(b));
+    this._setNode('casa', h);
+    const bk = this.querySelector('[data-k=batt]');
+    if (bk) { let t = 'Batteria'; if (soc !== null) t += ' · ' + Math.round(soc) + '%'; if (b !== null) t += b > 5 ? ' scarica' : b < -5 ? ' carica' : ''; bk.textContent = t; }
+    const rk = this.querySelector('[data-k=rete]');
+    if (rk) rk.textContent = g !== null && g < -5 ? 'Rete · immissione' : 'Rete';
+    const TH = c.threshold || 5;
+    const flows = {};
+    if (g !== null) { if (g > TH) flows.rete_casa = g; else if (g < -TH) flows.casa_rete = -g; }
+    if (s !== null && s > TH) flows.sole_casa = s;
+    if (b !== null) { if (b > TH) flows.batt_casa = b; else if (b < -TH) flows.sole_batt = -b; }
+    this._flows = flows;
+    const keys = Object.keys(flows).sort().join(',');
+    if (keys !== this._akeys) {
+      this._akeys = keys;
+      this._pulses = [];
+      Object.keys(flows).forEach((k) => { const n = this._pcount(flows[k]); for (let i = 0; i < n; i++) this._pulses.push({ key: k, head: i / n }); });
+    }
+  }
+
+  _polyPx(rk) { return this._routes()[rk].p.map((p) => [p[0] * this._W, p[1] * this._H]); }
+  _meta(poly) { let seg = [], L = 0; for (let i = 0; i < poly.length - 1; i++) { const d = Math.hypot(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1]); seg.push(d); L += d; } return { seg, L }; }
+  _ptAt(poly, m, f) { let t = f * m.L, a = 0; for (let i = 0; i < m.seg.length; i++) { if (a + m.seg[i] >= t) { const u = m.seg[i] ? (t - a) / m.seg[i] : 0; return [poly[i][0] + (poly[i + 1][0] - poly[i][0]) * u, poly[i][1] + (poly[i + 1][1] - poly[i][1]) * u]; } a += m.seg[i]; } return poly[poly.length - 1]; }
+
+  _tube(poly, color) {
+    const ctx = this._ctx;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowColor = color;
+    ctx.globalAlpha = 0.15; ctx.lineWidth = 6; ctx.shadowBlur = this.SOFT;
+    ctx.beginPath(); ctx.moveTo(poly[0][0], poly[0][1]); for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]); ctx.stroke();
+    ctx.globalAlpha = 0.5; ctx.lineWidth = 1.8; ctx.shadowBlur = this.SOFT * 0.5;
+    ctx.beginPath(); ctx.moveTo(poly[0][0], poly[0][1]); for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]); ctx.stroke();
+  }
+  _beam(poly, m, head, color) {
+    const ctx = this._ctx, steps = 26, BEAM = this.BEAM, SOFT = this.SOFT;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowColor = color;
+    for (let i = 0; i < steps; i++) {
+      const s0 = i / steps, h0 = head - s0 * BEAM, h1 = head - (i + 1) / steps * BEAM;
+      if (h0 < 0 || h0 > 1) continue;
+      const p0 = this._ptAt(poly, m, h0), p1 = this._ptAt(poly, m, Math.max(0, h1)), k = 1 - s0, g = k * k;
+      ctx.globalAlpha = g * 0.95; ctx.lineWidth = 1.2 + 4 * g; ctx.shadowBlur = SOFT * (0.5 + g);
+      ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+    }
+    if (head > 0 && head < 1) {
+      const ph = this._ptAt(poly, m, head), r = 11, rg = ctx.createRadialGradient(ph[0], ph[1], 0, ph[0], ph[1], r);
+      rg.addColorStop(0, 'rgba(255,255,255,.95)'); rg.addColorStop(0.3, color); rg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.fillStyle = rg;
+      ctx.beginPath(); ctx.arc(ph[0], ph[1], r, 0, 7); ctx.fill();
+    }
+  }
+
+  _start() {
+    if (this._raf) return;
+    const NCOL = { rete: '#38BDF8', sole: '#F5B301', batt: '#22E39A', casa: '#8B7BFF' };
+    const maxP = this.config.max_power || 3500;
+    let last = 0;
+    const loop = (ts) => {
+      const dt = Math.min(50, ts - last) / 1000; last = ts;
+      const ctx = this._ctx;
+      if (ctx && this._W) {
+        ctx.clearRect(0, 0, this._W, this._H);
+        ctx.globalCompositeOperation = 'lighter';
+        const routes = this._routes();
+        for (const rk in routes) if (this._routeOn(rk)) this._tube(this._polyPx(rk), NCOL[routes[rk].c]);
+        this._pulses.forEach((pl) => {
+          const def = this._flowDef(pl.key); if (!def) return;
+          let poly = this._polyPx(def[0]); if (def[1]) poly = poly.slice().reverse();
+          const m = this._meta(poly), power = this._flows[pl.key] || 0;
+          const sp = 0.06 + Math.min(1, power / maxP) * 0.55;
+          pl.head += dt * sp; if (pl.head > 1) pl.head -= 1;
+          this._beam(poly, m, pl.head, NCOL[def[2]]);
+        });
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+      }
+      this._raf = requestAnimationFrame(loop);
+    };
+    this._raf = requestAnimationFrame(loop);
+  }
+  _stop() { if (this._raf) { cancelAnimationFrame(this._raf); this._raf = null; } }
+
+  _styles() {
+    return (
+      '<style>' +
+      ':host{display:block}' +
+      '.ef-card{--ef-rete:#38BDF8;--ef-sole:#F5B301;--ef-batt:#22E39A;--ef-casa:#8B7BFF;' +
+      'position:relative;border-radius:22px;padding:16px 18px;overflow:hidden;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;' +
+      'background:radial-gradient(120% 100% at 50% 0%,#12233b 0%,#0a1524 55%,#060b14 100%);border:1px solid rgba(120,160,220,.16);}' +
+      '.ef-top{position:relative;z-index:3;display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}' +
+      '.ef-title{font-size:14px;font-weight:600;color:#9fb2cc;}' +
+      '.ef-live{display:flex;align-items:center;gap:6px;font-size:11px;color:#7f93ad;}' +
+      '.ef-live i{width:7px;height:7px;border-radius:50%;background:var(--ef-batt);box-shadow:0 0 8px var(--ef-batt);}' +
+      '.ef-stage{position:relative;width:100%;aspect-ratio:1.9/1;}' +
+      '.ef-stage canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1;}' +
+      '.ef-nd{position:absolute;transform:translate(-50%,-50%);z-index:3;pointer-events:none;display:flex;align-items:center;gap:10px;' +
+      'padding:8px 13px;border-radius:14px;background:rgba(10,18,30,.78);border:1px solid rgba(140,170,210,.20);white-space:nowrap;}' +
+      '.ef-ic{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;flex:0 0 auto;' +
+      'background:color-mix(in srgb,var(--c) 22%,transparent);box-shadow:0 0 15px -4px var(--c),inset 0 0 9px -4px var(--c);}' +
+      '.ef-ic svg{width:22px;height:22px;stroke:var(--c);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}' +
+      '.ef-lab{display:flex;flex-direction:column;line-height:1.15;}' +
+      '.ef-k{font-size:10px;letter-spacing:.05em;color:#8ea4bf;text-transform:uppercase;}' +
+      '.ef-v{font:600 16px/1 ui-monospace,"SF Mono",Consolas,monospace;color:#eef4ff;margin-top:3px;}' +
+      '.ef-v small{font-size:10px;color:#9fb2cc;font-weight:500;}' +
+      '</style>'
+    );
+  }
+}
+
+EnergyFlowCard.getStubConfig = function () {
+  return { title: 'Flusso energia', grid_power: 'sensor.sonoff_10023341b5_power', house_power: 'sensor.sonoff_10023341b5_power' };
+};
+
+customElements.define('energy-flow-card', EnergyFlowCard);
+window.customCards.push({
+  type: 'energy-flow-card',
+  name: 'Energy Flusso',
+  description: 'Flusso energia Rete/Solare/Batteria/Casa con linee neon animate. Config via YAML.',
 });
 
