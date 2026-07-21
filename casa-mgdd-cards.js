@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.5.4
+ * Version: 1.5.5
  */
 
 // ===== temperature-bento-card.js =====
@@ -2327,6 +2327,7 @@ class EnergyFlowCard extends HTMLElement {
     this._H = 0;
     this.BEAM = 0.44;
     this.SOFT = 15;
+    this._mobile = undefined;
   }
 
   set hass(hass) {
@@ -2349,6 +2350,15 @@ class EnergyFlowCard extends HTMLElement {
   }
 
   _routes() {
+    if (this._mobile) {
+      // mobile: sorgenti in alto, tutto converge su Casa in basso
+      return {
+        sole_casa: { p: [[0.5, 0.13], [0.5, 0.84]], c: 'sole' },
+        rete_casa: { p: [[0.25, 0.45], [0.25, 0.84], [0.5, 0.84]], c: 'rete' },
+        batt_casa: { p: [[0.75, 0.45], [0.75, 0.84], [0.5, 0.84]], c: 'batt' },
+        sole_batt: { p: [[0.5, 0.13], [0.75, 0.13], [0.75, 0.45]], c: 'sole' },
+      };
+    }
     return {
       rete_casa: { p: [[0.13, 0.74], [0.5, 0.74]], c: 'rete' },
       batt_casa: { p: [[0.87, 0.74], [0.5, 0.74]], c: 'batt' },
@@ -2385,9 +2395,10 @@ class EnergyFlowCard extends HTMLElement {
     };
     return '<svg viewBox="0 0 24 24">' + I[k] + '</svg>';
   }
-  _node(id, left, top, name) {
+  _node(id, name) {
+    // posizioni gestite via CSS (classi desktop/mobile), qui solo il colore
     return (
-      '<div class="ef-nd" data-n="' + id + '" style="left:' + left + ';top:' + top + ';--c:var(--ef-' + id + ')">' +
+      '<div class="ef-nd" data-n="' + id + '" style="--c:var(--ef-' + id + ')">' +
       '<span class="ef-ic">' + this._icon(id) + '</span>' +
       '<span class="ef-lab"><span class="ef-k" data-k="' + id + '">' + name + '</span>' +
       '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span></span></div>'
@@ -2400,10 +2411,10 @@ class EnergyFlowCard extends HTMLElement {
       '<div class="ef-card">' +
       '<div class="ef-stage"><canvas></canvas>' +
       '<span class="ef-live"><i></i>ora</span>' +
-      this._node('sole', '50%', '24%', 'Solare') +
-      this._node('rete', '13%', '74%', 'Rete') +
-      this._node('batt', '87%', '74%', 'Batteria') +
-      this._node('casa', '50%', '74%', 'Casa') +
+      this._node('sole', 'Solare') +
+      this._node('rete', 'Rete') +
+      this._node('batt', 'Batteria') +
+      this._node('casa', 'Casa') +
       '</div></div>';
     this._card = this.querySelector('.ef-card');
     this._live = this.querySelector('.ef-live');
@@ -2418,6 +2429,10 @@ class EnergyFlowCard extends HTMLElement {
 
   _resize() {
     if (!this._stage) return;
+    // decide layout in base alla larghezza della card (mobile < 480px), poi rileggi (l'aspect cambia)
+    const w0 = this._stage.getBoundingClientRect().width;
+    const mobile = w0 > 0 && w0 < 480;
+    if (mobile !== this._mobile) { this._mobile = mobile; if (this._card) this._card.classList.toggle('ef-mobile', mobile); }
     const r = this._stage.getBoundingClientRect();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     this._W = r.width;
@@ -2542,8 +2557,9 @@ class EnergyFlowCard extends HTMLElement {
       ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.shadowBlur = SOFT; this._stroke(poly);
       ctx.globalAlpha = 0.6; ctx.lineWidth = 1.6; ctx.shadowBlur = SOFT * 0.5; this._stroke(poly);
     } else {
-      ctx.shadowBlur = 0; ctx.globalAlpha = 0.14; ctx.lineWidth = 3; this._stroke(poly);
-      ctx.globalAlpha = 0.85; ctx.lineWidth = 1.8; this._stroke(poly);
+      // tema chiaro: alone colorato morbido + core netto
+      ctx.globalAlpha = 0.28; ctx.lineWidth = 3; ctx.shadowBlur = SOFT; this._stroke(poly);
+      ctx.globalAlpha = 0.95; ctx.lineWidth = 1.8; ctx.shadowBlur = 0; this._stroke(poly);
     }
     ctx.globalAlpha = 1; ctx.shadowBlur = 0;
   }
@@ -2555,7 +2571,7 @@ class EnergyFlowCard extends HTMLElement {
       const s0 = i / steps, h0 = head - s0 * BEAM, h1 = head - (i + 1) / steps * BEAM;
       if (h0 < 0 || h0 > 1) continue;
       const p0 = this._ptAt(poly, m, h0), p1 = this._ptAt(poly, m, Math.max(0, h1)), k = 1 - s0, g = k * k;
-      ctx.globalAlpha = (dark ? 0.85 : 0.9) * g; ctx.lineWidth = dark ? (1.8 + 3.4 * g) : (1.6 + 2.2 * g); ctx.shadowBlur = dark ? (5 + 14 * g) : 0;
+      ctx.globalAlpha = 0.85 * g; ctx.lineWidth = dark ? (1.8 + 3.4 * g) : (1.6 + 2.8 * g); ctx.shadowBlur = dark ? (5 + 14 * g) : (4 + 10 * g);
       ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
     }
     if (head > 0 && head < 1) {
@@ -2564,7 +2580,7 @@ class EnergyFlowCard extends HTMLElement {
         ctx.shadowBlur = 18; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(ph[0], ph[1], 4, 0, 7); ctx.fill();
         ctx.shadowBlur = 0; ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.beginPath(); ctx.arc(ph[0], ph[1], 1.9, 0, 7); ctx.fill();
       } else {
-        ctx.shadowBlur = 0; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(ph[0], ph[1], 3.2, 0, 7); ctx.fill();
+        ctx.shadowBlur = 12; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(ph[0], ph[1], 3.4, 0, 7); ctx.fill();
       }
     }
     ctx.globalAlpha = 1; ctx.shadowBlur = 0;
@@ -2620,6 +2636,12 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-k{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
       '.ef-v{font-size:19px;font-weight:700;color:var(--primary-text-color,#1c1c1e);margin-top:3px;font-variant-numeric:tabular-nums;}' +
       '.ef-v small{font-size:12px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
+      // posizioni desktop
+      '.ef-nd[data-n=sole]{left:50%;top:24%;} .ef-nd[data-n=rete]{left:13%;top:74%;} .ef-nd[data-n=batt]{left:87%;top:74%;} .ef-nd[data-n=casa]{left:50%;top:74%;}' +
+      // layout mobile: stage piu' alto, sorgenti in alto, Casa in basso
+      '.ef-mobile .ef-stage{aspect-ratio:1.02/1;}' +
+      '.ef-mobile .ef-nd{gap:10px;padding:9px 13px;} .ef-mobile .ef-ic{width:40px;height:40px;} .ef-mobile .ef-ic svg{width:24px;height:24px;} .ef-mobile .ef-v{font-size:17px;}' +
+      '.ef-mobile .ef-nd[data-n=sole]{left:50%;top:13%;} .ef-mobile .ef-nd[data-n=rete]{left:25%;top:45%;} .ef-mobile .ef-nd[data-n=batt]{left:75%;top:45%;} .ef-mobile .ef-nd[data-n=casa]{left:50%;top:84%;}' +
       '</style>'
     );
   }
