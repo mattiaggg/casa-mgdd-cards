@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.11.2
+ * Version: 1.11.3
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1836,11 +1836,12 @@ class EnergyPowerCard extends HTMLElement {
       '.epcs-spark{flex:1;min-width:0;}' +
       '.epcs-spark .epc-spark{height:34px;}' +
       // interruttore S1
-      '.epcs-sw{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:30px;padding:0 12px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:500;line-height:1;font-family:inherit;background:rgba(136,135,128,.12);border:0.5px solid var(--divider-color,rgba(0,0,0,.12));color:var(--secondary-text-color,#9aa0aa);transition:background .15s,color .15s;}' +
-      '.epcs-sw::before{content:"";position:absolute;inset:-8px;}' + // area di tocco estesa (~46px) per il dito
-      '.epcs-sw:hover{background:rgba(136,135,128,.2);}' +
-      '.epcs-sw.on{color:var(--primary-text-color,#1c1c1e);}' +
-      '.epcs-dot{width:9px;height:9px;border-radius:50%;background:#b4b2a9;flex:0 0 auto;}' +
+      // toggle D: pill con solo contorno (niente sfondo), verde da acceso
+      '.epcs-sw{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:26px;padding:0 11px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:500;line-height:1;font-family:inherit;background:transparent;border:1px solid var(--divider-color,rgba(0,0,0,.18));color:var(--secondary-text-color,#9aa0aa);transition:color .15s,border-color .15s;}' +
+      '.epcs-sw::before{content:"";position:absolute;inset:-9px;}' + // area di tocco estesa (~46px) per il dito
+      '.epcs-sw:hover{border-color:var(--divider-color,rgba(0,0,0,.32));}' +
+      '.epcs-sw.on{color:#1D9E75;border-color:#1D9E75;}' +
+      '.epcs-dot{width:7px;height:7px;border-radius:50%;background:#b4b2a9;flex:0 0 auto;}' +
       '.epcs-sw.on .epcs-dot{background:#1D9E75;}' +
       '.epcs-tile.off .epcs-val{color:var(--secondary-text-color,#9aa0aa);}' +
       '.epcs-tile.off .epcs-spark{filter:grayscale(1);opacity:.5;}' +
