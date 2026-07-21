@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.7.0
+ * Version: 1.7.1
  */
 
 // ===== temperature-bento-card.js =====
@@ -1058,7 +1058,7 @@ class WeatherAlertCard extends HTMLElement {
         return (
           '<div class="hour">' +
           '<div class="hour-t">' + hh + '</div>' +
-          '<div class="hour-icon">' + this._iconFor(f.condition, 40) + '</div>' +
+          '<div class="hour-icon">' + this._iconFor(f.condition, 36) + '</div>' +
           '<div class="hour-v">' + this._fmt(f.temperature, '\u00b0') + '</div>' +
           '</div>'
         );
@@ -1129,22 +1129,22 @@ class WeatherAlertCard extends HTMLElement {
       '.banner-title{font-size:13px;font-weight:600;}' +
       '.banner-sub{font-size:11px;opacity:0.85;margin-top:1px;}' +
       '.banner-tag{font-size:11px;font-weight:600;background:var(--card-background-color,#fff);padding:3px 10px;border-radius:20px;flex:0 0 auto;}' +
-      '.weathercard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px 18px;cursor:pointer;}' +
+      '.weathercard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:14px 16px;cursor:pointer;}' +
       '.weathercard:active{opacity:0.7;}' +
       '.wc-top{display:flex;justify-content:space-between;align-items:center;}' +
       '.wc-loc{font-size:12px;color:var(--secondary-text-color,#6b6f76);}' +
-      '.wc-temp{font-size:44px;font-weight:600;letter-spacing:-1px;color:var(--primary-text-color,#1c1c1e);margin-top:2px;}' +
+      '.wc-temp{font-size:40px;font-weight:600;letter-spacing:-1px;color:var(--primary-text-color,#1c1c1e);margin-top:2px;}' +
       '.wc-cond{font-size:13px;color:var(--secondary-text-color,#6b6f76);margin-top:2px;}' +
-      '.wc-split{display:grid;grid-template-columns:1.4fr 1fr;gap:0;margin-top:14px;padding-top:14px;border-top:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
+      '.wc-split{display:grid;grid-template-columns:1.4fr 1fr;gap:0;margin-top:12px;padding-top:12px;border-top:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
       '.wc-hours{padding-right:16px;display:flex;flex-direction:column;justify-content:center;}' +
       '.wc-days{border-left:1px solid var(--divider-color,rgba(0,0,0,.08));padding-left:16px;}' +
-      '.section-label{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-bottom:12px;}' +
+      '.section-label{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-bottom:10px;}' +
       '.hour-row{display:flex;}' +
       '.hour{text-align:center;flex:1;}' +
       '.hour-t{font-size:12px;color:var(--secondary-text-color,#6b6f76);}' +
-      '.hour-icon{margin:6px auto;display:flex;justify-content:center;}' +
+      '.hour-icon{margin:4px auto;display:flex;justify-content:center;}' +
       '.hour-v{font-size:17px;font-weight:500;color:var(--primary-text-color,#1c1c1e);}' +
-      '.day-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;}' +
+      '.day-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;}' +
       '.day-label{font-size:12px;color:var(--secondary-text-color,#6b6f76);width:52px;}' +
       '.day-icon{display:flex;}' +
       '.day-range{font-size:13px;font-weight:500;color:var(--primary-text-color,#1c1c1e);}' +
