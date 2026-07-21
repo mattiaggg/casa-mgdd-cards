@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.11.0
+ * Version: 1.11.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1849,16 +1849,16 @@ class EnergyPowerCard extends HTMLElement {
       '@media (max-width:439px){.ephg-tiles{grid-template-columns:1fr;}}' +
       '.ephg-tile{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;overflow:hidden;cursor:pointer;transition:border-color .12s;}' +
       '.ephg-tile:hover{border-color:var(--divider-color,rgba(0,0,0,.22));}' +
-      '.ephg-head{display:flex;align-items:center;gap:8px;padding:7px 12px;min-height:30px;}' +
-      '.ephg-name{flex:1;min-width:0;font-size:13px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '.ephg-sw{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-height:24px;padding:0 11px;border-radius:20px;cursor:pointer;font-size:11px;font-weight:500;line-height:1;font-family:inherit;color:#fff;background:rgba(255,255,255,.24);border:none;transition:background .15s;}' +
-      '.ephg-sw::before{content:"";position:absolute;inset:-8px;}' + // area di tocco estesa per il dito
+      '.ephg-head{display:flex;align-items:center;gap:8px;padding:3px 11px;min-height:22px;}' +
+      '.ephg-name{flex:1;min-width:0;font-size:12px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.ephg-sw{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-height:20px;padding:0 10px;border-radius:20px;cursor:pointer;font-size:11px;font-weight:500;line-height:1;font-family:inherit;color:#fff;background:rgba(255,255,255,.24);border:none;transition:background .15s;}' +
+      '.ephg-sw::before{content:"";position:absolute;inset:-9px;}' + // area di tocco estesa per il dito
       '.ephg-sw:hover{background:rgba(255,255,255,.36);}' +
-      '.ephg-body{padding:10px 12px 0;}' +
-      '.ephg-val{font-size:24px;font-weight:600;letter-spacing:-.5px;line-height:1;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
-      '.ephg-u{font-size:13px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
-      '.ephg-spark{height:44px;margin-top:6px;}' +
-      '.ephg-spark .epc-spark{height:44px;}' +
+      '.ephg-body{padding:8px 12px 0;}' +
+      '.ephg-val{font-size:22px;font-weight:600;letter-spacing:-.5px;line-height:1;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
+      '.ephg-u{font-size:12px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
+      '.ephg-spark{height:30px;margin-top:3px;}' +
+      '.ephg-spark .epc-spark{height:30px;}' +
       '.ephg-tile.off .ephg-val{color:var(--secondary-text-color,#9aa0aa);}' +
       '.ephg-tile.off .ephg-spark{filter:grayscale(1);opacity:.45;}' +
       '</style>'
