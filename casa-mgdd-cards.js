@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.11.1
+ * Version: 1.11.2
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1854,7 +1854,7 @@ class EnergyPowerCard extends HTMLElement {
       '.ephg-sw{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-height:20px;padding:0 10px;border-radius:20px;cursor:pointer;font-size:11px;font-weight:500;line-height:1;font-family:inherit;color:#fff;background:rgba(255,255,255,.24);border:none;transition:background .15s;}' +
       '.ephg-sw::before{content:"";position:absolute;inset:-9px;}' + // area di tocco estesa per il dito
       '.ephg-sw:hover{background:rgba(255,255,255,.36);}' +
-      '.ephg-body{padding:8px 12px 0;}' +
+      '.ephg-body{padding:8px 12px 11px;}' +
       '.ephg-val{font-size:22px;font-weight:600;letter-spacing:-.5px;line-height:1;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
       '.ephg-u{font-size:12px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
       '.ephg-spark{height:30px;margin-top:3px;}' +
