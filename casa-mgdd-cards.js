@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.7.2
+ * Version: 1.8.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -16,7 +16,7 @@ class TemperatureBentoCard extends HTMLElement {
     }
     this.config = config;
     this._chartSvg = null;
-    this._sparklines = {};
+    this._sparkData = {};
     this._historyFetchedAt = 0;
     if (!this._uid) {
       TemperatureBentoCard._seq = (TemperatureBentoCard._seq || 0) + 1;
@@ -92,7 +92,7 @@ class TemperatureBentoCard extends HTMLElement {
       if (wantSpark) {
         this.config.rooms.forEach((r) => {
           if (r.temp) {
-            this._sparklines[r.temp] = this._buildSparkline(data[idx], now, hours);
+            this._sparkData[r.temp] = this._roomSeries(data[idx], now, hours);
             idx += 1;
           }
         });
@@ -237,32 +237,55 @@ class TemperatureBentoCard extends HTMLElement {
     );
   }
 
-  _buildSparkline(arr, nowMs, hours) {
+  // serie storica di una stanza: valori bucketizzati + min/max di periodo (per l'area + etichette)
+  _roomSeries(arr, nowMs, hours) {
     const pts = this._toPoints(arr);
     if (!pts.length) return null;
-    const buckets = 12;
-    const maxT = nowMs;
+    const buckets = 16;
     const minT = nowMs - hours * 3600 * 1000;
-    const span = maxT - minT || 1;
-    const f = this._fillGaps(this._bucketize(pts, buckets, minT, span));
-    const vals = f.filter((v) => v !== null);
+    const span = hours * 3600 * 1000;
+    const vals = this._fillGaps(this._bucketize(pts, buckets, minT, span)).filter((v) => v !== null);
     if (!vals.length) return null;
+    return { vals: vals, min: Math.min.apply(null, vals), max: Math.max.apply(null, vals) };
+  }
+
+  // sparkline ad area morbida a piena larghezza (colore = fascia temperatura)
+  _buildRoomArea(vals, color, gid) {
+    if (!vals.length) return '';
     const vmin = Math.min.apply(null, vals);
     const vmax = Math.max.apply(null, vals);
     const range = vmax - vmin || 1;
-    const W = 60;
-    const H = 22;
-    const pad = 3;
-    const x = (i) => (i / (buckets - 1)) * W;
-    const y = (v) => H - pad - ((v - vmin) / range) * (H - pad * 2);
-    const last = vals[vals.length - 1];
-    const color = this._colorFor(last);
-    const path = f
-      .map((v, i) => (v === null ? null : (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ',' + y(v).toFixed(1)))
-      .filter(Boolean)
-      .join(' ');
-    if (!path) return null;
-    return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="60" height="22"><path d="' + path + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    const W = 100,
+      H = 40,
+      pad = 6,
+      n = vals.length;
+    const X = (i) => (n === 1 ? W / 2 : (i * W) / (n - 1));
+    const Y = (v) => H - pad - ((v - vmin) / range) * (H - pad * 2);
+    const p = vals.map((v, i) => ({ x: X(i), y: Y(v) }));
+    const fx = (x) => x.toFixed(1);
+    let d = 'M' + fx(p[0].x) + ',' + fx(p[0].y);
+    const t = 0.18;
+    for (let i = 0; i < n - 1; i++) {
+      const a = p[i - 1] || p[i];
+      const b = p[i];
+      const c = p[i + 1];
+      const e = p[i + 2] || c;
+      d += 'C' + fx(b.x + (c.x - a.x) * t) + ',' + fx(b.y + (c.y - a.y) * t) + ' ' + fx(c.x - (e.x - b.x) * t) + ',' + fx(c.y - (e.y - b.y) * t) + ' ' + fx(c.x) + ',' + fx(c.y);
+    }
+    const areaD = n < 2 ? '' : d + ' L' + fx(p[n - 1].x) + ',' + H + ' L' + fx(p[0].x) + ',' + H + ' Z';
+    return (
+      '<svg class="tr-area" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + color + '" stop-opacity="0.30"/>' +
+      '<stop offset="1" stop-color="' + color + '" stop-opacity="0"/></linearGradient></defs>' +
+      (areaD ? '<path d="' + areaD + '" fill="url(#' + gid + ')"/>' : '') +
+      '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    );
+  }
+
+  _iconDrop(size) {
+    const s = size || 13;
+    return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>';
   }
 
   _render() {
@@ -276,23 +299,28 @@ class TemperatureBentoCard extends HTMLElement {
   _renderList() {
     const rooms = this.config.rooms;
     // colonne: default 1 / 2 / 3, sovrascrivibili con grid_columns (max) e breakpoint via config
-    const bp2 = this.config.grid_bp_2 || 560;
+    const bp2 = this.config.grid_bp_2 || 480;
     const bp3 = this.config.grid_bp_3 || 900;
-    const maxCols = this.config.grid_columns || 3;
+    const maxCols = this.config.grid_columns || 2;
     // NB: classi prefissate .tr-* per evitare collisioni con i wrapper della sezione (card in light DOM)
     const roomsHtml = rooms
-      .map((r) => {
+      .map((r, i) => {
         const t = this._num(r.temp);
         const hum = this._num(r.hum);
         const c = this._colorFor(t);
-        const spark = this._sparklines[r.temp] || '<svg viewBox="0 0 60 22" width="60" height="22"></svg>';
+        const series = this._sparkData[r.temp];
+        const chart = series ? this._buildRoomArea(series.vals, c, 'trc' + this._uid + '_' + i) : '<svg class="tr-area" viewBox="0 0 100 40" preserveAspectRatio="none"></svg>';
+        const mm = series ? '<div class="tr-mm"><span>min ' + series.min.toFixed(1) + '\u00b0</span><span>max ' + series.max.toFixed(1) + '\u00b0</span></div>' : '';
+        const humHtml = hum === null ? '' : '<span class="tr-drop">' + this._iconDrop(13) + '</span>' + hum.toFixed(0) + '%';
         return (
           '<div class="tr-room" data-entity="' + r.temp + '">' +
-          '<div class="tr-ava" style="background:' + c + '22;color:' + c + '">' + this._iconThermo(18) + '</div>' +
+          '<div class="tr-head">' +
+          '<div class="tr-ava" style="background:' + c + '22;color:' + c + '">' + this._iconThermo(20) + '</div>' +
           '<div class="tr-info"><div class="tr-name">' + r.name + '</div>' +
-          '<div class="tr-hum">' + (hum === null ? '' : hum.toFixed(0) + '% umidit\u00e0') + '</div></div>' +
-          '<div class="tr-spark">' + spark + '</div>' +
-          '<div class="tr-val">' + this._fmt(t, '\u00b0') + '</div>' +
+          '<div class="tr-hum">' + humHtml + '</div></div>' +
+          '<div class="tr-val" style="color:' + c + '">' + this._fmt(t, '\u00b0') + '</div>' +
+          '</div>' +
+          '<div class="tr-chart">' + chart + '</div>' + mm +
           '</div>'
         );
       })
@@ -307,14 +335,18 @@ class TemperatureBentoCard extends HTMLElement {
       '.tr-grid{display:grid;grid-template-columns:1fr;gap:10px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
       '@container (min-width:' + bp2 + 'px){.tr-grid{grid-template-columns:repeat(' + Math.min(2, maxCols) + ',1fr);}}' +
       '@container (min-width:' + bp3 + 'px){.tr-grid{grid-template-columns:repeat(' + maxCols + ',1fr);}}' +
-      '.tr-room{display:flex;align-items:center;gap:12px;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:14px;padding:11px 14px;cursor:pointer;}' +
+      '.tr-room{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px 12px;cursor:pointer;overflow:hidden;}' +
       '.tr-room:active{opacity:.6;}' +
-      '.tr-ava{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}' +
+      '.tr-head{display:flex;align-items:center;gap:12px;}' +
+      '.tr-ava{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}' +
       '.tr-info{flex:1;min-width:0;}' +
-      '.tr-name{font-size:14px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '.tr-hum{font-size:12px;color:var(--secondary-text-color,#6b6f76);}' +
-      '.tr-spark{flex:0 0 auto;}' +
-      '.tr-val{font-size:18px;font-weight:600;color:var(--primary-text-color,#1c1c1e);min-width:52px;text-align:right;flex:0 0 auto;}' +
+      '.tr-name{font-size:15px;font-weight:500;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.tr-hum{font-size:12px;color:var(--secondary-text-color,#6b6f76);display:flex;align-items:center;}' +
+      '.tr-drop{display:inline-flex;margin-right:3px;}' +
+      '.tr-val{font-size:30px;font-weight:600;letter-spacing:-0.5px;flex:0 0 auto;font-variant-numeric:tabular-nums;}' +
+      '.tr-chart{margin:10px -16px 0;}' +
+      '.tr-area{display:block;width:100%;height:44px;overflow:visible;}' +
+      '.tr-mm{display:flex;justify-content:space-between;font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-top:4px;font-variant-numeric:tabular-nums;}' +
       '</style>' +
       '<div class="tr-grid">' + roomsHtml + '</div>';
     // light DOM: :host non funziona, quindi il container query si àncora all'elemento host
