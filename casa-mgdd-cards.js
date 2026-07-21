@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.6.0
+ * Version: 1.7.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -18,6 +18,10 @@ class TemperatureBentoCard extends HTMLElement {
     this._chartSvg = null;
     this._sparklines = {};
     this._historyFetchedAt = 0;
+    if (!this._uid) {
+      TemperatureBentoCard._seq = (TemperatureBentoCard._seq || 0) + 1;
+      this._uid = TemperatureBentoCard._seq;
+    }
   }
 
   set hass(hass) {
@@ -131,58 +135,82 @@ class TemperatureBentoCard extends HTMLElement {
     return res;
   }
 
-  _buildBars(vals, ramp, minT, span, buckets) {
+  // grafico zona: area morbida con gradiente + linea; metadati per il tooltip interattivo
+  _buildZoneChart(vals, color, minT, span, gid) {
     if (!vals.length) return '';
     const vmin = Math.min.apply(null, vals);
     const vmax = Math.max.apply(null, vals);
     const range = vmax - vmin || 1;
-    const bars = vals
-      .map((v, i) => {
-        const t = (v - vmin) / range;
-        const heightPct = 30 + t * 70;
-        const idx = Math.round(t * (ramp.length - 1));
-        const bucketTime = new Date(minT + (i + 0.5) * (span / buckets));
-        const timeLabel = bucketTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        return (
-          '<div class="bar-seg" data-t="' + timeLabel + '" data-v="' + v.toFixed(1) + '\u00b0" style="flex:1;background:' +
-          ramp[idx] + ';border-radius:2px;height:' + heightPct.toFixed(0) + '%;"></div>'
-        );
-      })
-      .join('');
-    return '<div class="bars">' + bars + '</div>';
+    const W = 200,
+      H = 44,
+      pad = 6,
+      n = vals.length;
+    const X = (i) => (n === 1 ? W / 2 : (i * W) / (n - 1));
+    const Y = (v) => H - pad - ((v - vmin) / range) * (H - pad * 2);
+    const p = vals.map((v, i) => ({ x: X(i), y: Y(v) }));
+    const fx = (x) => x.toFixed(1);
+    let d = 'M' + fx(p[0].x) + ',' + fx(p[0].y);
+    const t = 0.18;
+    for (let i = 0; i < n - 1; i++) {
+      const a = p[i - 1] || p[i];
+      const b = p[i];
+      const c = p[i + 1];
+      const e = p[i + 2] || c;
+      d += 'C' + fx(b.x + (c.x - a.x) * t) + ',' + fx(b.y + (c.y - a.y) * t) + ' ' + fx(c.x - (e.x - b.x) * t) + ',' + fx(c.y - (e.y - b.y) * t) + ' ' + fx(c.x) + ',' + fx(c.y);
+    }
+    const areaD = n < 2 ? '' : d + ' L' + fx(p[n - 1].x) + ',' + H + ' L' + fx(p[0].x) + ',' + H + ' Z';
+    // metadati (posizione %, ora, valore) per il tooltip al passaggio di mouse/dito
+    const meta = vals.map((v, i) => ({
+      x: +(n === 1 ? 50 : (i / (n - 1)) * 100).toFixed(2),
+      y: +((p[i].y / H) * 100).toFixed(2),
+      t: new Date(minT + (n === 1 ? 0 : (i / (n - 1)) * span)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      v: v.toFixed(1),
+    }));
+    const svg =
+      '<svg class="zc-spark" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + color + '" stop-opacity="0.32"/>' +
+      '<stop offset="1" stop-color="' + color + '" stop-opacity="0"/></linearGradient></defs>' +
+      (areaD ? '<path d="' + areaD + '" fill="url(#' + gid + ')"/>' : '') +
+      '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return '<div class="zchart" data-pts=\'' + JSON.stringify(meta) + '\' style="--zc:' + color + '">' + svg + '<div class="zc-mark"></div><div class="zc-dot"></div><div class="zc-tip"></div></div>';
   }
 
-  _wireTooltips() {
-    const containers = this.querySelectorAll('.bars');
-    containers.forEach((container) => {
-      let tip = container.querySelector('.bartip');
-      if (!tip) {
-        tip = document.createElement('div');
-        tip.className = 'bartip';
-        tip.style.cssText =
-          'position:absolute;pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:#fff;font-size:11px;font-weight:500;padding:3px 7px;border-radius:6px;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:2;transform:translate(-50%,-100%);top:-6px;';
-        container.appendChild(tip);
+  _wireZoneCharts() {
+    this.querySelectorAll('.zchart').forEach((el) => {
+      let pts;
+      try {
+        pts = JSON.parse(el.getAttribute('data-pts') || '[]');
+      } catch (e) {
+        pts = [];
       }
-      const showTip = (seg) => {
-        tip.textContent = seg.getAttribute('data-t') + ' \u00b7 ' + seg.getAttribute('data-v');
-        tip.style.left = seg.offsetLeft + seg.offsetWidth / 2 + 'px';
-        tip.style.opacity = '1';
+      if (!pts.length) return;
+      const mark = el.querySelector('.zc-mark');
+      const dot = el.querySelector('.zc-dot');
+      const tip = el.querySelector('.zc-tip');
+      const show = (clientX) => {
+        const rect = el.getBoundingClientRect();
+        let frac = (clientX - rect.left) / (rect.width || 1);
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
+        let idx = Math.round(frac * (pts.length - 1));
+        if (idx < 0) idx = 0;
+        if (idx >= pts.length) idx = pts.length - 1;
+        const pt = pts[idx];
+        mark.style.left = pt.x + '%';
+        dot.style.left = pt.x + '%';
+        dot.style.top = pt.y + '%';
+        tip.style.left = pt.x + '%';
+        tip.textContent = pt.t + ' \u00b7 ' + pt.v + '\u00b0';
+        el.classList.add('zc-active');
       };
-      const hideTip = () => {
-        tip.style.opacity = '0';
-      };
-      container.addEventListener('mousemove', (e) => {
-        const seg = e.target.closest('.bar-seg');
-        if (seg) showTip(seg);
-        else hideTip();
-      });
-      container.addEventListener('mouseleave', hideTip);
-      container.addEventListener('click', (e) => {
-        const seg = e.target.closest('.bar-seg');
-        if (!seg) return;
-        showTip(seg);
-        clearTimeout(container._hideTimer);
-        container._hideTimer = setTimeout(hideTip, 2000);
+      const hide = () => el.classList.remove('zc-active');
+      el.addEventListener('pointermove', (e) => show(e.clientX));
+      el.addEventListener('pointerdown', (e) => show(e.clientX));
+      el.addEventListener('pointerleave', hide);
+      el.addEventListener('pointerup', () => {
+        clearTimeout(el._hideTimer);
+        el._hideTimer = setTimeout(hide, 2500);
       });
     });
   }
@@ -199,15 +227,13 @@ class TemperatureBentoCard extends HTMLElement {
     if (!dayF.length && !nightF.length) return null;
     const dayVal = this._num(this.config.zona_giorno);
     const nightVal = this._num(this.config.zona_notte);
-    const amberRamp = ['#FAEEDA', '#FAC775', '#EF9F27', '#BA7517'];
-    const blueRamp = ['#E6F1FB', '#B5D4F4', '#85B7EB', '#378ADD'];
-    const dayBars = dayF.length ? this._buildBars(dayF, amberRamp, minT, span, buckets) : '';
-    const nightBars = nightF.length ? this._buildBars(nightF, blueRamp, minT, span, buckets) : '';
+    const dayChart = dayF.length ? this._buildZoneChart(dayF, '#EF9F27', minT, span, 'tbcd' + this._uid) : '';
+    const nightChart = nightF.length ? this._buildZoneChart(nightF, '#378ADD', minT, span, 'tbcn' + this._uid) : '';
     return (
       '<div class="zonecard zday"><div class="zc-top"><span class="zc-label">Zona giorno</span><span class="zc-tag">' + hours + 'h</span></div>' +
-      '<div class="zc-val">' + this._fmt(dayVal) + '</div>' + dayBars + '</div>' +
+      '<div class="zc-val">' + this._fmt(dayVal) + '</div>' + dayChart + '</div>' +
       '<div class="zonecard znight"><div class="zc-top"><span class="zc-label">Zona notte</span><span class="zc-tag">' + hours + 'h</span></div>' +
-      '<div class="zc-val">' + this._fmt(nightVal) + '</div>' + nightBars + '</div>'
+      '<div class="zc-val">' + this._fmt(nightVal) + '</div>' + nightChart + '</div>'
     );
   }
 
@@ -359,7 +385,12 @@ class TemperatureBentoCard extends HTMLElement {
       '.zc-label{font-size:12px;font-weight:600;color:var(--primary-text-color,#1c1c1e);}' +
       '.zc-tag{font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
       '.zc-val{font-size:26px;font-weight:600;color:var(--primary-text-color,#1c1c1e);letter-spacing:-0.5px;margin-bottom:8px;}' +
-      '.bars{position:relative;display:flex;align-items:flex-end;gap:3px;height:36px;}' +
+      '.zchart{position:relative;height:46px;margin:2px 0 -6px;touch-action:pan-y;}' +
+      '.zc-spark{display:block;width:100%;height:46px;overflow:visible;}' +
+      '.zc-mark{position:absolute;top:0;bottom:0;width:1px;background:var(--zc);opacity:0;transform:translateX(-0.5px);pointer-events:none;transition:opacity .1s;}' +
+      '.zc-dot{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--zc);border:2px solid var(--ha-card-background,var(--card-background-color,#fff));opacity:0;transform:translate(-50%,-50%);pointer-events:none;transition:opacity .1s;}' +
+      '.zc-tip{position:absolute;top:-4px;transform:translate(-50%,-100%);background:var(--primary-text-color,#1c1c1e);color:var(--ha-card-background,var(--card-background-color,#fff));font-size:11px;font-weight:500;padding:3px 7px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .1s;z-index:2;}' +
+      '.zchart.zc-active .zc-mark,.zchart.zc-active .zc-dot,.zchart.zc-active .zc-tip{opacity:1;}' +
       '.chart-loading{grid-column:1/-1;font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:30px 0;text-align:center;}' +
       '@media (max-width:700px){.top2{grid-template-columns:1fr;}}' +
       '</style>' +
@@ -381,7 +412,7 @@ class TemperatureBentoCard extends HTMLElement {
       '<div class="colB">' + chartInner + '</div>' +
       '</div>' +
       '</ha-card>';
-    this._wireTooltips();
+    this._wireZoneCharts();
   }
 }
 
