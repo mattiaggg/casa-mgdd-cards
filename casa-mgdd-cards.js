@@ -5,8 +5,22 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.2
+ * Version: 1.9.3
  */
+
+// Firma degli stati (state + last_updated) delle entità indicate.
+// Evita di ricostruire il DOM a ogni cambio di hass globale: senza, qualunque
+// entità che si aggiorna (es. sensori di potenza ogni 1-2s) forza il re-render
+// e su iOS Safari lo scroll della vista torna in cima di continuo.
+function mgddStatesSig(hass, ids) {
+  if (!hass) return '';
+  let out = '';
+  for (const id of ids) {
+    const s = id && hass.states[id];
+    out += id + '=' + (s ? s.state + '@' + s.last_updated : 'x') + ';';
+  }
+  return out;
+}
 
 // ===== temperature-bento-card.js =====
 class TemperatureBentoCard extends HTMLElement {
@@ -18,6 +32,7 @@ class TemperatureBentoCard extends HTMLElement {
     this._chartSvg = null;
     this._sparkData = {};
     this._historyFetchedAt = 0;
+    this._lastSig = null;
     if (!this._uid) {
       TemperatureBentoCard._seq = (TemperatureBentoCard._seq || 0) + 1;
       this._uid = TemperatureBentoCard._seq;
@@ -26,7 +41,12 @@ class TemperatureBentoCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    const ids = (this.config.rooms || []).flatMap((r) => [r.temp, r.hum]).filter(Boolean);
+    const sig = mgddStatesSig(hass, ids);
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
     this._maybeFetchHistory();
   }
 
@@ -724,6 +744,7 @@ class TemperatureRowCard extends HTMLElement {
     this.config = config || {};
     this._sparkline = null;
     this._fetchedAt = 0;
+    this._lastSig = null;
   }
 
   static getConfigElement() {
@@ -736,7 +757,12 @@ class TemperatureRowCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    const ids = [this.config.entity, this.config.hum_entity].filter(Boolean);
+    const sig = mgddStatesSig(hass, ids);
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
     this._maybeFetchHistory();
   }
 
@@ -897,11 +923,17 @@ class WeatherAlertCard extends HTMLElement {
     this.config = config;
     this._forecast = null;
     this._forecastFetchedAt = 0;
+    this._lastSig = null;
   }
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    const ids = [this.config.weather_entity].concat(this.config.dpc_entities || []).filter(Boolean);
+    const sig = mgddStatesSig(hass, ids);
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
     this._maybeFetchForecast();
   }
 
