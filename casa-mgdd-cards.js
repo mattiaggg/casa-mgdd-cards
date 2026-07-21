@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.1
+ * Version: 1.9.2
  */
 
 // ===== temperature-bento-card.js =====
@@ -1507,7 +1507,7 @@ class EnergyPowerCard extends HTMLElement {
         if (hasSwitch) {
           ctrl =
             '<button class="epcs-sw' + (on ? ' on' : '') + '" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '">' +
-            '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M16.56,5.44L15.11,6.89C16.84,7.94 18,9.83 18,12A6,6 0 0,1 12,18A6,6 0 0,1 6,12C6,9.83 7.16,7.94 8.88,6.88L7.44,5.44C5.36,6.88 4,9.28 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12C20,9.28 18.64,6.88 16.56,5.44M13,3H11V13H13"/></svg>' +
+            '<span class="epcs-dot"></span>' + (on ? 'On' : 'Off') +
             '</button>';
         }
         return (
@@ -1757,10 +1757,12 @@ class EnergyPowerCard extends HTMLElement {
       '.epcs-spark{flex:1;min-width:0;}' +
       '.epcs-spark .epc-spark{height:34px;}' +
       // interruttore S1
-      '.epcs-sw{flex:0 0 auto;width:30px;height:26px;border-radius:8px;padding:0;cursor:pointer;display:flex;align-items:center;justify-content:center;border:1px solid rgba(136,135,128,.38);background:rgba(136,135,128,.16);color:var(--secondary-text-color,#6b6f76);transition:background .15s,border-color .15s,color .15s;}' +
-      '.epcs-sw:hover{background:rgba(136,135,128,.26);}' +
-      '.epcs-sw.on{background:rgba(136,135,128,.32);border-color:rgba(136,135,128,.55);color:var(--primary-text-color,#1c1c1e);}' +
-      '.epcs-sw svg{display:block;}' +
+      '.epcs-sw{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:30px;padding:0 12px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:500;line-height:1;font-family:inherit;background:rgba(136,135,128,.12);border:0.5px solid var(--divider-color,rgba(0,0,0,.12));color:var(--secondary-text-color,#9aa0aa);transition:background .15s,color .15s;}' +
+      '.epcs-sw::before{content:"";position:absolute;inset:-8px;}' + // area di tocco estesa (~46px) per il dito
+      '.epcs-sw:hover{background:rgba(136,135,128,.2);}' +
+      '.epcs-sw.on{color:var(--primary-text-color,#1c1c1e);}' +
+      '.epcs-dot{width:9px;height:9px;border-radius:50%;background:#b4b2a9;flex:0 0 auto;}' +
+      '.epcs-sw.on .epcs-dot{background:#1D9E75;}' +
       '.epcs-tile.off .epcs-val{color:var(--secondary-text-color,#9aa0aa);}' +
       '.epcs-tile.off .epcs-spark{filter:grayscale(1);opacity:.5;}' +
       '</style>'
