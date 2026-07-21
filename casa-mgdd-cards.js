@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.5.1
+ * Version: 1.5.2
  */
 
 // ===== temperature-bento-card.js =====
@@ -2491,7 +2491,7 @@ class EnergyFlowCard extends HTMLElement {
     if (keys !== this._akeys) {
       this._akeys = keys;
       this._pulses = [];
-      Object.keys(flows).forEach((k) => { const n = this._pcount(flows[k]); for (let i = 0; i < n; i++) this._pulses.push({ key: k, head: i / n }); });
+      Object.keys(flows).forEach((k) => { this._pulses.push({ key: k, head: 0 }); });
     }
     this._measure();
   }
@@ -2508,7 +2508,7 @@ class EnergyFlowCard extends HTMLElement {
     const poly = this._polyPx(rk).map((p) => p.slice());
     const R = this._nrects || {};
     const ends = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'] }[rk];
-    const gap = 9;
+    const gap = 2;
     if (ends && R[ends[0]] && poly.length > 1) poly[0] = this._edge(R[ends[0]], poly[1], gap);
     if (ends && R[ends[1]] && poly.length > 1) poly[poly.length - 1] = this._edge(R[ends[1]], poly[poly.length - 2], gap);
     return poly;
@@ -2518,29 +2518,24 @@ class EnergyFlowCard extends HTMLElement {
 
   _stroke(poly) { const ctx = this._ctx; ctx.beginPath(); ctx.moveTo(poly[0][0], poly[0][1]); for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]); ctx.stroke(); }
   _tube(poly, color) {
-    const ctx = this._ctx, dark = this._dark, soft = dark ? this.SOFT : this.SOFT * 0.5;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowColor = color;
-    ctx.globalAlpha = dark ? 0.15 : 0.12; ctx.lineWidth = 6; ctx.shadowBlur = soft;
-    this._stroke(poly);
-    ctx.globalAlpha = dark ? 0.5 : 0.9; ctx.lineWidth = 1.8; ctx.shadowBlur = soft * 0.5;
-    this._stroke(poly);
+    const ctx = this._ctx, dark = this._dark;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowBlur = 0;
+    ctx.globalAlpha = dark ? 0.16 : 0.14; ctx.lineWidth = dark ? 5 : 3; this._stroke(poly);
+    ctx.globalAlpha = dark ? 0.5 : 0.85; ctx.lineWidth = 1.8; this._stroke(poly);
+    ctx.globalAlpha = 1;
   }
+  // fascio di luce unico: streak affusolato, luminoso in testa, si dissolve in coda. Niente blur.
   _beam(poly, m, head, color) {
-    const ctx = this._ctx, steps = 26, BEAM = this.BEAM, dark = this._dark, SOFT = dark ? this.SOFT : this.SOFT * 0.5;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowColor = color;
-    for (let i = 0; i < steps; i++) {
+    const ctx = this._ctx, steps = 32, BEAM = this.BEAM;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowBlur = 0;
+    for (let i = steps - 1; i >= 0; i--) { // coda -> testa: la testa resta netta sopra
       const s0 = i / steps, h0 = head - s0 * BEAM, h1 = head - (i + 1) / steps * BEAM;
       if (h0 < 0 || h0 > 1) continue;
       const p0 = this._ptAt(poly, m, h0), p1 = this._ptAt(poly, m, Math.max(0, h1)), k = 1 - s0, g = k * k;
-      ctx.globalAlpha = g * (dark ? 0.95 : 0.9); ctx.lineWidth = 1.2 + 4 * g; ctx.shadowBlur = SOFT * (0.5 + g);
+      ctx.globalAlpha = 0.9 * g; ctx.lineWidth = 1.6 + 2.2 * g;
       ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
     }
-    if (head > 0 && head < 1) {
-      const ph = this._ptAt(poly, m, head), r = 11, rg = ctx.createRadialGradient(ph[0], ph[1], 0, ph[0], ph[1], r);
-      rg.addColorStop(0, dark ? 'rgba(255,255,255,.95)' : color); rg.addColorStop(0.3, color); rg.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.fillStyle = rg;
-      ctx.beginPath(); ctx.arc(ph[0], ph[1], r, 0, 7); ctx.fill();
-    }
+    ctx.globalAlpha = 1;
   }
 
   _start() {
@@ -2582,14 +2577,14 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-top{position:relative;z-index:3;display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}' +
       '.ef-title{font-size:14px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
       '.ef-live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
-      '.ef-live i{width:7px;height:7px;border-radius:50%;background:var(--ef-batt);box-shadow:0 0 8px var(--ef-batt);}' +
+      '.ef-live i{width:7px;height:7px;border-radius:50%;background:var(--ef-batt);}' +
       '.ef-stage{position:relative;width:100%;aspect-ratio:1.9/1;}' +
       '.ef-stage canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1;}' +
       '.ef-nd{position:absolute;transform:translate(-50%,-50%);z-index:3;pointer-events:none;display:flex;align-items:center;gap:10px;' +
       'padding:8px 13px;border-radius:14px;background:var(--ha-card-background,var(--card-background-color,#fff));' +
-      'border:1px solid var(--divider-color,rgba(0,0,0,.1));box-shadow:0 2px 12px -5px rgba(0,0,0,.35);white-space:nowrap;}' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.1));white-space:nowrap;}' +
       '.ef-ic{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;flex:0 0 auto;' +
-      'background:color-mix(in srgb,var(--c) 20%,transparent);box-shadow:0 0 15px -4px var(--c),inset 0 0 9px -4px var(--c);}' +
+      'background:color-mix(in srgb,var(--c) 18%,transparent);}' +
       '.ef-ic svg{width:22px;height:22px;stroke:var(--c);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}' +
       '.ef-lab{display:flex;flex-direction:column;line-height:1.15;}' +
       '.ef-k{font-size:11px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
