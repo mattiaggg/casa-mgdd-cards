@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.12.0
+ * Version: 1.12.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1827,17 +1827,17 @@ class EnergyPowerCard extends HTMLElement {
           'vector-effect="non-scaling-stroke" stroke-linecap="round" opacity="0.55"/>';
         const dur = durFor(e.mag);
         comets +=
-          '<circle r="1.7" fill="' + col + '" style="filter:drop-shadow(0 0 3px ' + col + ')">' +
+          '<circle r="1.3" fill="' + col + '" style="filter:drop-shadow(0 0 2px ' + col + ')">' +
           '<animateMotion dur="' + dur + 's" repeatCount="indefinite" path="' + d + '"/>' +
           '<animate attributeName="opacity" dur="' + dur + 's" repeatCount="indefinite" ' +
           'values="0;1;1;0" keyTimes="0;0.18;0.72;1"/>' +
           '</circle>';
-      } else {
+      } else if (!this.config.hide_pending) {
         // linea predisposta, statica (nessun movimento finche' manca il flusso)
         lines +=
           '<path d="' + d + '" fill="none" stroke="var(--divider-color,rgba(0,0,0,.14))" ' +
-          'stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linecap="round" ' +
-          'stroke-dasharray="0.5 3"/>';
+          'stroke-width="1.4" vector-effect="non-scaling-stroke" stroke-linecap="round" ' +
+          'stroke-dasharray="0.4 3.2"/>';
       }
     });
 
@@ -2004,7 +2004,7 @@ class EnergyPowerCard extends HTMLElement {
       '.epf-title{font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
       '.epf-live{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
       '.epf-live::before{content:"";width:7px;height:7px;border-radius:50%;background:#1D9E75;}' +
-      '.epf-wrap{position:relative;width:100%;aspect-ratio:100/52;}' +
+      '.epf-wrap{position:relative;width:100%;max-width:470px;margin:0 auto;aspect-ratio:100/52;}' +
       '.epf-lines{position:absolute;inset:0;width:100%;height:100%;overflow:visible;}' +
       '.epf-node{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:4px;width:32%;max-width:118px;cursor:pointer;text-align:center;}' +
       '.epf-ico{width:44px;height:44px;border-radius:13px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;transition:box-shadow .3s;}' +
