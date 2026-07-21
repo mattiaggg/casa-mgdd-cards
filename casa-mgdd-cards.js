@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.3
+ * Version: 1.9.4
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1269,6 +1269,7 @@ class EnergyPowerCard extends HTMLElement {
     this._trend = null;
     this._sparklines = {};
     this._fetchedAt = 0;
+    this._lastSig = null;
     if (!this._uid) {
       EnergyPowerCard._seq = (EnergyPowerCard._seq || 0) + 1;
       this._uid = EnergyPowerCard._seq;
@@ -1277,7 +1278,21 @@ class EnergyPowerCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    const cfg = this.config || {};
+    const ids = [];
+    if (cfg.power_entity) ids.push(cfg.power_entity);
+    if (cfg.energy_day_entity) ids.push(cfg.energy_day_entity);
+    if (cfg.energy_month_entity) ids.push(cfg.energy_month_entity);
+    if (cfg.total_energy_entity) ids.push(cfg.total_energy_entity);
+    (cfg.circuits || []).forEach((c) => {
+      if (c.entity) ids.push(c.entity);
+      if (c.switch) ids.push(c.switch);
+    });
+    const sig = mgddStatesSig(hass, ids);
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
     this._maybeFetchHistory();
   }
 
@@ -1455,6 +1470,7 @@ class EnergyPowerCard extends HTMLElement {
 
   _render() {
     if (this.config.layout === 'controls') this._renderControlTiles();
+    else if (this.config.layout === 'switchtiles') this._renderSwitchTiles();
     else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
@@ -1553,6 +1569,70 @@ class EnergyPowerCard extends HTMLElement {
       })
       .join('');
     this.innerHTML = this._styles() + '<div class="epcs-tiles">' + tiles + '</div>';
+    this._wireSwitches();
+    this._wireClicks();
+  }
+
+  // layout BB: icona-interruttore colorata per consumo (verde/ambra/arancio/rosso,
+  // grigia se spento) + nome/stato e potenza a destra. L'icona e' il toggle.
+  _swColor(power, hasSwitch, on) {
+    if (hasSwitch && !on) return '#9aa0aa';
+    if (power === null) return '#9aa0aa';
+    if (power > 2000) return '#E24B4A';
+    if (power > 500) return '#E8730C';
+    if (power > 10) return '#EF9F27';
+    return '#1D9E75';
+  }
+
+  _renderSwitchTiles() {
+    const circuits = this.config.circuits || [];
+    const bolt = '<svg viewBox="0 0 24 24" width="11" height="11" fill="#412402"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>';
+    const tiles = circuits
+      .map((c) => {
+        const v = this._num(c.entity);
+        const hasSwitch = !!c.switch;
+        const on = hasSwitch ? this._isOn(c.switch) : true;
+        const off = hasSwitch && !on;
+        const color = this._swColor(v, hasSwitch, on);
+        let icon = c.icon;
+        if (!icon) icon = hasSwitch ? (on ? 'mdi:power-plug' : 'mdi:power-plug-off') : 'mdi:flash';
+        else if (off && c.icon_off) icon = c.icon_off;
+        const badge = v !== null && v > 1 ? '<span class="epst-badge">' + bolt + '</span>' : '';
+        const sec = hasSwitch ? (on ? 'Acceso' : 'Spenta') : '';
+        const secHtml = sec ? '<div class="epst-sec">' + sec + '</div>' : '';
+        const chipOpen = hasSwitch
+          ? '<button class="epst-ic" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '" style="background:' + color + '22;">'
+          : '<div class="epst-ic" style="background:' + color + '22;">';
+        const chipClose = hasSwitch ? '</button>' : '</div>';
+        return (
+          '<div class="epst-tile' + (off ? ' off' : '') + '" data-entity="' + c.entity + '">' +
+          chipOpen +
+          '<ha-icon icon="' + icon + '" style="color:' + color + ';--mdc-icon-size:22px;"></ha-icon>' +
+          badge +
+          chipClose +
+          '<div class="epst-info"><div class="epst-name">' + c.name + '</div>' + secHtml + '</div>' +
+          '<div class="epst-w">' + this._fmt(v, '', v !== null && v < 10 ? 1 : 0) + '<span class="epst-u"> W</span></div>' +
+          '</div>'
+        );
+      })
+      .join('');
+    this.innerHTML =
+      '<style>' +
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
+      '.epst-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '.epst-tile{display:flex;align-items:center;gap:12px;box-sizing:border-box;min-height:64px;padding:11px 14px;cursor:pointer;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:12px;}' +
+      '.epst-ic{position:relative;width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;border:none;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent;}' +
+      '.epst-ic:active{transform:scale(.92);}' +
+      '.epst-badge{position:absolute;top:-1px;right:-1px;width:16px;height:16px;border-radius:50%;background:#EF9F27;display:flex;align-items:center;justify-content:center;line-height:0;}' +
+      '.epst-info{flex:1;min-width:0;}' +
+      '.epst-name{font-size:15px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.epst-sec{font-size:12px;color:var(--secondary-text-color,#6b6f76);margin-top:1px;}' +
+      '.epst-w{flex:0 0 auto;font-size:24px;font-weight:600;letter-spacing:-.5px;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
+      '.epst-u{font-size:12px;font-weight:400;color:var(--secondary-text-color,#6b6f76);}' +
+      '.epst-tile.off .epst-name{color:var(--secondary-text-color,#6b6f76);}' +
+      '.epst-tile.off .epst-w{color:var(--secondary-text-color,#9aa0aa);}' +
+      '</style>' +
+      '<div class="epst-grid">' + tiles + '</div>';
     this._wireSwitches();
     this._wireClicks();
   }
