@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.5.5
+ * Version: 1.6.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -1207,7 +1207,7 @@ class EnergyPowerCard extends HTMLElement {
     if (this._fetchedAt && now - this._fetchedAt < 5 * 60 * 1000) return;
     this._fetchedAt = now;
     const entities = [];
-    const perCircuit = this.config.layout === 'circuits' || this.config.layout === 'tiles';
+    const perCircuit = this.config.layout === 'circuits' || this.config.layout === 'tiles' || this.config.layout === 'controls';
     if (this.config.layout === 'overview' && this.config.power_entity) entities.push(this.config.power_entity);
     if (perCircuit && this.config.circuits) {
       this.config.circuits.forEach((c) => entities.push(c.entity));
@@ -1220,9 +1220,9 @@ class EnergyPowerCard extends HTMLElement {
         const data = await this._hass.callApi('GET', path);
         if (this.config.layout === 'overview') {
           this._trendArea = this._buildTileSpark(data[0], now, hours, this.config.hero_color || '#7F77DD', 'epcov' + this._uid, 56);
-        } else if (this.config.layout === 'tiles') {
+        } else if (this.config.layout === 'tiles' || this.config.layout === 'controls') {
           this.config.circuits.forEach((c, i) => {
-            this._sparklines[c.entity] = this._buildTileSpark(data[i], now, hours, this._paletteColor(i), 'epcg' + this._uid + '_' + i);
+            this._sparklines[c.entity] = this._buildTileSpark(data[i], now, hours, c.color || this._paletteColor(i), 'epcg' + this._uid + '_' + i);
           });
         } else {
           this.config.circuits.forEach((c, i) => {
@@ -1358,7 +1358,8 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _render() {
-    if (this.config.layout === 'tiles') this._renderTiles();
+    if (this.config.layout === 'controls') this._renderControlTiles();
+    else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
   }
@@ -1420,6 +1421,52 @@ class EnergyPowerCard extends HTMLElement {
       .join('');
     this.innerHTML = this._styles() + '<div class="epc-tiles">' + tiles + '</div>';
     this._wireClicks();
+  }
+
+  _isOn(entity) {
+    if (!entity || !this._hass) return false;
+    const s = this._hass.states[entity];
+    return !!s && s.state === 'on';
+  }
+
+  // layout A3: nome + eventuale interruttore in alto; potenza a sinistra e sparkline a destra
+  _renderControlTiles() {
+    const circuits = this.config.circuits || [];
+    const tiles = circuits
+      .map((c, i) => {
+        const v = this._num(c.entity);
+        const spark = this._sparklines[c.entity] || '<svg class="epc-spark" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>';
+        let ctrl;
+        if (c.switch) {
+          const on = this._isOn(c.switch);
+          ctrl =
+            '<button class="epcs-sw' + (on ? ' on' : '') + '" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '"></button>';
+        } else {
+          ctrl = '<span class="epcs-tag">misura</span>';
+        }
+        return (
+          '<div class="epcs-tile" data-entity="' + c.entity + '">' +
+          '<div class="epcs-head"><span class="epcs-name">' + c.name + '</span>' + ctrl + '</div>' +
+          '<div class="epcs-body">' +
+          '<span class="epcs-val">' + this._fmt(v, '', v !== null && v < 10 ? 1 : 0) + '<span class="epcs-u"> W</span></span>' +
+          '<div class="epcs-spark">' + spark + '</div>' +
+          '</div></div>'
+        );
+      })
+      .join('');
+    this.innerHTML = this._styles() + '<div class="epcs-tiles">' + tiles + '</div>';
+    this._wireSwitches();
+    this._wireClicks();
+  }
+
+  _wireSwitches() {
+    this.querySelectorAll('[data-switch]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const entityId = el.getAttribute('data-switch');
+        if (entityId && this._hass) this._hass.callService('switch', 'toggle', { entity_id: entityId });
+      });
+    });
   }
 
   _renderOverview() {
@@ -1630,6 +1677,24 @@ class EnergyPowerCard extends HTMLElement {
       '.epc-u{font-size:13px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
       '.epc-sparkwrap{width:100%;}' +
       '.epc-spark{display:block;width:100%;height:36px;overflow:visible;}' +
+      // layout controls (A3): 2 per riga, 1 su schermo stretto
+      '.epcs-tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}' +
+      '@media (max-width:439px){.epcs-tiles{grid-template-columns:1fr;}}' +
+      '.epcs-tile{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:11px 14px;cursor:pointer;transition:border-color .12s;overflow:hidden;}' +
+      '.epcs-tile:hover{border-color:var(--divider-color,rgba(0,0,0,.22));}' +
+      '.epcs-head{display:flex;align-items:center;gap:8px;min-width:0;}' +
+      '.epcs-name{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.epcs-tag{font-size:11px;color:var(--secondary-text-color,#6b6f76);opacity:.8;flex:0 0 auto;}' +
+      '.epcs-body{display:flex;align-items:flex-end;gap:12px;margin-top:8px;}' +
+      '.epcs-val{font-size:26px;font-weight:600;letter-spacing:-0.5px;line-height:1;color:var(--primary-text-color,#1c1c1e);flex:0 0 auto;font-variant-numeric:tabular-nums;}' +
+      '.epcs-u{font-size:13px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
+      '.epcs-spark{flex:1;min-width:0;}' +
+      '.epcs-spark .epc-spark{height:34px;}' +
+      // interruttore S1
+      '.epcs-sw{flex:0 0 auto;width:38px;height:22px;border-radius:20px;position:relative;border:none;padding:0;cursor:pointer;background:var(--divider-color,rgba(0,0,0,.18));transition:background .15s;}' +
+      '.epcs-sw::after{content:"";position:absolute;top:2.5px;left:2.5px;width:17px;height:17px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.25);}' +
+      '.epcs-sw.on{background:#f5b301;}' +
+      '.epcs-sw.on::after{left:18.5px;}' +
       '</style>'
     );
   }
