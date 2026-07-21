@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.5
+ * Version: 1.9.6
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1619,13 +1619,13 @@ class EnergyPowerCard extends HTMLElement {
     this.innerHTML =
       '<style>' +
       "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
-      '.epst-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
-      '.epst-tile{display:flex;align-items:center;gap:10px;box-sizing:border-box;min-height:54px;padding:9px 11px;cursor:pointer;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:12px;}' +
+      '.epst-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '.epst-tile{display:flex;align-items:center;gap:10px;box-sizing:border-box;min-height:54px;padding:9px 11px;cursor:pointer;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:12px;overflow:hidden;}' +
       '.epst-ic{position:relative;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;border:none;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent;}' +
       '.epst-ic:active{transform:scale(.92);}' +
       '.epst-badge{position:absolute;top:-2px;right:-2px;width:14px;height:14px;border-radius:50%;background:#EF9F27;display:flex;align-items:center;justify-content:center;line-height:0;}' +
       '.epst-info{flex:1;min-width:0;}' +
-      '.epst-name{font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.epst-name{font-size:13px;line-height:1.15;color:var(--primary-text-color,#1c1c1e);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;}' +
       '.epst-sec{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:1px;}' +
       '.epst-w{flex:0 0 auto;font-size:20px;font-weight:600;letter-spacing:-.5px;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
       '.epst-u{font-size:10px;font-weight:400;color:var(--secondary-text-color,#6b6f76);}' +
