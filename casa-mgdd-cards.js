@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.8
+ * Version: 1.9.9
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1471,6 +1471,7 @@ class EnergyPowerCard extends HTMLElement {
   _render() {
     if (this.config.layout === 'controls') this._renderControlTiles();
     else if (this.config.layout === 'switchtiles') this._renderSwitchTiles();
+    else if (this.config.layout === 'activeloads') this._renderActiveLoads();
     else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
@@ -1586,7 +1587,6 @@ class EnergyPowerCard extends HTMLElement {
 
   _renderSwitchTiles() {
     const circuits = this.config.circuits || [];
-    const bolt = '<svg viewBox="0 0 24 24" width="9" height="9" fill="#412402"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>';
     const tiles = circuits
       .map((c) => {
         const v = this._num(c.entity);
@@ -1597,6 +1597,8 @@ class EnergyPowerCard extends HTMLElement {
         let icon = c.icon;
         if (!icon) icon = hasSwitch ? (on ? 'mdi:power-plug' : 'mdi:power-plug-off') : 'mdi:flash';
         else if (off && c.icon_off) icon = c.icon_off;
+        // fulmine dello stesso colore dell'icona (come le mushroom della home)
+        const bolt = '<svg viewBox="0 0 24 24" width="9" height="9" fill="' + color + '"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>';
         const badge = v !== null && v > 1 ? '<span class="epst-badge">' + bolt + '</span>' : '';
         const chipOpen = hasSwitch
           ? '<button class="epst-ic" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '" style="background:' + color + '22;">'
@@ -1621,7 +1623,7 @@ class EnergyPowerCard extends HTMLElement {
       '.epst-tile{display:flex;align-items:center;gap:10px;box-sizing:border-box;min-height:54px;padding:9px 11px;cursor:pointer;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:12px;overflow:hidden;}' +
       '.epst-ic{position:relative;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;border:none;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent;}' +
       '.epst-ic:active{transform:scale(.92);}' +
-      '.epst-badge{position:absolute;top:-2px;right:-2px;width:14px;height:14px;border-radius:50%;background:#EF9F27;display:flex;align-items:center;justify-content:center;line-height:0;}' +
+      '.epst-badge{position:absolute;top:-2px;right:-2px;width:14px;height:14px;border-radius:50%;background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 0 0 1px var(--divider-color,rgba(0,0,0,.06));display:flex;align-items:center;justify-content:center;line-height:0;}' +
       '.epst-info{flex:1;min-width:0;}' +
       '.epst-name{font-size:13px;line-height:1.15;color:var(--primary-text-color,#1c1c1e);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;}' +
       '.epst-sec{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:1px;}' +
@@ -1643,6 +1645,54 @@ class EnergyPowerCard extends HTMLElement {
         if (entityId && this._hass) this._hass.callService('switch', 'toggle', { entity_id: entityId });
       });
     });
+  }
+
+  // layout standalone: solo il blocco "Carichi attivi adesso" a barre,
+  // card autonoma da posizionare liberamente in dashboard.
+  _renderActiveLoads() {
+    const power = this._num(this.config.power_entity);
+    const circuits = this.config.circuits || [];
+    const threshold = this.config.active_threshold != null ? this.config.active_threshold : 1;
+    const activeCount = this.config.active_count || 8;
+    const active = circuits
+      .map((c) => ({ name: c.name, val: this._num(c.entity), entity: c.entity }))
+      .filter((c) => c.val !== null && c.val > threshold)
+      .sort((a, b) => b.val - a.val)
+      .slice(0, activeCount);
+    const monitoredSum = circuits.map((c) => this._num(c.entity)).filter((v) => v !== null).reduce((a, b) => a + b, 0);
+    const other = power !== null && power - monitoredSum > 1 ? power - monitoredSum : null;
+
+    const barItems = active.map((c) => ({
+      name: c.name,
+      val: c.val,
+      color: this._paletteColor(circuits.findIndex((x) => x.entity === c.entity)),
+      entity: c.entity,
+    }));
+    if (other !== null && active.length) {
+      barItems.push({ name: 'Altro (non monitorato)', val: other, color: 'var(--divider-color,rgba(0,0,0,.14))', entity: null, other: true });
+    }
+    const maxW = barItems.reduce((m, b) => Math.max(m, b.val), 0) || 1;
+    const barsHtml = barItems
+      .map((b) => {
+        const pct = Math.max((b.val / maxW) * 100, 2).toFixed(1);
+        const wtxt = b.other ? '~' + b.val.toFixed(0) + ' W' : this._fmt(b.val, ' W', b.val < 10 ? 1 : 0);
+        return (
+          '<div class="load-bar"' + (b.entity ? ' data-entity="' + b.entity + '"' : '') + '>' +
+          '<div class="load-bar-h"><span class="load-bar-n">' + b.name + '</span><span class="load-bar-w">' + wtxt + '</span></div>' +
+          '<div class="load-bar-track"><div class="load-bar-fill" style="width:' + pct + '%;background:' + b.color + '"></div></div>' +
+          '</div>'
+        );
+      })
+      .join('');
+    const empty = '<div style="padding:12px 0 16px;color:var(--secondary-text-color,#6b6f76);font-size:13px;text-align:center;">Nessun carico attivo</div>';
+
+    this.innerHTML =
+      this._styles() +
+      '<div class="loadlist">' +
+      '<div class="load-top"><span class="hero-l">' + (this.config.title || 'Carichi attivi adesso') + '</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
+      (barItems.length ? barsHtml : empty) +
+      '</div>';
+    this._wireClicks();
   }
 
   _renderOverview() {
@@ -1767,7 +1817,7 @@ class EnergyPowerCard extends HTMLElement {
       '</div>' +
       projHtml +
       '</div>' +
-      (activeHtml
+      (activeHtml && this.config.show_loads !== false
         ? '<div class="loadlist">' +
           '<div class="load-top"><span class="hero-l">Carichi attivi adesso</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
           (loadsBars ? barsHtml : compBar + activeHtml) +
