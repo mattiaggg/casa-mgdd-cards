@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.10.0
+ * Version: 1.11.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1318,7 +1318,7 @@ class EnergyPowerCard extends HTMLElement {
     if (this._fetchedAt && now - this._fetchedAt < 5 * 60 * 1000) return;
     this._fetchedAt = now;
     const entities = [];
-    const perCircuit = this.config.layout === 'circuits' || this.config.layout === 'tiles' || this.config.layout === 'controls';
+    const perCircuit = this.config.layout === 'circuits' || this.config.layout === 'tiles' || this.config.layout === 'controls' || this.config.layout === 'headergraph';
     if (this.config.layout === 'overview' && this.config.power_entity) entities.push(this.config.power_entity);
     if (perCircuit && this.config.circuits) {
       this.config.circuits.forEach((c) => entities.push(c.entity));
@@ -1331,7 +1331,7 @@ class EnergyPowerCard extends HTMLElement {
         const data = await this._hass.callApi('GET', path);
         if (this.config.layout === 'overview') {
           this._trendArea = this._buildTileSpark(data[0], now, hours, this.config.hero_color || '#7F77DD', 'epcov' + this._uid, 56);
-        } else if (this.config.layout === 'tiles' || this.config.layout === 'controls') {
+        } else if (this.config.layout === 'tiles' || this.config.layout === 'controls' || this.config.layout === 'headergraph') {
           this.config.circuits.forEach((c, i) => {
             this._sparklines[c.entity] = this._buildTileSpark(data[i], now, hours, c.color || this._paletteColor(i), 'epcg' + this._uid + '_' + i);
           });
@@ -1470,6 +1470,7 @@ class EnergyPowerCard extends HTMLElement {
 
   _render() {
     if (this.config.layout === 'controls') this._renderControlTiles();
+    else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
     else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
@@ -1568,6 +1569,37 @@ class EnergyPowerCard extends HTMLElement {
       })
       .join('');
     this.innerHTML = this._styles() + '<div class="epcs-tiles">' + tiles + '</div>';
+    this._wireSwitches();
+    this._wireClicks();
+  }
+
+  // layout F: header colorato per stato (nome + eventuale toggle On/Off) e
+  // grafico ad area a piena larghezza sotto il valore in W.
+  _renderHeaderGraph() {
+    const circuits = this.config.circuits || [];
+    const tiles = circuits
+      .map((c, i) => {
+        const v = this._num(c.entity);
+        const color = c.color || this._paletteColor(i);
+        const hasSwitch = !!c.switch;
+        const on = hasSwitch ? this._isOn(c.switch) : true;
+        const off = hasSwitch && !on;
+        const head = off ? '#aab0b8' : color;
+        const spark = this._sparklines[c.entity] || '<svg class="epc-spark" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>';
+        const ctrl = hasSwitch
+          ? '<button class="ephg-sw" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '">' + (on ? 'On' : 'Off') + '</button>'
+          : '';
+        return (
+          '<div class="ephg-tile' + (off ? ' off' : '') + '" data-entity="' + c.entity + '">' +
+          '<div class="ephg-head" style="background:' + head + '"><span class="ephg-name">' + c.name + '</span>' + ctrl + '</div>' +
+          '<div class="ephg-body">' +
+          '<div class="ephg-val">' + this._fmt(v, '', v !== null && v < 10 ? 1 : 0) + '<span class="ephg-u"> W</span></div>' +
+          '<div class="ephg-spark">' + spark + '</div>' +
+          '</div></div>'
+        );
+      })
+      .join('');
+    this.innerHTML = this._styles() + '<div class="ephg-tiles">' + tiles + '</div>';
     this._wireSwitches();
     this._wireClicks();
   }
@@ -1812,6 +1844,23 @@ class EnergyPowerCard extends HTMLElement {
       '.epcs-sw.on .epcs-dot{background:#1D9E75;}' +
       '.epcs-tile.off .epcs-val{color:var(--secondary-text-color,#9aa0aa);}' +
       '.epcs-tile.off .epcs-spark{filter:grayscale(1);opacity:.5;}' +
+      // layout F (headergraph): header colorato + grafico ad area grande
+      '.ephg-tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}' +
+      '@media (max-width:439px){.ephg-tiles{grid-template-columns:1fr;}}' +
+      '.ephg-tile{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;overflow:hidden;cursor:pointer;transition:border-color .12s;}' +
+      '.ephg-tile:hover{border-color:var(--divider-color,rgba(0,0,0,.22));}' +
+      '.ephg-head{display:flex;align-items:center;gap:8px;padding:7px 12px;min-height:30px;}' +
+      '.ephg-name{flex:1;min-width:0;font-size:13px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.ephg-sw{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-height:24px;padding:0 11px;border-radius:20px;cursor:pointer;font-size:11px;font-weight:500;line-height:1;font-family:inherit;color:#fff;background:rgba(255,255,255,.24);border:none;transition:background .15s;}' +
+      '.ephg-sw::before{content:"";position:absolute;inset:-8px;}' + // area di tocco estesa per il dito
+      '.ephg-sw:hover{background:rgba(255,255,255,.36);}' +
+      '.ephg-body{padding:10px 12px 0;}' +
+      '.ephg-val{font-size:24px;font-weight:600;letter-spacing:-.5px;line-height:1;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
+      '.ephg-u{font-size:13px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
+      '.ephg-spark{height:44px;margin-top:6px;}' +
+      '.ephg-spark .epc-spark{height:44px;}' +
+      '.ephg-tile.off .ephg-val{color:var(--secondary-text-color,#9aa0aa);}' +
+      '.ephg-tile.off .ephg-spark{filter:grayscale(1);opacity:.45;}' +
       '</style>'
     );
   }
