@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.9
+ * Version: 1.10.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1470,8 +1470,6 @@ class EnergyPowerCard extends HTMLElement {
 
   _render() {
     if (this.config.layout === 'controls') this._renderControlTiles();
-    else if (this.config.layout === 'switchtiles') this._renderSwitchTiles();
-    else if (this.config.layout === 'activeloads') this._renderActiveLoads();
     else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
@@ -1574,69 +1572,6 @@ class EnergyPowerCard extends HTMLElement {
     this._wireClicks();
   }
 
-  // layout BB: icona-interruttore colorata per consumo (verde/ambra/arancio/rosso,
-  // grigia se spento) + nome/stato e potenza a destra. L'icona e' il toggle.
-  _swColor(power, hasSwitch, on) {
-    if (hasSwitch && !on) return '#9aa0aa';
-    if (power === null) return '#9aa0aa';
-    if (power > 2000) return '#E24B4A';
-    if (power > 500) return '#E8730C';
-    if (power > 10) return '#EF9F27';
-    return '#1D9E75';
-  }
-
-  _renderSwitchTiles() {
-    const circuits = this.config.circuits || [];
-    const tiles = circuits
-      .map((c) => {
-        const v = this._num(c.entity);
-        const hasSwitch = !!c.switch;
-        const on = hasSwitch ? this._isOn(c.switch) : true;
-        const off = hasSwitch && !on;
-        const color = this._swColor(v, hasSwitch, on);
-        let icon = c.icon;
-        if (!icon) icon = hasSwitch ? (on ? 'mdi:power-plug' : 'mdi:power-plug-off') : 'mdi:flash';
-        else if (off && c.icon_off) icon = c.icon_off;
-        // fulmine dello stesso colore dell'icona (come le mushroom della home)
-        const bolt = '<svg viewBox="0 0 24 24" width="9" height="9" fill="' + color + '"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>';
-        const badge = v !== null && v > 1 ? '<span class="epst-badge">' + bolt + '</span>' : '';
-        const chipOpen = hasSwitch
-          ? '<button class="epst-ic" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '" style="background:' + color + '22;">'
-          : '<div class="epst-ic" style="background:' + color + '22;">';
-        const chipClose = hasSwitch ? '</button>' : '</div>';
-        return (
-          '<div class="epst-tile' + (off ? ' off' : '') + '" data-entity="' + c.entity + '">' +
-          chipOpen +
-          '<ha-icon icon="' + icon + '" style="color:' + color + ';--mdc-icon-size:17px;"></ha-icon>' +
-          badge +
-          chipClose +
-          '<div class="epst-info"><div class="epst-name">' + c.name + '</div></div>' +
-          '<div class="epst-w">' + this._fmt(v, '', v !== null && v < 10 ? 1 : 0) + '<span class="epst-u"> W</span></div>' +
-          '</div>'
-        );
-      })
-      .join('');
-    this.innerHTML =
-      '<style>' +
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
-      '.epst-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
-      '.epst-tile{display:flex;align-items:center;gap:10px;box-sizing:border-box;min-height:54px;padding:9px 11px;cursor:pointer;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:12px;overflow:hidden;}' +
-      '.epst-ic{position:relative;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;border:none;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent;}' +
-      '.epst-ic:active{transform:scale(.92);}' +
-      '.epst-badge{position:absolute;top:-2px;right:-2px;width:14px;height:14px;border-radius:50%;background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 0 0 1px var(--divider-color,rgba(0,0,0,.06));display:flex;align-items:center;justify-content:center;line-height:0;}' +
-      '.epst-info{flex:1;min-width:0;}' +
-      '.epst-name{font-size:13px;line-height:1.15;color:var(--primary-text-color,#1c1c1e);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;}' +
-      '.epst-sec{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:1px;}' +
-      '.epst-w{flex:0 0 auto;font-size:20px;font-weight:600;letter-spacing:-.5px;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
-      '.epst-u{font-size:10px;font-weight:400;color:var(--secondary-text-color,#6b6f76);}' +
-      '.epst-tile.off .epst-name{color:var(--secondary-text-color,#6b6f76);}' +
-      '.epst-tile.off .epst-w{color:var(--secondary-text-color,#9aa0aa);}' +
-      '</style>' +
-      '<div class="epst-grid">' + tiles + '</div>';
-    this._wireSwitches();
-    this._wireClicks();
-  }
-
   _wireSwitches() {
     this.querySelectorAll('[data-switch]').forEach((el) => {
       el.addEventListener('click', (ev) => {
@@ -1645,54 +1580,6 @@ class EnergyPowerCard extends HTMLElement {
         if (entityId && this._hass) this._hass.callService('switch', 'toggle', { entity_id: entityId });
       });
     });
-  }
-
-  // layout standalone: solo il blocco "Carichi attivi adesso" a barre,
-  // card autonoma da posizionare liberamente in dashboard.
-  _renderActiveLoads() {
-    const power = this._num(this.config.power_entity);
-    const circuits = this.config.circuits || [];
-    const threshold = this.config.active_threshold != null ? this.config.active_threshold : 1;
-    const activeCount = this.config.active_count || 8;
-    const active = circuits
-      .map((c) => ({ name: c.name, val: this._num(c.entity), entity: c.entity }))
-      .filter((c) => c.val !== null && c.val > threshold)
-      .sort((a, b) => b.val - a.val)
-      .slice(0, activeCount);
-    const monitoredSum = circuits.map((c) => this._num(c.entity)).filter((v) => v !== null).reduce((a, b) => a + b, 0);
-    const other = power !== null && power - monitoredSum > 1 ? power - monitoredSum : null;
-
-    const barItems = active.map((c) => ({
-      name: c.name,
-      val: c.val,
-      color: this._paletteColor(circuits.findIndex((x) => x.entity === c.entity)),
-      entity: c.entity,
-    }));
-    if (other !== null && active.length) {
-      barItems.push({ name: 'Altro (non monitorato)', val: other, color: 'var(--divider-color,rgba(0,0,0,.14))', entity: null, other: true });
-    }
-    const maxW = barItems.reduce((m, b) => Math.max(m, b.val), 0) || 1;
-    const barsHtml = barItems
-      .map((b) => {
-        const pct = Math.max((b.val / maxW) * 100, 2).toFixed(1);
-        const wtxt = b.other ? '~' + b.val.toFixed(0) + ' W' : this._fmt(b.val, ' W', b.val < 10 ? 1 : 0);
-        return (
-          '<div class="load-bar"' + (b.entity ? ' data-entity="' + b.entity + '"' : '') + '>' +
-          '<div class="load-bar-h"><span class="load-bar-n">' + b.name + '</span><span class="load-bar-w">' + wtxt + '</span></div>' +
-          '<div class="load-bar-track"><div class="load-bar-fill" style="width:' + pct + '%;background:' + b.color + '"></div></div>' +
-          '</div>'
-        );
-      })
-      .join('');
-    const empty = '<div style="padding:12px 0 16px;color:var(--secondary-text-color,#6b6f76);font-size:13px;text-align:center;">Nessun carico attivo</div>';
-
-    this.innerHTML =
-      this._styles() +
-      '<div class="loadlist">' +
-      '<div class="load-top"><span class="hero-l">' + (this.config.title || 'Carichi attivi adesso') + '</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
-      (barItems.length ? barsHtml : empty) +
-      '</div>';
-    this._wireClicks();
   }
 
   _renderOverview() {
@@ -1774,35 +1661,6 @@ class EnergyPowerCard extends HTMLElement {
           '</div>'
         : '');
 
-    // Variante "barre orizzontali classificate" (loads_layout: bars):
-    // una barra per carico, ampiezza proporzionale al massimo attivo.
-    const loadsBars = this.config.loads_layout === 'bars';
-    let barsHtml = '';
-    if (loadsBars && active.length) {
-      const barItems = active.map((c) => ({
-        name: c.name,
-        val: c.val,
-        color: this._paletteColor(circuits.findIndex((x) => x.entity === c.entity)),
-        entity: c.entity,
-      }));
-      if (other !== null) {
-        barItems.push({ name: 'Altro (non monitorato)', val: other, color: 'var(--divider-color,rgba(0,0,0,.14))', entity: null, other: true });
-      }
-      const maxW = barItems.reduce((m, b) => Math.max(m, b.val), 0) || 1;
-      barsHtml = barItems
-        .map((b) => {
-          const pct = Math.max((b.val / maxW) * 100, 2).toFixed(1);
-          const wtxt = b.other ? '~' + b.val.toFixed(0) + ' W' : this._fmt(b.val, ' W', b.val < 10 ? 1 : 0);
-          return (
-            '<div class="load-bar"' + (b.entity ? ' data-entity="' + b.entity + '"' : '') + '>' +
-            '<div class="load-bar-h"><span class="load-bar-n">' + b.name + '</span><span class="load-bar-w">' + wtxt + '</span></div>' +
-            '<div class="load-bar-track"><div class="load-bar-fill" style="width:' + pct + '%;background:' + b.color + '"></div></div>' +
-            '</div>'
-          );
-        })
-        .join('');
-    }
-
     this.innerHTML =
       this._styles() +
       '<div class="hero">' +
@@ -1817,10 +1675,11 @@ class EnergyPowerCard extends HTMLElement {
       '</div>' +
       projHtml +
       '</div>' +
-      (activeHtml && this.config.show_loads !== false
+      (activeHtml
         ? '<div class="loadlist">' +
           '<div class="load-top"><span class="hero-l">Carichi attivi adesso</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
-          (loadsBars ? barsHtml : compBar + activeHtml) +
+          compBar +
+          activeHtml +
           '</div>'
         : '');
     this._wireClicks();
@@ -1910,13 +1769,6 @@ class EnergyPowerCard extends HTMLElement {
       '.load-name{flex:1;min-width:0;font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '.load-pct{font-size:11px;color:var(--secondary-text-color,#6b6f76);width:38px;text-align:right;flex:0 0 auto;}' +
       '.load-w{font-size:15px;font-weight:600;color:var(--primary-text-color,#1c1c1e);width:56px;text-align:right;flex:0 0 auto;}' +
-      '.load-bar{padding:9px 0 0;}' +
-      '.load-bar[data-entity]{cursor:pointer;}' +
-      '.load-bar-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px;}' +
-      '.load-bar-n{min-width:0;font-size:13px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '.load-bar-w{font-size:14px;font-weight:600;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;flex:0 0 auto;}' +
-      '.load-bar-track{height:9px;background:var(--divider-color,rgba(0,0,0,.06));border-radius:5px;overflow:hidden;}' +
-      '.load-bar-fill{height:100%;border-radius:5px;}' +
       '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
       '.row{display:flex;align-items:center;gap:14px;padding:12px 0;cursor:pointer;}' +
       '.row[data-border]{border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
