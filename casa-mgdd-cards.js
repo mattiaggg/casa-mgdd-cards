@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.4
+ * Version: 1.9.5
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1586,7 +1586,7 @@ class EnergyPowerCard extends HTMLElement {
 
   _renderSwitchTiles() {
     const circuits = this.config.circuits || [];
-    const bolt = '<svg viewBox="0 0 24 24" width="11" height="11" fill="#412402"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>';
+    const bolt = '<svg viewBox="0 0 24 24" width="9" height="9" fill="#412402"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>';
     const tiles = circuits
       .map((c) => {
         const v = this._num(c.entity);
@@ -1607,7 +1607,7 @@ class EnergyPowerCard extends HTMLElement {
         return (
           '<div class="epst-tile' + (off ? ' off' : '') + '" data-entity="' + c.entity + '">' +
           chipOpen +
-          '<ha-icon icon="' + icon + '" style="color:' + color + ';--mdc-icon-size:22px;"></ha-icon>' +
+          '<ha-icon icon="' + icon + '" style="color:' + color + ';--mdc-icon-size:17px;"></ha-icon>' +
           badge +
           chipClose +
           '<div class="epst-info"><div class="epst-name">' + c.name + '</div>' + secHtml + '</div>' +
@@ -1619,16 +1619,16 @@ class EnergyPowerCard extends HTMLElement {
     this.innerHTML =
       '<style>' +
       "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
-      '.epst-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
-      '.epst-tile{display:flex;align-items:center;gap:12px;box-sizing:border-box;min-height:64px;padding:11px 14px;cursor:pointer;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:12px;}' +
-      '.epst-ic{position:relative;width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;border:none;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent;}' +
+      '.epst-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '.epst-tile{display:flex;align-items:center;gap:10px;box-sizing:border-box;min-height:54px;padding:9px 11px;cursor:pointer;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:12px;}' +
+      '.epst-ic{position:relative;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto;border:none;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent;}' +
       '.epst-ic:active{transform:scale(.92);}' +
-      '.epst-badge{position:absolute;top:-1px;right:-1px;width:16px;height:16px;border-radius:50%;background:#EF9F27;display:flex;align-items:center;justify-content:center;line-height:0;}' +
+      '.epst-badge{position:absolute;top:-2px;right:-2px;width:14px;height:14px;border-radius:50%;background:#EF9F27;display:flex;align-items:center;justify-content:center;line-height:0;}' +
       '.epst-info{flex:1;min-width:0;}' +
-      '.epst-name{font-size:15px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '.epst-sec{font-size:12px;color:var(--secondary-text-color,#6b6f76);margin-top:1px;}' +
-      '.epst-w{flex:0 0 auto;font-size:24px;font-weight:600;letter-spacing:-.5px;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
-      '.epst-u{font-size:12px;font-weight:400;color:var(--secondary-text-color,#6b6f76);}' +
+      '.epst-name{font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.epst-sec{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:1px;}' +
+      '.epst-w{flex:0 0 auto;font-size:20px;font-weight:600;letter-spacing:-.5px;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
+      '.epst-u{font-size:10px;font-weight:400;color:var(--secondary-text-color,#6b6f76);}' +
       '.epst-tile.off .epst-name{color:var(--secondary-text-color,#6b6f76);}' +
       '.epst-tile.off .epst-w{color:var(--secondary-text-color,#9aa0aa);}' +
       '</style>' +
