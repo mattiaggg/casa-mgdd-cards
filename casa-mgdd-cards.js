@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.5.3
+ * Version: 1.5.4
  */
 
 // ===== temperature-bento-card.js =====
@@ -2325,8 +2325,8 @@ class EnergyFlowCard extends HTMLElement {
     this._raf = null;
     this._W = 0;
     this._H = 0;
-    this.BEAM = 0.42;
-    this.SOFT = 16;
+    this.BEAM = 0.44;
+    this.SOFT = 15;
   }
 
   set hass(hass) {
@@ -2350,10 +2350,10 @@ class EnergyFlowCard extends HTMLElement {
 
   _routes() {
     return {
-      rete_casa: { p: [[0.13, 0.72], [0.5, 0.72]], c: 'rete' },
-      batt_casa: { p: [[0.87, 0.72], [0.5, 0.72]], c: 'batt' },
-      sole_casa: { p: [[0.5, 0.18], [0.5, 0.72]], c: 'sole' },
-      sole_batt: { p: [[0.5, 0.18], [0.87, 0.18], [0.87, 0.72]], c: 'sole' },
+      rete_casa: { p: [[0.13, 0.74], [0.5, 0.74]], c: 'rete' },
+      batt_casa: { p: [[0.87, 0.74], [0.5, 0.74]], c: 'batt' },
+      sole_casa: { p: [[0.5, 0.24], [0.5, 0.74]], c: 'sole' },
+      sole_batt: { p: [[0.5, 0.24], [0.87, 0.24], [0.87, 0.74]], c: 'sole' },
     };
   }
   // flowKey -> [routeKey, reverse, colorKey]
@@ -2397,16 +2397,16 @@ class EnergyFlowCard extends HTMLElement {
   _build() {
     this.innerHTML =
       this._styles() +
-      '<div class="ef-card"><div class="ef-top"><span class="ef-title">' + this.config.title + '</span>' +
-      '<span class="ef-live"><i></i>ora</span></div>' +
+      '<div class="ef-card">' +
       '<div class="ef-stage"><canvas></canvas>' +
-      this._node('sole', '50%', '18%', 'Solare') +
-      this._node('rete', '13%', '72%', 'Rete') +
-      this._node('batt', '87%', '72%', 'Batteria') +
-      this._node('casa', '50%', '72%', 'Casa') +
+      '<span class="ef-live"><i></i>ora</span>' +
+      this._node('sole', '50%', '24%', 'Solare') +
+      this._node('rete', '13%', '74%', 'Rete') +
+      this._node('batt', '87%', '74%', 'Batteria') +
+      this._node('casa', '50%', '74%', 'Casa') +
       '</div></div>';
     this._card = this.querySelector('.ef-card');
-    this._title = this.querySelector('.ef-title');
+    this._live = this.querySelector('.ef-live');
     this._stage = this.querySelector('.ef-stage');
     this._cv = this.querySelector('canvas');
     this._ctx = this._cv.getContext('2d');
@@ -2432,7 +2432,7 @@ class EnergyFlowCard extends HTMLElement {
   _measure() {
     if (!this._stage) return;
     let dark = false;
-    const cs = this._title ? getComputedStyle(this._title).color : '';
+    const cs = this._live ? getComputedStyle(this._live).color : '';
     const mm = cs && cs.match(/[\d.]+/g);
     if (mm && mm.length >= 3) { const l = (0.299 * +mm[0] + 0.587 * +mm[1] + 0.114 * +mm[2]) / 255; dark = l > 0.6; }
     this._dark = dark;
@@ -2511,31 +2511,63 @@ class EnergyFlowCard extends HTMLElement {
     const gap = 2;
     if (ends && R[ends[0]] && poly.length > 1) poly[0] = this._edge(R[ends[0]], poly[1], gap);
     if (ends && R[ends[1]] && poly.length > 1) poly[poly.length - 1] = this._edge(R[ends[1]], poly[poly.length - 2], gap);
-    return poly;
+    return this._round(poly, 16);
+  }
+  // arrotonda gli angoli inserendo un arco (bezier quadratica) su ogni vertice interno
+  _round(poly, r) {
+    if (poly.length < 3) return poly;
+    const out = [poly[0]];
+    for (let i = 1; i < poly.length - 1; i++) {
+      const a = poly[i - 1], v = poly[i], c = poly[i + 1];
+      const d1 = Math.hypot(v[0] - a[0], v[1] - a[1]), d2 = Math.hypot(c[0] - v[0], c[1] - v[1]);
+      const rr = Math.min(r, d1 / 2, d2 / 2);
+      const p1 = [v[0] - (v[0] - a[0]) / d1 * rr, v[1] - (v[1] - a[1]) / d1 * rr];
+      const p2 = [v[0] + (c[0] - v[0]) / d2 * rr, v[1] + (c[1] - v[1]) / d2 * rr];
+      out.push(p1);
+      const st = 8;
+      for (let s = 1; s < st; s++) { const t = s / st; out.push([(1 - t) * (1 - t) * p1[0] + 2 * (1 - t) * t * v[0] + t * t * p2[0], (1 - t) * (1 - t) * p1[1] + 2 * (1 - t) * t * v[1] + t * t * p2[1]]); }
+      out.push(p2);
+    }
+    out.push(poly[poly.length - 1]);
+    return out;
   }
   _meta(poly) { let seg = [], L = 0; for (let i = 0; i < poly.length - 1; i++) { const d = Math.hypot(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1]); seg.push(d); L += d; } return { seg, L }; }
   _ptAt(poly, m, f) { let t = f * m.L, a = 0; for (let i = 0; i < m.seg.length; i++) { if (a + m.seg[i] >= t) { const u = m.seg[i] ? (t - a) / m.seg[i] : 0; return [poly[i][0] + (poly[i + 1][0] - poly[i][0]) * u, poly[i][1] + (poly[i + 1][1] - poly[i][1]) * u]; } a += m.seg[i]; } return poly[poly.length - 1]; }
 
   _stroke(poly) { const ctx = this._ctx; ctx.beginPath(); ctx.moveTo(poly[0][0], poly[0][1]); for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]); ctx.stroke(); }
   _tube(poly, color) {
-    const ctx = this._ctx, dark = this._dark;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowBlur = 0;
-    ctx.globalAlpha = dark ? 0.16 : 0.14; ctx.lineWidth = dark ? 5 : 3; this._stroke(poly);
-    ctx.globalAlpha = dark ? 0.5 : 0.85; ctx.lineWidth = 1.8; this._stroke(poly);
-    ctx.globalAlpha = 1;
+    const ctx = this._ctx, dark = this._dark, SOFT = this.SOFT;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowColor = color;
+    if (dark) {
+      ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.shadowBlur = SOFT; this._stroke(poly);
+      ctx.globalAlpha = 0.6; ctx.lineWidth = 1.6; ctx.shadowBlur = SOFT * 0.5; this._stroke(poly);
+    } else {
+      ctx.shadowBlur = 0; ctx.globalAlpha = 0.14; ctx.lineWidth = 3; this._stroke(poly);
+      ctx.globalAlpha = 0.85; ctx.lineWidth = 1.8; this._stroke(poly);
+    }
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
   }
-  // fascio di luce unico: streak affusolato, luminoso in testa, si dissolve in coda. Niente blur.
+  // fascio unico: coda affusolata + testa luminosa; su tema scuro con bloom morbido (stile reference).
   _beam(poly, m, head, color) {
-    const ctx = this._ctx, steps = 32, BEAM = this.BEAM;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowBlur = 0;
+    const ctx = this._ctx, steps = 34, BEAM = this.BEAM, dark = this._dark, SOFT = this.SOFT;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.shadowColor = color;
     for (let i = steps - 1; i >= 0; i--) { // coda -> testa: la testa resta netta sopra
       const s0 = i / steps, h0 = head - s0 * BEAM, h1 = head - (i + 1) / steps * BEAM;
       if (h0 < 0 || h0 > 1) continue;
       const p0 = this._ptAt(poly, m, h0), p1 = this._ptAt(poly, m, Math.max(0, h1)), k = 1 - s0, g = k * k;
-      ctx.globalAlpha = 0.9 * g; ctx.lineWidth = 1.6 + 2.2 * g;
+      ctx.globalAlpha = (dark ? 0.85 : 0.9) * g; ctx.lineWidth = dark ? (1.8 + 3.4 * g) : (1.6 + 2.2 * g); ctx.shadowBlur = dark ? (5 + 14 * g) : 0;
       ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+    if (head > 0 && head < 1) {
+      const ph = this._ptAt(poly, m, head); ctx.globalAlpha = 1;
+      if (dark) {
+        ctx.shadowBlur = 18; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(ph[0], ph[1], 4, 0, 7); ctx.fill();
+        ctx.shadowBlur = 0; ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.beginPath(); ctx.arc(ph[0], ph[1], 1.9, 0, 7); ctx.fill();
+      } else {
+        ctx.shadowBlur = 0; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(ph[0], ph[1], 3.2, 0, 7); ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
   }
 
   _start() {
@@ -2572,24 +2604,22 @@ class EnergyFlowCard extends HTMLElement {
       '<style>' +
       ':host{display:block}' +
       '.ef-card{--ef-rete:#38BDF8;--ef-sole:#F5B301;--ef-batt:#22E39A;--ef-casa:#8B7BFF;' +
-      'position:relative;border-radius:18px;padding:14px 16px;overflow:hidden;' +
+      'position:relative;border-radius:18px;padding:10px 14px;overflow:hidden;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
-      '.ef-top{position:relative;z-index:3;display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}' +
-      '.ef-title{font-size:14px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
-      '.ef-live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
-      '.ef-live i{width:7px;height:7px;border-radius:50%;background:var(--ef-batt);}' +
-      '.ef-stage{position:relative;width:100%;aspect-ratio:3.7/1;}' +
+      '.ef-stage{position:relative;width:100%;aspect-ratio:3.3/1;}' +
       '.ef-stage canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1;}' +
-      '.ef-nd{position:absolute;transform:translate(-50%,-50%);z-index:3;pointer-events:none;display:flex;align-items:center;gap:10px;' +
-      'padding:8px 13px;border-radius:14px;background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      '.ef-live{position:absolute;right:2px;top:2px;z-index:4;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.ef-live i{width:7px;height:7px;border-radius:50%;background:var(--ef-batt);}' +
+      '.ef-nd{position:absolute;transform:translate(-50%,-50%);z-index:3;pointer-events:none;display:flex;align-items:center;gap:13px;' +
+      'padding:11px 17px;border-radius:16px;background:var(--ha-card-background,var(--card-background-color,#fff));' +
       'border:1px solid var(--divider-color,rgba(0,0,0,.1));white-space:nowrap;}' +
-      '.ef-ic{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;flex:0 0 auto;' +
+      '.ef-ic{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;flex:0 0 auto;' +
       'background:color-mix(in srgb,var(--c) 18%,transparent);}' +
-      '.ef-ic svg{width:22px;height:22px;stroke:var(--c);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}' +
+      '.ef-ic svg{width:27px;height:27px;stroke:var(--c);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}' +
       '.ef-lab{display:flex;flex-direction:column;line-height:1.15;}' +
-      '.ef-k{font-size:11px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
-      '.ef-v{font-size:16px;font-weight:600;color:var(--primary-text-color,#1c1c1e);margin-top:3px;font-variant-numeric:tabular-nums;}' +
-      '.ef-v small{font-size:11px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
+      '.ef-k{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
+      '.ef-v{font-size:19px;font-weight:700;color:var(--primary-text-color,#1c1c1e);margin-top:3px;font-variant-numeric:tabular-nums;}' +
+      '.ef-v small{font-size:12px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
       '</style>'
     );
   }
