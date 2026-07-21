@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.8.0
+ * Version: 1.8.1
  */
 
 // ===== temperature-bento-card.js =====
@@ -300,8 +300,8 @@ class TemperatureBentoCard extends HTMLElement {
     const rooms = this.config.rooms;
     // colonne: default 1 / 2 / 3, sovrascrivibili con grid_columns (max) e breakpoint via config
     const bp2 = this.config.grid_bp_2 || 480;
-    const bp3 = this.config.grid_bp_3 || 900;
-    const maxCols = this.config.grid_columns || 2;
+    const bp3 = this.config.grid_bp_3 || 820;
+    const maxCols = this.config.grid_columns || 3;
     // NB: classi prefissate .tr-* per evitare collisioni con i wrapper della sezione (card in light DOM)
     const roomsHtml = rooms
       .map((r, i) => {
