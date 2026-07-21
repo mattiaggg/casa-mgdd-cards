@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.12.1
+ * Version: 1.12.2
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1284,12 +1284,6 @@ class EnergyPowerCard extends HTMLElement {
     if (cfg.energy_day_entity) ids.push(cfg.energy_day_entity);
     if (cfg.energy_month_entity) ids.push(cfg.energy_month_entity);
     if (cfg.total_energy_entity) ids.push(cfg.total_energy_entity);
-    // layout flow: sensori dei nodi (import/export, produzione, carica/scarica)
-    if (cfg.solar_power) ids.push(cfg.solar_power);
-    if (cfg.grid_power) ids.push(cfg.grid_power);
-    if (cfg.house_power) ids.push(cfg.house_power);
-    if (cfg.battery_power) ids.push(cfg.battery_power);
-    if (cfg.battery_level) ids.push(cfg.battery_level);
     (cfg.circuits || []).forEach((c) => {
       if (c.entity) ids.push(c.entity);
       if (c.switch) ids.push(c.switch);
@@ -1477,7 +1471,6 @@ class EnergyPowerCard extends HTMLElement {
   _render() {
     if (this.config.layout === 'controls') this._renderControlTiles();
     else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
-    else if (this.config.layout === 'flow') this._renderFlow();
     else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
@@ -1768,135 +1761,6 @@ class EnergyPowerCard extends HTMLElement {
     this._wireClicks();
   }
 
-  // Icone dei nodi del flusso energetico
-  _flowIcon(key) {
-    const s = '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">';
-    if (key === 'solar') return s + '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg>';
-    if (key === 'grid') return s + '<path d="M12 2v20M6 8l6-4 6 4M7 14h10M8 20h8"/></svg>';
-    if (key === 'house') return s + '<path d="M4 11l8-7 8 7M6 10v9h12v-9"/></svg>';
-    if (key === 'battery') return s + '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M7 12h5"/></svg>';
-    return s + '</svg>';
-  }
-
-  // Layout flow: diagramma Solare/Rete/Casa/Batteria con linee predisposte.
-  // Le linee senza flusso reale restano statiche (nessuna cometa).
-  _renderFlow() {
-    const solar = this._num(this.config.solar_power);
-    const grid = this._num(this.config.grid_power); // + import / - export
-    const house = this._num(this.config.house_power);
-    const batt = this._num(this.config.battery_power); // + scarica / - carica
-    const level = this._num(this.config.battery_level);
-
-    const solarOn = solar !== null && solar > 0.5;
-    const importing = grid !== null && grid > 0.5;
-    const exporting = grid !== null && grid < -0.5;
-    const discharging = batt !== null && batt > 0.5;
-    const charging = batt !== null && batt < -0.5;
-
-    const COL = { solar: '#EF9F27', grid: '#2b9bf4', house: '#7b61ff', battery: '#1D9E75' };
-    // coordinate in viewBox 0..100 (x) / 0..52 (y)
-    const P = { solar: [50, 13], grid: [15, 40], house: [50, 40], battery: [85, 40] };
-
-    // topologia fissa richiesta: Solare->Rete/Casa/Batteria, Batteria->Casa, Rete->Casa
-    const edges = [
-      { from: 'solar', to: 'grid', on: solarOn && exporting, mag: Math.abs(grid || 0) },
-      { from: 'solar', to: 'battery', on: solarOn && charging, mag: Math.abs(batt || 0) },
-      { from: 'solar', to: 'house', on: solarOn, mag: solar || 0 },
-      { from: 'battery', to: 'house', on: discharging, mag: batt || 0 },
-      { from: 'grid', to: 'house', on: importing, mag: grid || 0 },
-    ];
-
-    // velocita' della cometa legata ai W: piu' potenza => piu' veloce
-    const durFor = (mag) => {
-      const d = 3.8 - (Math.max(0, mag) / 2000) * 3.1;
-      return Math.max(0.7, Math.min(3.8, d)).toFixed(2);
-    };
-
-    const sinks = {}; // nodi con flusso entrante attivo -> alone pulsante
-    let lines = '';
-    let comets = '';
-    edges.forEach((e) => {
-      const a = P[e.from];
-      const b = P[e.to];
-      const col = COL[e.from];
-      const d = 'M' + a[0] + ',' + a[1] + ' L' + b[0] + ',' + b[1];
-      if (e.on) {
-        sinks[e.to] = COL[e.to];
-        lines +=
-          '<path d="' + d + '" fill="none" stroke="' + col + '" stroke-width="2.4" ' +
-          'vector-effect="non-scaling-stroke" stroke-linecap="round" opacity="0.55"/>';
-        const dur = durFor(e.mag);
-        comets +=
-          '<circle r="1.3" fill="' + col + '" style="filter:drop-shadow(0 0 2px ' + col + ')">' +
-          '<animateMotion dur="' + dur + 's" repeatCount="indefinite" path="' + d + '"/>' +
-          '<animate attributeName="opacity" dur="' + dur + 's" repeatCount="indefinite" ' +
-          'values="0;1;1;0" keyTimes="0;0.18;0.72;1"/>' +
-          '</circle>';
-      } else if (!this.config.hide_pending) {
-        // linea predisposta, statica (nessun movimento finche' manca il flusso)
-        lines +=
-          '<path d="' + d + '" fill="none" stroke="var(--divider-color,rgba(0,0,0,.14))" ' +
-          'stroke-width="1.4" vector-effect="non-scaling-stroke" stroke-linecap="round" ' +
-          'stroke-dasharray="0.4 3.2"/>';
-      }
-    });
-
-    const nodeVal = (v) => {
-      if (v === null) return '—';
-      const a = Math.abs(v);
-      return this._fmt(a, '', a < 10 ? 1 : 0) + '<span> W</span>';
-    };
-    const nodes = [
-      { key: 'solar', name: 'Solare', val: solar, ent: this.config.solar_power },
-      { key: 'grid', name: 'Rete', val: grid, ent: this.config.grid_power },
-      { key: 'house', name: 'Casa', val: house, ent: this.config.house_power },
-      { key: 'battery', name: 'Batteria', val: batt, ent: this.config.battery_power, lvl: level },
-    ];
-    const nodesHtml = nodes
-      .map((n) => {
-        const c = COL[n.key];
-        const p = P[n.key];
-        const left = p[0] + '%';
-        const top = ((p[1] / 52) * 100).toFixed(1) + '%';
-        const glow = sinks[n.key];
-        const icoStyle =
-          'background:' + c + '1f;color:' + c + ';' +
-          (glow ? '--epf-glow:' + glow + '33;' : '');
-        const sub =
-          n.key === 'battery' && n.lvl !== null && n.lvl !== undefined
-            ? '<div class="epf-sub">' + n.lvl.toFixed(0) + '%</div>'
-            : '';
-        return (
-          '<div class="epf-node' + (glow ? ' epf-pulse' : '') + '" style="left:' + left + ';top:' + top + '"' +
-          (n.ent ? ' data-entity="' + n.ent + '"' : '') + '>' +
-          '<div class="epf-ico" style="' + icoStyle + '">' + this._flowIcon(n.key) + '</div>' +
-          '<div class="epf-name">' + n.name + '</div>' +
-          '<div class="epf-val">' + nodeVal(n.val) + '</div>' +
-          sub +
-          '</div>'
-        );
-      })
-      .join('');
-
-    const header = this.config.title
-      ? '<div class="epf-top"><span class="epf-title">' + this.config.title + '</span>' +
-        '<span class="epf-live">ora</span></div>'
-      : '';
-
-    this.innerHTML =
-      this._styles() +
-      '<div class="epf-card">' +
-      header +
-      '<div class="epf-wrap">' +
-      '<svg class="epf-lines" viewBox="0 0 100 52" preserveAspectRatio="none">' +
-      lines +
-      comets +
-      '</svg>' +
-      nodesHtml +
-      '</div></div>';
-    this._wireClicks();
-  }
-
   _styles() {
     return (
       '<style>' +
@@ -1998,24 +1862,6 @@ class EnergyPowerCard extends HTMLElement {
       '.ephg-spark .epc-spark{height:30px;}' +
       '.ephg-tile.off .ephg-val{color:var(--secondary-text-color,#9aa0aa);}' +
       '.ephg-tile.off .ephg-spark{filter:grayscale(1);opacity:.45;}' +
-      // layout flow: diagramma flusso energetico Solare/Rete/Casa/Batteria
-      '.epf-card{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px 16px 18px;}' +
-      '.epf-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;}' +
-      '.epf-title{font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
-      '.epf-live{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
-      '.epf-live::before{content:"";width:7px;height:7px;border-radius:50%;background:#1D9E75;}' +
-      '.epf-wrap{position:relative;width:100%;max-width:470px;margin:0 auto;aspect-ratio:100/52;}' +
-      '.epf-lines{position:absolute;inset:0;width:100%;height:100%;overflow:visible;}' +
-      '.epf-node{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:4px;width:32%;max-width:118px;cursor:pointer;text-align:center;}' +
-      '.epf-ico{width:44px;height:44px;border-radius:13px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;transition:box-shadow .3s;}' +
-      '.epf-ico svg{width:24px;height:24px;}' +
-      '.epf-pulse .epf-ico{animation:epfglow 2.2s ease-in-out infinite;}' +
-      '@keyframes epfglow{0%,100%{box-shadow:0 0 0 0 rgba(0,0,0,0);}50%{box-shadow:0 0 0 7px var(--epf-glow,rgba(123,97,255,.2));}}' +
-      '.epf-name{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);line-height:1;}' +
-      '.epf-val{font-size:15px;font-weight:700;color:var(--primary-text-color,#1c1c1e);line-height:1;font-variant-numeric:tabular-nums;}' +
-      '.epf-val span{font-size:10px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
-      '.epf-sub{font-size:10px;font-weight:600;color:var(--secondary-text-color,#6b6f76);line-height:1;}' +
-      '@media (prefers-reduced-motion:reduce){.epf-lines circle animateMotion,.epf-pulse .epf-ico{animation:none;}}' +
       '</style>'
     );
   }
