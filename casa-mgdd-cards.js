@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.8.1
+ * Version: 1.9.0
  */
 
 // ===== temperature-bento-card.js =====
@@ -1504,9 +1504,11 @@ class EnergyPowerCard extends HTMLElement {
         if (c.switch) {
           const on = this._isOn(c.switch);
           ctrl =
-            '<button class="epcs-sw' + (on ? ' on' : '') + '" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '"></button>';
+            '<button class="epcs-sw' + (on ? ' on' : '') + '" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '">' +
+            '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M16.56,5.44L15.11,6.89C16.84,7.94 18,9.83 18,12A6,6 0 0,1 12,18A6,6 0 0,1 6,12C6,9.83 7.16,7.94 8.88,6.88L7.44,5.44C5.36,6.88 4,9.28 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12C20,9.28 18.64,6.88 16.56,5.44M13,3H11V13H13"/></svg>' +
+            '</button>';
         } else {
-          ctrl = '<span class="epcs-tag">misura</span>';
+          ctrl = '';
         }
         return (
           '<div class="epcs-tile" data-entity="' + c.entity + '">' +
@@ -1746,7 +1748,7 @@ class EnergyPowerCard extends HTMLElement {
       '@media (max-width:439px){.epcs-tiles{grid-template-columns:1fr;}}' +
       '.epcs-tile{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:11px 14px;cursor:pointer;transition:border-color .12s;overflow:hidden;}' +
       '.epcs-tile:hover{border-color:var(--divider-color,rgba(0,0,0,.22));}' +
-      '.epcs-head{display:flex;align-items:center;gap:8px;min-width:0;}' +
+      '.epcs-head{display:flex;align-items:center;gap:8px;min-width:0;min-height:28px;}' +
       '.epcs-name{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '.epcs-tag{font-size:11px;color:var(--secondary-text-color,#6b6f76);opacity:.8;flex:0 0 auto;}' +
       '.epcs-body{display:flex;align-items:flex-end;gap:12px;margin-top:8px;}' +
@@ -1755,10 +1757,10 @@ class EnergyPowerCard extends HTMLElement {
       '.epcs-spark{flex:1;min-width:0;}' +
       '.epcs-spark .epc-spark{height:34px;}' +
       // interruttore S1
-      '.epcs-sw{flex:0 0 auto;width:38px;height:22px;border-radius:20px;position:relative;border:none;padding:0;cursor:pointer;background:var(--divider-color,rgba(0,0,0,.18));transition:background .15s;}' +
-      '.epcs-sw::after{content:"";position:absolute;top:2.5px;left:2.5px;width:17px;height:17px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.25);}' +
-      '.epcs-sw.on{background:#f5b301;}' +
-      '.epcs-sw.on::after{left:18.5px;}' +
+      '.epcs-sw{flex:0 0 auto;width:28px;height:28px;border-radius:50%;padding:0;cursor:pointer;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--divider-color,rgba(0,0,0,.22));background:transparent;color:var(--secondary-text-color,#9aa0aa);transition:border-color .15s,background .15s,color .15s;}' +
+      '.epcs-sw:hover{border-color:var(--secondary-text-color,#9aa0aa);}' +
+      '.epcs-sw.on{border-color:#1D9E75;background:rgba(29,158,117,.14);color:#1D9E75;}' +
+      '.epcs-sw svg{display:block;}' +
       '</style>'
     );
   }
