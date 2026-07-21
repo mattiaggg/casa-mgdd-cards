@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.5.2
+ * Version: 1.5.3
  */
 
 // ===== temperature-bento-card.js =====
@@ -2350,10 +2350,10 @@ class EnergyFlowCard extends HTMLElement {
 
   _routes() {
     return {
-      rete_casa: { p: [[0.14, 0.56], [0.5, 0.56]], c: 'rete' },
-      batt_casa: { p: [[0.86, 0.56], [0.5, 0.56]], c: 'batt' },
-      sole_casa: { p: [[0.5, 0.17], [0.5, 0.56]], c: 'sole' },
-      sole_batt: { p: [[0.5, 0.17], [0.86, 0.17], [0.86, 0.56]], c: 'sole' },
+      rete_casa: { p: [[0.13, 0.72], [0.5, 0.72]], c: 'rete' },
+      batt_casa: { p: [[0.87, 0.72], [0.5, 0.72]], c: 'batt' },
+      sole_casa: { p: [[0.5, 0.18], [0.5, 0.72]], c: 'sole' },
+      sole_batt: { p: [[0.5, 0.18], [0.87, 0.18], [0.87, 0.72]], c: 'sole' },
     };
   }
   // flowKey -> [routeKey, reverse, colorKey]
@@ -2400,10 +2400,10 @@ class EnergyFlowCard extends HTMLElement {
       '<div class="ef-card"><div class="ef-top"><span class="ef-title">' + this.config.title + '</span>' +
       '<span class="ef-live"><i></i>ora</span></div>' +
       '<div class="ef-stage"><canvas></canvas>' +
-      this._node('sole', '50%', '17%', 'Solare') +
-      this._node('rete', '14%', '56%', 'Rete') +
-      this._node('batt', '86%', '56%', 'Batteria') +
-      this._node('casa', '50%', '56%', 'Casa') +
+      this._node('sole', '50%', '18%', 'Solare') +
+      this._node('rete', '13%', '72%', 'Rete') +
+      this._node('batt', '87%', '72%', 'Batteria') +
+      this._node('casa', '50%', '72%', 'Casa') +
       '</div></div>';
     this._card = this.querySelector('.ef-card');
     this._title = this.querySelector('.ef-title');
@@ -2578,7 +2578,7 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-title{font-size:14px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
       '.ef-live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
       '.ef-live i{width:7px;height:7px;border-radius:50%;background:var(--ef-batt);}' +
-      '.ef-stage{position:relative;width:100%;aspect-ratio:1.9/1;}' +
+      '.ef-stage{position:relative;width:100%;aspect-ratio:3.7/1;}' +
       '.ef-stage canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1;}' +
       '.ef-nd{position:absolute;transform:translate(-50%,-50%);z-index:3;pointer-events:none;display:flex;align-items:center;gap:10px;' +
       'padding:8px 13px;border-radius:14px;background:var(--ha-card-background,var(--card-background-color,#fff));' +
