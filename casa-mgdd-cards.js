@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.7
+ * Version: 1.9.8
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1724,6 +1724,35 @@ class EnergyPowerCard extends HTMLElement {
           '</div>'
         : '');
 
+    // Variante "barre orizzontali classificate" (loads_layout: bars):
+    // una barra per carico, ampiezza proporzionale al massimo attivo.
+    const loadsBars = this.config.loads_layout === 'bars';
+    let barsHtml = '';
+    if (loadsBars && active.length) {
+      const barItems = active.map((c) => ({
+        name: c.name,
+        val: c.val,
+        color: this._paletteColor(circuits.findIndex((x) => x.entity === c.entity)),
+        entity: c.entity,
+      }));
+      if (other !== null) {
+        barItems.push({ name: 'Altro (non monitorato)', val: other, color: 'var(--divider-color,rgba(0,0,0,.14))', entity: null, other: true });
+      }
+      const maxW = barItems.reduce((m, b) => Math.max(m, b.val), 0) || 1;
+      barsHtml = barItems
+        .map((b) => {
+          const pct = Math.max((b.val / maxW) * 100, 2).toFixed(1);
+          const wtxt = b.other ? '~' + b.val.toFixed(0) + ' W' : this._fmt(b.val, ' W', b.val < 10 ? 1 : 0);
+          return (
+            '<div class="load-bar"' + (b.entity ? ' data-entity="' + b.entity + '"' : '') + '>' +
+            '<div class="load-bar-h"><span class="load-bar-n">' + b.name + '</span><span class="load-bar-w">' + wtxt + '</span></div>' +
+            '<div class="load-bar-track"><div class="load-bar-fill" style="width:' + pct + '%;background:' + b.color + '"></div></div>' +
+            '</div>'
+          );
+        })
+        .join('');
+    }
+
     this.innerHTML =
       this._styles() +
       '<div class="hero">' +
@@ -1741,8 +1770,7 @@ class EnergyPowerCard extends HTMLElement {
       (activeHtml
         ? '<div class="loadlist">' +
           '<div class="load-top"><span class="hero-l">Carichi attivi adesso</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
-          compBar +
-          activeHtml +
+          (loadsBars ? barsHtml : compBar + activeHtml) +
           '</div>'
         : '');
     this._wireClicks();
@@ -1832,6 +1860,13 @@ class EnergyPowerCard extends HTMLElement {
       '.load-name{flex:1;min-width:0;font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '.load-pct{font-size:11px;color:var(--secondary-text-color,#6b6f76);width:38px;text-align:right;flex:0 0 auto;}' +
       '.load-w{font-size:15px;font-weight:600;color:var(--primary-text-color,#1c1c1e);width:56px;text-align:right;flex:0 0 auto;}' +
+      '.load-bar{padding:9px 0 0;}' +
+      '.load-bar[data-entity]{cursor:pointer;}' +
+      '.load-bar-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px;}' +
+      '.load-bar-n{min-width:0;font-size:13px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.load-bar-w{font-size:14px;font-weight:600;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;flex:0 0 auto;}' +
+      '.load-bar-track{height:9px;background:var(--divider-color,rgba(0,0,0,.06));border-radius:5px;overflow:hidden;}' +
+      '.load-bar-fill{height:100%;border-radius:5px;}' +
       '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
       '.row{display:flex;align-items:center;gap:14px;padding:12px 0;cursor:pointer;}' +
       '.row[data-border]{border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
