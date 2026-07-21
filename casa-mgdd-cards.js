@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.7.1
+ * Version: 1.7.2
  */
 
 // ===== temperature-bento-card.js =====
@@ -368,8 +368,9 @@ class TemperatureBentoCard extends HTMLElement {
       "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
       ':host{display:block;}' +
       '.wrap{--ha-card-box-shadow:none;box-shadow:none;border:none;background:transparent;padding:0;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
-      '.top2{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;}' +
-      '.colA{display:grid;gap:12px;align-content:start;}' +
+      '.top2{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:stretch;}' +
+      // colA si allunga fino all'altezza della colonna zone: l'hero "Media casa" prende lo spazio extra
+      '.colA{display:grid;gap:12px;grid-template-rows:1fr auto;}' +
       '.colB{display:grid;gap:12px;align-content:start;}' +
       '.hero{background:var(--ha-card-background,var(--card-background-color,#fff));border-radius:18px;padding:16px;display:flex;flex-direction:column;justify-content:center;gap:6px;border:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
       '.hero .lbl{display:flex;align-items:center;gap:6px;color:var(--secondary-text-color,#6b6f76);font-size:13px;font-weight:600;}' +
