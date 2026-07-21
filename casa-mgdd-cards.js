@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.9.6
+ * Version: 1.9.7
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1598,8 +1598,6 @@ class EnergyPowerCard extends HTMLElement {
         if (!icon) icon = hasSwitch ? (on ? 'mdi:power-plug' : 'mdi:power-plug-off') : 'mdi:flash';
         else if (off && c.icon_off) icon = c.icon_off;
         const badge = v !== null && v > 1 ? '<span class="epst-badge">' + bolt + '</span>' : '';
-        const sec = hasSwitch ? (on ? 'Acceso' : 'Spenta') : '';
-        const secHtml = sec ? '<div class="epst-sec">' + sec + '</div>' : '';
         const chipOpen = hasSwitch
           ? '<button class="epst-ic" data-switch="' + c.switch + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="' + c.name + '" style="background:' + color + '22;">'
           : '<div class="epst-ic" style="background:' + color + '22;">';
@@ -1610,7 +1608,7 @@ class EnergyPowerCard extends HTMLElement {
           '<ha-icon icon="' + icon + '" style="color:' + color + ';--mdc-icon-size:17px;"></ha-icon>' +
           badge +
           chipClose +
-          '<div class="epst-info"><div class="epst-name">' + c.name + '</div>' + secHtml + '</div>' +
+          '<div class="epst-info"><div class="epst-name">' + c.name + '</div></div>' +
           '<div class="epst-w">' + this._fmt(v, '', v !== null && v < 10 ? 1 : 0) + '<span class="epst-u"> W</span></div>' +
           '</div>'
         );
