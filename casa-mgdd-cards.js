@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.13.2
+ * Version: 1.13.3
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2585,13 +2585,13 @@ class EnergyFlowCard extends HTMLElement {
 
   _routes() {
     if (this._mobile) {
-      // mobile: sorgenti in alto, tutto converge su Casa in basso
+      // mobile (radiale compatto): Solare in alto -> Casa dritto, e bracci verso Rete/Batteria; Rete/Batteria -> Casa in basso
       return {
-        sole_casa: { p: [[0.5, 0.13], [0.5, 0.84]], c: 'sole' },
-        rete_casa: { p: [[0.25, 0.45], [0.25, 0.84], [0.5, 0.84]], c: 'rete' },
-        batt_casa: { p: [[0.75, 0.45], [0.75, 0.84], [0.5, 0.84]], c: 'batt' },
-        sole_batt: { p: [[0.5, 0.13], [0.75, 0.13], [0.75, 0.45]], c: 'sole' },
-        sole_rete: { p: [[0.5, 0.13], [0.25, 0.13], [0.25, 0.45]], c: 'sole' },
+        sole_casa: { p: [[0.5, 0.14], [0.5, 0.82]], c: 'sole' },
+        sole_rete: { p: [[0.5, 0.14], [0.2, 0.14], [0.2, 0.46]], c: 'sole' },
+        sole_batt: { p: [[0.5, 0.14], [0.8, 0.14], [0.8, 0.46]], c: 'sole' },
+        rete_casa: { p: [[0.2, 0.46], [0.2, 0.82], [0.5, 0.82]], c: 'rete' },
+        batt_casa: { p: [[0.8, 0.46], [0.8, 0.82], [0.5, 0.82]], c: 'batt' },
       };
     }
     return {
@@ -2899,10 +2899,13 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-v small{font-size:12px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
       // posizioni desktop
       '.ef-nd[data-n=sole]{left:50%;top:24%;} .ef-nd[data-n=rete]{left:13%;top:74%;} .ef-nd[data-n=batt]{left:87%;top:74%;} .ef-nd[data-n=casa]{left:50%;top:74%;}' +
-      // layout mobile: stage piu' alto, sorgenti in alto, Casa in basso
-      '.ef-mobile .ef-stage{aspect-ratio:1.02/1;}' +
-      '.ef-mobile .ef-nd{gap:10px;padding:9px 13px;} .ef-mobile .ef-ic{width:40px;height:40px;} .ef-mobile .ef-ic svg{width:24px;height:24px;} .ef-mobile .ef-v{font-size:17px;}' +
-      '.ef-mobile .ef-nd[data-n=sole]{left:50%;top:13%;} .ef-mobile .ef-nd[data-n=rete]{left:25%;top:45%;} .ef-mobile .ef-nd[data-n=batt]{left:75%;top:45%;} .ef-mobile .ef-nd[data-n=casa]{left:50%;top:84%;}' +
+      // layout mobile (radiale compatto): stage quadrato, nodi compatti in colonna (icona/nome/valore)
+      '.ef-mobile .ef-stage{aspect-ratio:1/1;}' +
+      '.ef-mobile .ef-nd{flex-direction:column;align-items:center;gap:3px;padding:7px 10px;border-radius:13px;white-space:normal;}' +
+      '.ef-mobile .ef-ic{width:32px;height:32px;border-radius:10px;} .ef-mobile .ef-ic svg{width:20px;height:20px;}' +
+      '.ef-mobile .ef-lab{align-items:center;text-align:center;}' +
+      '.ef-mobile .ef-k{font-size:9.5px;} .ef-mobile .ef-v{font-size:13px;margin-top:0;} .ef-mobile .ef-v small{font-size:9px;}' +
+      '.ef-mobile .ef-nd[data-n=sole]{left:50%;top:14%;} .ef-mobile .ef-nd[data-n=rete]{left:20%;top:46%;} .ef-mobile .ef-nd[data-n=batt]{left:80%;top:46%;} .ef-mobile .ef-nd[data-n=casa]{left:50%;top:82%;}' +
       '</style>'
     );
   }
