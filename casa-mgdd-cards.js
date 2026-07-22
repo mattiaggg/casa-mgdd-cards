@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.12.2
+ * Version: 1.13.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2553,6 +2553,7 @@ class EnergyFlowCard extends HTMLElement {
     this._built = false;
     this._flows = {};
     this._pulses = [];
+    this._rings = [];
     this._akeys = '';
     this._raf = null;
     this._W = 0;
@@ -2589,6 +2590,7 @@ class EnergyFlowCard extends HTMLElement {
         rete_casa: { p: [[0.25, 0.45], [0.25, 0.84], [0.5, 0.84]], c: 'rete' },
         batt_casa: { p: [[0.75, 0.45], [0.75, 0.84], [0.5, 0.84]], c: 'batt' },
         sole_batt: { p: [[0.5, 0.13], [0.75, 0.13], [0.75, 0.45]], c: 'sole' },
+        sole_rete: { p: [[0.5, 0.13], [0.25, 0.13], [0.25, 0.45]], c: 'sole' },
       };
     }
     return {
@@ -2596,6 +2598,7 @@ class EnergyFlowCard extends HTMLElement {
       batt_casa: { p: [[0.87, 0.74], [0.5, 0.74]], c: 'batt' },
       sole_casa: { p: [[0.5, 0.24], [0.5, 0.74]], c: 'sole' },
       sole_batt: { p: [[0.5, 0.24], [0.87, 0.24], [0.87, 0.74]], c: 'sole' },
+      sole_rete: { p: [[0.5, 0.24], [0.13, 0.24], [0.13, 0.74]], c: 'sole' },
     };
   }
   // flowKey -> [routeKey, reverse, colorKey]
@@ -2607,13 +2610,15 @@ class EnergyFlowCard extends HTMLElement {
       casa_batt: ['batt_casa', true, 'batt'],
       sole_casa: ['sole_casa', false, 'sole'],
       sole_batt: ['sole_batt', false, 'sole'],
+      sole_rete: ['sole_rete', false, 'sole'],
     };
     return F[key];
   }
   _routeOn(rk) {
     const c = this.config;
+    if (c.predispose) return true; // disegna tutte le linee anche senza entità (predisposizione)
     if (rk === 'rete_casa') return !!c.grid_power;
-    if (rk === 'sole_casa' || rk === 'sole_batt') return !!c.solar_power;
+    if (rk === 'sole_casa' || rk === 'sole_batt' || rk === 'sole_rete') return !!c.solar_power;
     if (rk === 'batt_casa') return !!c.battery_power;
     return false;
   }
@@ -2720,10 +2725,11 @@ class EnergyFlowCard extends HTMLElement {
   _compute() {
     const c = this.config;
     const g = this._num(c.grid_power), s = this._num(c.solar_power), b = this._num(c.battery_power), soc = this._num(c.battery_soc), h = this._num(c.house_power);
-    this._setNode('sole', s);
-    this._setNode('rete', g === null ? null : Math.abs(g));
-    this._setNode('batt', b === null ? null : Math.abs(b));
-    this._setNode('casa', h);
+    const P0 = !!c.predispose; // se predisposto, mostra 0 dove l'entità manca invece di "—"
+    this._setNode('sole', s === null && P0 ? 0 : s);
+    this._setNode('rete', g === null ? (P0 ? 0 : null) : Math.abs(g));
+    this._setNode('batt', b === null ? (P0 ? 0 : null) : Math.abs(b));
+    this._setNode('casa', h === null && P0 ? 0 : h);
     const bk = this.querySelector('[data-k=batt]');
     if (bk) { let t = 'Batteria'; if (soc !== null) t += ' · ' + Math.round(soc) + '%'; if (b !== null) t += b > 5 ? ' scarica' : b < -5 ? ' carica' : ''; bk.textContent = t; }
     const rk = this.querySelector('[data-k=rete]');
@@ -2754,7 +2760,7 @@ class EnergyFlowCard extends HTMLElement {
   _trimmedPoly(rk) {
     const poly = this._polyPx(rk).map((p) => p.slice());
     const R = this._nrects || {};
-    const ends = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'] }[rk];
+    const ends = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'], sole_rete: ['sole', 'rete'] }[rk];
     const gap = 2;
     if (ends && R[ends[0]] && poly.length > 1) poly[0] = this._edge(R[ends[0]], poly[1], gap);
     if (ends && R[ends[1]] && poly.length > 1) poly[poly.length - 1] = this._edge(R[ends[1]], poly[poly.length - 2], gap);
@@ -2818,6 +2824,24 @@ class EnergyFlowCard extends HTMLElement {
     ctx.globalAlpha = 1; ctx.shadowBlur = 0;
   }
 
+  // nodi [sorgente, destinazione] di un flusso, tenendo conto dell'eventuale reverse
+  _flowEnds(key) {
+    const def = this._flowDef(key); if (!def) return null;
+    const em = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'], sole_rete: ['sole', 'rete'] }[def[0]];
+    if (!em) return null;
+    return def[1] ? [em[1], em[0]] : em;
+  }
+  // anello di assorbimento sul nodo di destinazione all'arrivo del fascio
+  _ring(node, t, color) {
+    const rc = (this._nrects || {})[node]; if (!rc) return;
+    const ctx = this._ctx, dark = this._dark;
+    const rad = Math.max(rc.hw, rc.hh) * 0.5 + t * 26;
+    ctx.globalAlpha = (1 - t) * (dark ? 0.85 : 0.6); ctx.strokeStyle = color; ctx.shadowColor = color;
+    ctx.shadowBlur = dark ? 15 : 9; ctx.lineWidth = 2.6 * (1 - t * 0.5);
+    ctx.beginPath(); ctx.arc(rc.cx, rc.cy, rad, 0, 7); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  }
+
   _start() {
     if (this._raf) return;
     const maxP = this.config.max_power || 3500;
@@ -2835,10 +2859,13 @@ class EnergyFlowCard extends HTMLElement {
           const def = this._flowDef(pl.key); if (!def) return;
           let poly = this._trimmedPoly(def[0]); if (def[1]) poly = poly.slice().reverse();
           const m = this._meta(poly), power = this._flows[pl.key] || 0;
-          const sp = 0.06 + Math.min(1, power / maxP) * 0.55;
-          pl.head += dt * sp; if (pl.head > 1) pl.head -= 1;
+          const sp = 0.12 + Math.min(1, power / maxP) * 0.8;
+          pl.head += dt * sp;
+          if (pl.head > 1) { pl.head -= 1; const en = this._flowEnds(pl.key); if (en) this._rings.push({ node: en[1], t: 0, c: NCOL[def[2]] }); }
           this._beam(poly, m, pl.head, NCOL[def[2]]);
         });
+        this._rings.forEach((rg) => { rg.t += dt * 1.6; });
+        this._rings = this._rings.filter((rg) => { if (rg.t >= 1) return false; this._ring(rg.node, rg.t, rg.c); return true; });
         ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
       }
       this._raf = requestAnimationFrame(loop);
