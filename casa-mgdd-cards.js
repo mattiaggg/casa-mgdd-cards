@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.13.0
+ * Version: 1.13.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2707,11 +2707,12 @@ class EnergyFlowCard extends HTMLElement {
       : { rete: '#0EA5E9', sole: '#E08A00', batt: '#0FB57E', casa: '#6D5AE6' };
   }
 
-  _setNode(id, val) {
+  _setNode(id, val, unit) {
     const v = this.querySelector('[data-v=' + id + ']');
     const u = this.querySelector('[data-u=' + id + ']');
     if (!v) return;
     if (val === null || val === undefined) { v.textContent = '—'; u.textContent = ''; return; }
+    if (unit) { v.textContent = String(Math.round(val)); u.textContent = unit; return; } // unità fissa (es. batteria in %)
     const a = Math.abs(val);
     if (a >= 1000) { v.textContent = (val / 1000).toFixed(1); u.textContent = 'kW'; }
     else { v.textContent = String(Math.round(val)); u.textContent = 'W'; }
@@ -2728,10 +2729,10 @@ class EnergyFlowCard extends HTMLElement {
     const P0 = !!c.predispose; // se predisposto, mostra 0 dove l'entità manca invece di "—"
     this._setNode('sole', s === null && P0 ? 0 : s);
     this._setNode('rete', g === null ? (P0 ? 0 : null) : Math.abs(g));
-    this._setNode('batt', b === null ? (P0 ? 0 : null) : Math.abs(b));
+    this._setNode('batt', soc === null ? (P0 ? 0 : null) : soc, '%'); // batteria: mostra la % (SOC)
     this._setNode('casa', h === null && P0 ? 0 : h);
     const bk = this.querySelector('[data-k=batt]');
-    if (bk) { let t = 'Batteria'; if (soc !== null) t += ' · ' + Math.round(soc) + '%'; if (b !== null) t += b > 5 ? ' scarica' : b < -5 ? ' carica' : ''; bk.textContent = t; }
+    if (bk) { let t = 'Batteria'; if (b !== null) t += b > 5 ? ' · scarica' : b < -5 ? ' · carica' : ''; bk.textContent = t; }
     const rk = this.querySelector('[data-k=rete]');
     if (rk) rk.textContent = g !== null && g < -5 ? 'Rete · immissione' : 'Rete';
     const TH = c.threshold || 5;
@@ -2861,7 +2862,7 @@ class EnergyFlowCard extends HTMLElement {
           const m = this._meta(poly), power = this._flows[pl.key] || 0;
           const sp = 0.12 + Math.min(1, power / maxP) * 0.8;
           pl.head += dt * sp;
-          if (pl.head > 1) { pl.head -= 1; const en = this._flowEnds(pl.key); if (en) this._rings.push({ node: en[1], t: 0, c: NCOL[def[2]] }); }
+          if (pl.head > 1) { pl.head -= 1; const en = this._flowEnds(pl.key); if (en) this._rings.push({ node: en[1], t: 0, c: NCOL[en[1]] }); }
           this._beam(poly, m, pl.head, NCOL[def[2]]);
         });
         this._rings.forEach((rg) => { rg.t += dt * 1.6; });
