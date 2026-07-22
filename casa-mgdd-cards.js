@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.13.1
+ * Version: 1.13.2
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -225,13 +225,14 @@ class TemperatureBentoCard extends HTMLElement {
         el.classList.add('zc-active');
       };
       const hide = () => el.classList.remove('zc-active');
-      el.addEventListener('pointermove', (e) => show(e.clientX));
-      el.addEventListener('pointerdown', (e) => show(e.clientX));
-      el.addEventListener('pointerleave', hide);
-      el.addEventListener('pointerup', () => {
-        clearTimeout(el._hideTimer);
-        el._hideTimer = setTimeout(hide, 2500);
-      });
+      const scheduleHide = () => { clearTimeout(el._hideTimer); el._hideTimer = setTimeout(hide, 2500); };
+      const showAt = (e) => { clearTimeout(el._hideTimer); show(e.clientX); };
+      el.addEventListener('pointermove', showAt);
+      el.addEventListener('pointerdown', showAt);
+      // col mouse nascondi subito all'uscita; col dito lascia il tooltip ancora un po'
+      el.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hide(); else scheduleHide(); });
+      el.addEventListener('pointerup', scheduleHide);
+      el.addEventListener('pointercancel', scheduleHide);
     });
   }
 
@@ -2122,7 +2123,7 @@ class EnergyHistoryCard extends HTMLElement {
         tip = document.createElement('div');
         tip.className = 'bartip';
         tip.style.cssText =
-          'position:absolute;pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:#fff;font-size:11px;font-weight:500;padding:3px 8px;border-radius:6px;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:2;transform:translate(-50%,-100%);top:-6px;';
+          'position:absolute;pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:var(--ha-card-background,var(--card-background-color,#fff));font-size:11px;font-weight:500;padding:3px 8px;border-radius:6px;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:2;transform:translate(-50%,-100%);top:-6px;';
         container.appendChild(tip);
       }
       const showTip = (bar) => {
@@ -2144,7 +2145,7 @@ class EnergyHistoryCard extends HTMLElement {
         if (!bar) return;
         showTip(bar);
         clearTimeout(container._hideTimer);
-        container._hideTimer = setTimeout(hideTip, 2000);
+        container._hideTimer = setTimeout(hideTip, 2500);
       });
     });
   }
