@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.13.3
+ * Version: 1.13.4
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2588,10 +2588,10 @@ class EnergyFlowCard extends HTMLElement {
       // mobile (radiale compatto): Solare in alto -> Casa dritto, e bracci verso Rete/Batteria; Rete/Batteria -> Casa in basso
       return {
         sole_casa: { p: [[0.5, 0.14], [0.5, 0.82]], c: 'sole' },
-        sole_rete: { p: [[0.5, 0.14], [0.2, 0.14], [0.2, 0.46]], c: 'sole' },
-        sole_batt: { p: [[0.5, 0.14], [0.8, 0.14], [0.8, 0.46]], c: 'sole' },
-        rete_casa: { p: [[0.2, 0.46], [0.2, 0.82], [0.5, 0.82]], c: 'rete' },
-        batt_casa: { p: [[0.8, 0.46], [0.8, 0.82], [0.5, 0.82]], c: 'batt' },
+        sole_rete: { p: [[0.5, 0.14], [0.14, 0.14], [0.14, 0.46]], c: 'sole' },
+        sole_batt: { p: [[0.5, 0.14], [0.86, 0.14], [0.86, 0.46]], c: 'sole' },
+        rete_casa: { p: [[0.14, 0.46], [0.14, 0.82], [0.5, 0.82]], c: 'rete' },
+        batt_casa: { p: [[0.86, 0.46], [0.86, 0.82], [0.5, 0.82]], c: 'batt' },
       };
     }
     return {
@@ -2752,20 +2752,14 @@ class EnergyFlowCard extends HTMLElement {
   }
 
   _polyPx(rk) { return this._routes()[rk].p.map((p) => [p[0] * this._W, p[1] * this._H]); }
-  // sposta l'estremo (centro nodo) fino al bordo del box + gap, lungo il segmento adiacente
-  _edge(rc, toward, gap) {
-    const dx = toward[0] - rc.cx, dy = toward[1] - rc.cy;
-    if (Math.abs(dx) >= Math.abs(dy)) return [rc.cx + Math.sign(dx) * (rc.hw + gap), rc.cy];
-    return [rc.cx, rc.cy + Math.sign(dy) * (rc.hh + gap)];
-  }
-  // polilinea del percorso con estremi tagliati al bordo dei nodi (parte e arriva dal bordo, non dal centro)
+  // polilinea del percorso con estremi portati al CENTRO dei nodi: la scia entra sotto il box
+  // (il nodo e' opaco e sta sopra il canvas, quindi la testa "sparisce dentro" l'entita')
   _trimmedPoly(rk) {
     const poly = this._polyPx(rk).map((p) => p.slice());
     const R = this._nrects || {};
     const ends = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'], sole_rete: ['sole', 'rete'] }[rk];
-    const gap = 2;
-    if (ends && R[ends[0]] && poly.length > 1) poly[0] = this._edge(R[ends[0]], poly[1], gap);
-    if (ends && R[ends[1]] && poly.length > 1) poly[poly.length - 1] = this._edge(R[ends[1]], poly[poly.length - 2], gap);
+    if (ends && R[ends[0]] && poly.length > 1) poly[0] = [R[ends[0]].cx, R[ends[0]].cy];
+    if (ends && R[ends[1]] && poly.length > 1) poly[poly.length - 1] = [R[ends[1]].cx, R[ends[1]].cy];
     return this._round(poly, 16);
   }
   // arrotonda gli angoli inserendo un arco (bezier quadratica) su ogni vertice interno
@@ -2905,7 +2899,7 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-mobile .ef-ic{width:32px;height:32px;border-radius:10px;} .ef-mobile .ef-ic svg{width:20px;height:20px;}' +
       '.ef-mobile .ef-lab{align-items:center;text-align:center;}' +
       '.ef-mobile .ef-k{font-size:9.5px;} .ef-mobile .ef-v{font-size:13px;margin-top:0;} .ef-mobile .ef-v small{font-size:9px;}' +
-      '.ef-mobile .ef-nd[data-n=sole]{left:50%;top:14%;} .ef-mobile .ef-nd[data-n=rete]{left:20%;top:46%;} .ef-mobile .ef-nd[data-n=batt]{left:80%;top:46%;} .ef-mobile .ef-nd[data-n=casa]{left:50%;top:82%;}' +
+      '.ef-mobile .ef-nd[data-n=sole]{left:50%;top:14%;} .ef-mobile .ef-nd[data-n=rete]{left:14%;top:46%;} .ef-mobile .ef-nd[data-n=batt]{left:86%;top:46%;} .ef-mobile .ef-nd[data-n=casa]{left:50%;top:82%;}' +
       '</style>'
     );
   }
