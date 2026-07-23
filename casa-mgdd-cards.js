@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.15.0
+ * Version: 1.16.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1308,6 +1308,18 @@ class EnergyPowerCard extends HTMLElement {
     const v = parseFloat(s.state);
     return Number.isNaN(v) ? null : v;
   }
+  // potenza normalizzata a W leggendo l'unita' dell'entita' (kW->W). Preserva il segno.
+  _pw(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    if (Number.isNaN(v)) return null;
+    const u = ((s.attributes && s.attributes.unit_of_measurement) || '').toLowerCase();
+    if (u === 'kw') return v * 1000;
+    if (u === 'mw') return v * 1e6;
+    return v; // W o unita' non dichiarata: assume W
+  }
 
   _fmt(v, unit, dec) {
     if (v === null || v === undefined) return '--';
@@ -1616,7 +1628,7 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _renderOverview() {
-    const power = this._num(this.config.power_entity);
+    const power = this._pw(this.config.power_entity);
     const day = this._num(this.config.energy_day_entity);
     const month = this._num(this.config.energy_month_entity);
     const circuits = this.config.circuits || [];
