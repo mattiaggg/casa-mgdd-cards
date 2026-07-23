@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.14.0
+ * Version: 1.15.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2740,9 +2740,11 @@ class EnergyFlowCard extends HTMLElement {
     const c = this.config;
     const g = this._pw(c.grid_power), s = this._pw(c.solar_power), b = this._pw(c.battery_power), soc = this._num(c.battery_soc), h = this._pw(c.house_power);
     const P0 = !!c.predispose; // se predisposto, mostra 0 dove l'entità manca invece di "—"
+    // soc_scale: mostra il SOC "app Tesla" nascondendo la riserva ~5% -> (soc-5)/0.95, clamp 0-100
+    const socDisp = (soc !== null && c.soc_scale) ? Math.max(0, Math.min(100, (soc - 5) / 0.95)) : soc;
     this._setNode('sole', s === null && P0 ? 0 : s);
     this._setNode('rete', g === null ? (P0 ? 0 : null) : Math.abs(g));
-    this._setNode('batt', soc === null ? (P0 ? 0 : null) : soc, '%'); // batteria: mostra la % (SOC)
+    this._setNode('batt', socDisp === null ? (P0 ? 0 : null) : socDisp, '%'); // batteria: mostra la % (SOC)
     this._setNode('casa', h === null && P0 ? 0 : h);
     const bk = this.querySelector('[data-k=batt]');
     if (bk) { let t = 'Batteria'; if (b !== null) t += b > 5 ? ' · scarica' : b < -5 ? ' · carica' : ''; bk.textContent = t; }
