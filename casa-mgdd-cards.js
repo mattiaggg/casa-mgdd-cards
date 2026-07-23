@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.16.0
+ * Version: 1.17.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2616,6 +2616,7 @@ class EnergyFlowCard extends HTMLElement {
         sole_batt: { p: [[0.5, 0.14], [0.86, 0.14], [0.86, 0.46]], c: 'sole' },
         rete_casa: { p: [[0.14, 0.46], [0.14, 0.82], [0.5, 0.82]], c: 'rete' },
         batt_casa: { p: [[0.86, 0.46], [0.86, 0.82], [0.5, 0.82]], c: 'batt' },
+        rete_batt: { p: [[0.14, 0.46], [0.86, 0.46]], c: 'rete' },
       };
     }
     return {
@@ -2624,6 +2625,7 @@ class EnergyFlowCard extends HTMLElement {
       sole_casa: { p: [[0.5, 0.24], [0.5, 0.74]], c: 'sole' },
       sole_batt: { p: [[0.5, 0.24], [0.87, 0.24], [0.87, 0.74]], c: 'sole' },
       sole_rete: { p: [[0.5, 0.24], [0.13, 0.24], [0.13, 0.74]], c: 'sole' },
+      rete_batt: { p: [[0.13, 0.74], [0.13, 0.92], [0.87, 0.92], [0.87, 0.74]], c: 'rete' },
     };
   }
   // flowKey -> [routeKey, reverse, colorKey]
@@ -2636,6 +2638,7 @@ class EnergyFlowCard extends HTMLElement {
       sole_casa: ['sole_casa', false, 'sole'],
       sole_batt: ['sole_batt', false, 'sole'],
       sole_rete: ['sole_rete', false, 'sole'],
+      rete_batt: ['rete_batt', false, 'rete'],
     };
     return F[key];
   }
@@ -2645,6 +2648,7 @@ class EnergyFlowCard extends HTMLElement {
     if (rk === 'rete_casa') return !!c.grid_power;
     if (rk === 'sole_casa' || rk === 'sole_batt' || rk === 'sole_rete') return !!c.solar_power;
     if (rk === 'batt_casa') return !!c.battery_power;
+    if (rk === 'rete_batt') return !!(this._flows && this._flows.rete_batt); // solo con carica reale da rete
     return false;
   }
 
@@ -2764,9 +2768,23 @@ class EnergyFlowCard extends HTMLElement {
     if (rk) rk.textContent = g !== null && g < -5 ? 'Rete · immissione' : 'Rete';
     const TH = c.threshold || 5;
     const flows = {};
-    if (g !== null) { if (g > TH) flows.rete_casa = g; else if (g < -TH) flows.casa_rete = -g; }
+    // batteria: in scarica -> Casa; in carica -> ripartita tra surplus solare e prelievo da rete
+    let reteBatt = 0;
+    if (b !== null && b < -TH) {
+      const chg = -b;
+      const surplus = (s !== null) ? Math.max(0, s - (h !== null ? h : 0)) : 0; // solare oltre il consumo casa
+      const soleBatt = Math.min(chg, surplus);
+      reteBatt = chg - soleBatt; // resto della carica: dalla rete
+      if (soleBatt > TH) flows.sole_batt = soleBatt;
+      if (reteBatt > TH) flows.rete_batt = reteBatt;
+    } else if (b !== null && b > TH) {
+      flows.batt_casa = b;
+    }
+    if (g !== null) {
+      if (g > TH) { const rc = g - reteBatt; if (rc > TH) flows.rete_casa = rc; } // Rete->Casa senza la quota che carica la batteria
+      else if (g < -TH) flows.casa_rete = -g;
+    }
     if (s !== null && s > TH) flows.sole_casa = s;
-    if (b !== null) { if (b > TH) flows.batt_casa = b; else if (b < -TH) flows.sole_batt = -b; }
     this._flows = flows;
     const keys = Object.keys(flows).sort().join(',');
     if (keys !== this._akeys) {
@@ -2783,7 +2801,7 @@ class EnergyFlowCard extends HTMLElement {
   _trimmedPoly(rk) {
     const poly = this._polyPx(rk).map((p) => p.slice());
     const R = this._nrects || {};
-    const ends = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'], sole_rete: ['sole', 'rete'] }[rk];
+    const ends = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'], sole_rete: ['sole', 'rete'], rete_batt: ['rete', 'batt'] }[rk];
     if (ends && R[ends[0]] && poly.length > 1) poly[0] = [R[ends[0]].cx, R[ends[0]].cy];
     if (ends && R[ends[1]] && poly.length > 1) poly[poly.length - 1] = [R[ends[1]].cx, R[ends[1]].cy];
     return this._round(poly, 16);
@@ -2849,7 +2867,7 @@ class EnergyFlowCard extends HTMLElement {
   // nodi [sorgente, destinazione] di un flusso, tenendo conto dell'eventuale reverse
   _flowEnds(key) {
     const def = this._flowDef(key); if (!def) return null;
-    const em = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'], sole_rete: ['sole', 'rete'] }[def[0]];
+    const em = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'], sole_rete: ['sole', 'rete'], rete_batt: ['rete', 'batt'] }[def[0]];
     if (!em) return null;
     return def[1] ? [em[1], em[0]] : em;
   }
