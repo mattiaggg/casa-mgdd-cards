@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.13.4
+ * Version: 1.14.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2582,6 +2582,18 @@ class EnergyFlowCard extends HTMLElement {
     const v = parseFloat(s.state);
     return Number.isNaN(v) ? null : v;
   }
+  // potenza normalizzata a W leggendo l'unita' dell'entita' (kW->W). Preserva il segno.
+  _pw(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    if (Number.isNaN(v)) return null;
+    const u = ((s.attributes && s.attributes.unit_of_measurement) || '').toLowerCase();
+    if (u === 'kw') return v * 1000;
+    if (u === 'mw') return v * 1e6;
+    return v; // W o unita' non dichiarata: assume W
+  }
 
   _routes() {
     if (this._mobile) {
@@ -2726,7 +2738,7 @@ class EnergyFlowCard extends HTMLElement {
 
   _compute() {
     const c = this.config;
-    const g = this._num(c.grid_power), s = this._num(c.solar_power), b = this._num(c.battery_power), soc = this._num(c.battery_soc), h = this._num(c.house_power);
+    const g = this._pw(c.grid_power), s = this._pw(c.solar_power), b = this._pw(c.battery_power), soc = this._num(c.battery_soc), h = this._pw(c.house_power);
     const P0 = !!c.predispose; // se predisposto, mostra 0 dove l'entità manca invece di "—"
     this._setNode('sole', s === null && P0 ? 0 : s);
     this._setNode('rete', g === null ? (P0 ? 0 : null) : Math.abs(g));
