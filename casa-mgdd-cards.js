@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.17.0
+ * Version: 1.18.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2616,16 +2616,15 @@ class EnergyFlowCard extends HTMLElement {
         sole_batt: { p: [[0.5, 0.14], [0.86, 0.14], [0.86, 0.46]], c: 'sole' },
         rete_casa: { p: [[0.14, 0.46], [0.14, 0.82], [0.5, 0.82]], c: 'rete' },
         batt_casa: { p: [[0.86, 0.46], [0.86, 0.82], [0.5, 0.82]], c: 'batt' },
-        rete_batt: { p: [[0.14, 0.46], [0.86, 0.46]], c: 'rete' },
       };
     }
     return {
-      rete_casa: { p: [[0.13, 0.74], [0.5, 0.74]], c: 'rete' },
-      batt_casa: { p: [[0.87, 0.74], [0.5, 0.74]], c: 'batt' },
-      sole_casa: { p: [[0.5, 0.24], [0.5, 0.74]], c: 'sole' },
-      sole_batt: { p: [[0.5, 0.24], [0.87, 0.24], [0.87, 0.74]], c: 'sole' },
-      sole_rete: { p: [[0.5, 0.24], [0.13, 0.24], [0.13, 0.74]], c: 'sole' },
-      rete_batt: { p: [[0.13, 0.74], [0.13, 0.92], [0.87, 0.92], [0.87, 0.74]], c: 'rete' },
+      rete_casa: { p: [[0.13, 0.66], [0.5, 0.66]], c: 'rete' },
+      batt_casa: { p: [[0.87, 0.66], [0.5, 0.66]], c: 'batt' },
+      sole_casa: { p: [[0.5, 0.2], [0.5, 0.66]], c: 'sole' },
+      sole_batt: { p: [[0.5, 0.2], [0.87, 0.2], [0.87, 0.66]], c: 'sole' },
+      sole_rete: { p: [[0.5, 0.2], [0.13, 0.2], [0.13, 0.66]], c: 'sole' },
+      rete_batt: { p: [[0.13, 0.66], [0.13, 0.88], [0.87, 0.88], [0.87, 0.66]], c: 'rete' },
     };
   }
   // flowKey -> [routeKey, reverse, colorKey]
@@ -2776,7 +2775,8 @@ class EnergyFlowCard extends HTMLElement {
       const soleBatt = Math.min(chg, surplus);
       reteBatt = chg - soleBatt; // resto della carica: dalla rete
       if (soleBatt > TH) flows.sole_batt = soleBatt;
-      if (reteBatt > TH) flows.rete_batt = reteBatt;
+      // su mobile la linea Rete->Batteria attraverserebbe le altre: la ometto (caso raro)
+      if (reteBatt > TH && !this._mobile) flows.rete_batt = reteBatt;
     } else if (b !== null && b > TH) {
       flows.batt_casa = b;
     }
@@ -2921,7 +2921,7 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-card{--ef-rete:#38BDF8;--ef-sole:#F5B301;--ef-batt:#22E39A;--ef-casa:#8B7BFF;' +
       'position:relative;border-radius:18px;padding:10px 14px;overflow:hidden;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
-      '.ef-stage{position:relative;width:100%;aspect-ratio:3.3/1;}' +
+      '.ef-stage{position:relative;width:100%;aspect-ratio:2.6/1;}' +
       '.ef-stage canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1;}' +
       '.ef-live{position:absolute;right:2px;top:2px;z-index:4;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--secondary-text-color,#6b6f76);}' +
       '.ef-live i{width:7px;height:7px;border-radius:50%;background:var(--ef-batt);}' +
@@ -2936,7 +2936,7 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-v{font-size:19px;font-weight:700;color:var(--primary-text-color,#1c1c1e);margin-top:3px;font-variant-numeric:tabular-nums;}' +
       '.ef-v small{font-size:12px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
       // posizioni desktop
-      '.ef-nd[data-n=sole]{left:50%;top:24%;} .ef-nd[data-n=rete]{left:13%;top:74%;} .ef-nd[data-n=batt]{left:87%;top:74%;} .ef-nd[data-n=casa]{left:50%;top:74%;}' +
+      '.ef-nd[data-n=sole]{left:50%;top:20%;} .ef-nd[data-n=rete]{left:13%;top:66%;} .ef-nd[data-n=batt]{left:87%;top:66%;} .ef-nd[data-n=casa]{left:50%;top:66%;}' +
       // layout mobile (radiale compatto): stage quadrato, nodi compatti in colonna (icona/nome/valore)
       '.ef-mobile .ef-stage{aspect-ratio:1/1;}' +
       '.ef-mobile .ef-nd{flex-direction:column;align-items:center;gap:3px;padding:7px 10px;border-radius:13px;white-space:normal;}' +
