@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.18.0
+ * Version: 1.19.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2766,18 +2766,21 @@ class EnergyFlowCard extends HTMLElement {
     const rk = this.querySelector('[data-k=rete]');
     if (rk) rk.textContent = g !== null && g < -5 ? 'Rete · immissione' : 'Rete';
     const TH = c.threshold || 5;
+    // soglia dedicata ai soli flussi batteria: nasconde il consumo parassita/standby della PW (~40-150W)
+    // senza toccare gli altri rami (rete/solare/casa restano su TH)
+    const TB = c.battery_min_flow || 120;
     const flows = {};
     // batteria: in scarica -> Casa; in carica -> ripartita tra surplus solare e prelievo da rete
     let reteBatt = 0;
-    if (b !== null && b < -TH) {
+    if (b !== null && b < -TB) {
       const chg = -b;
       const surplus = (s !== null) ? Math.max(0, s - (h !== null ? h : 0)) : 0; // solare oltre il consumo casa
       const soleBatt = Math.min(chg, surplus);
       reteBatt = chg - soleBatt; // resto della carica: dalla rete
-      if (soleBatt > TH) flows.sole_batt = soleBatt;
+      if (soleBatt > TB) flows.sole_batt = soleBatt;
       // su mobile la linea Rete->Batteria attraverserebbe le altre: la ometto (caso raro)
-      if (reteBatt > TH && !this._mobile) flows.rete_batt = reteBatt;
-    } else if (b !== null && b > TH) {
+      if (reteBatt > TB && !this._mobile) flows.rete_batt = reteBatt;
+    } else if (b !== null && b > TB) {
       flows.batt_casa = b;
     }
     if (g !== null) {
