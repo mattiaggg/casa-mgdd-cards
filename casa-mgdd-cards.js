@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.19.0
+ * Version: 1.20.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1285,6 +1285,9 @@ class EnergyPowerCard extends HTMLElement {
     if (cfg.energy_day_entity) ids.push(cfg.energy_day_entity);
     if (cfg.energy_month_entity) ids.push(cfg.energy_month_entity);
     if (cfg.total_energy_entity) ids.push(cfg.total_energy_entity);
+    ['grid_import', 'grid_export', 'house', 'solar', 'battery_charge', 'battery_discharge'].forEach((k) => {
+      if (cfg[k]) ids.push(cfg[k]);
+    });
     (cfg.circuits || []).forEach((c) => {
       if (c.entity) ids.push(c.entity);
       if (c.switch) ids.push(c.switch);
@@ -1484,6 +1487,7 @@ class EnergyPowerCard extends HTMLElement {
   _render() {
     if (this.config.layout === 'controls') this._renderControlTiles();
     else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
+    else if (this.config.layout === 'balance') this._renderBalance();
     else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
@@ -1614,6 +1618,59 @@ class EnergyPowerCard extends HTMLElement {
       .join('');
     this.innerHTML = this._styles() + '<div class="ephg-tiles">' + tiles + '</div>';
     this._wireSwitches();
+    this._wireClicks();
+  }
+
+  // layout balance (variante C): bilancio energetico giornaliero.
+  // 6 tile (rete prelievo/immissione, casa, solare, batteria carica/scarica)
+  // + barra di autosufficienza calcolata da consumo casa e prelievo rete.
+  _renderBalance() {
+    const c = this.config;
+    const ic = {
+      down: '<path d="M12 4v14M6 12l6 6 6-6"/>',
+      up: '<path d="M12 20V6M6 12l6-6 6 6"/>',
+      home: '<path d="M4 11 12 4l8 7M6 10v10h12V10"/>',
+      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.2 17.2 18.6 18.6M18.6 5.4 17.2 6.8M6.8 17.2 5.4 18.6"/>',
+      batt: '<rect x="4" y="8" width="14" height="8" rx="1.5"/><path d="M20 11v2"/>',
+    };
+    const svg = (p, color) =>
+      '<svg class="epb-ic" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + p + '</svg>';
+    const tile = (label, entity, path, color) => {
+      const v = this._num(entity);
+      return (
+        '<div class="epb-tile" data-entity="' + (entity || '') + '">' +
+        '<div class="epb-th">' + svg(path, color) + '<span class="epb-l">' + label + '</span></div>' +
+        '<div class="epb-v">' + this._fmt(v, '', 1) + '<span class="epb-u"> kWh</span></div>' +
+        '</div>'
+      );
+    };
+    const tiles =
+      tile('Prelevata rete', c.grid_import, ic.down, '#BA7517') +
+      tile('Esportata', c.grid_export, ic.up, '#0F6E56') +
+      tile('Consumo casa', c.house, ic.home, '#185FA5') +
+      tile('Solare prodotto', c.solar, ic.sun, '#EF9F27') +
+      tile('Batteria carica', c.battery_charge, ic.batt, '#7F77DD') +
+      tile('Batteria scarica', c.battery_discharge, ic.batt, '#534AB7');
+    const house = this._num(c.house);
+    const gimp = this._num(c.grid_import);
+    let selfSuff = null;
+    if (house !== null && house > 0 && gimp !== null) {
+      selfSuff = Math.max(0, Math.min(100, (1 - gimp / house) * 100));
+    }
+    const pct = selfSuff === null ? '--' : Math.round(selfSuff) + '%';
+    const barW = selfSuff === null ? 0 : selfSuff;
+    const bar =
+      '<div class="epb-ss">' +
+      '<div class="epb-ss-top"><span class="epb-ss-l">Autosufficienza</span><span class="epb-ss-v">' + pct + '</span></div>' +
+      '<div class="epb-ss-track"><div class="epb-ss-fill" style="width:' + barW.toFixed(0) + '%"></div></div>' +
+      '</div>';
+    this.innerHTML =
+      this._styles() +
+      '<div class="epb-wrap">' +
+      '<div class="epb-title">' + (c.title || 'Bilancio energetico') + '</div>' +
+      '<div class="epb-grid">' + tiles + '</div>' +
+      bar +
+      '</div>';
     this._wireClicks();
   }
 
@@ -1875,6 +1932,24 @@ class EnergyPowerCard extends HTMLElement {
       '.ephg-spark .epc-spark{height:30px;}' +
       '.ephg-tile.off .ephg-val{color:var(--secondary-text-color,#9aa0aa);}' +
       '.ephg-tile.off .ephg-spark{filter:grayscale(1);opacity:.45;}' +
+      // layout balance (C): bilancio energetico, 6 tile + barra autosufficienza
+      '.epb-wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px 16px 18px;}' +
+      '.epb-title{font-size:16px;font-weight:600;color:var(--primary-text-color,#1c1c1e);margin-bottom:12px;}' +
+      '.epb-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;}' +
+      '@media (max-width:479px){.epb-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}' +
+      '.epb-tile{background:rgba(127,127,127,.09);border-radius:12px;padding:10px 12px;cursor:pointer;transition:background .12s;}' +
+      '.epb-tile:hover{background:rgba(127,127,127,.16);}' +
+      '.epb-th{display:flex;align-items:center;gap:6px;margin-bottom:7px;min-width:0;}' +
+      '.epb-ic{flex:0 0 auto;}' +
+      '.epb-l{font-size:12px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.epb-v{font-size:22px;font-weight:600;letter-spacing:-.5px;line-height:1;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
+      '.epb-u{font-size:12px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
+      '.epb-ss{background:rgba(127,127,127,.09);border-radius:12px;padding:11px 13px;margin-top:10px;}' +
+      '.epb-ss-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px;}' +
+      '.epb-ss-l{font-size:13px;color:var(--secondary-text-color,#6b6f76);}' +
+      '.epb-ss-v{font-size:15px;font-weight:600;color:#1D9E75;font-variant-numeric:tabular-nums;}' +
+      '.epb-ss-track{height:6px;border-radius:3px;background:rgba(127,127,127,.18);overflow:hidden;}' +
+      '.epb-ss-fill{height:100%;background:#1D9E75;border-radius:3px;}' +
       '</style>'
     );
   }
