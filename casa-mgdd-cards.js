@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.21.0
+ * Version: 1.22.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1360,6 +1360,28 @@ class EnergyPowerCard extends HTMLElement {
         /* keep loading state */
       }
     }
+    // profilo orario del layout balance: statistiche orarie (change) dei contatori
+    // cumulativi, dalla mezzanotte locale a ora. Una sola callWS per i tre sensori.
+    if (this.config.layout === 'balance' && this.config.hourly !== false && this._hass) {
+      const ids = [this.config.house, this.config.grid_import, this.config.battery_discharge].filter(Boolean);
+      if (ids.length) {
+        const nowD = new Date(now);
+        const dayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate());
+        try {
+          const resp = await this._hass.callWS({
+            type: 'recorder/statistics_during_period',
+            start_time: dayStart.toISOString(),
+            end_time: nowD.toISOString(),
+            statistic_ids: ids,
+            period: 'hour',
+            types: ['change'],
+          });
+          this._hourly = this._buildHourly(resp, dayStart, nowD);
+        } catch (e) {
+          /* profilo opzionale: se il recorder non risponde la card resta valida */
+        }
+      }
+    }
     const statsEntity = this.config.total_energy_entity || this.config.energy_day_entity;
     if (this.config.layout === 'overview' && statsEntity && this._hass) {
       const nowD = new Date(now);
@@ -1401,6 +1423,36 @@ class EnergyPowerCard extends HTMLElement {
       }
     }
     this._render();
+  }
+
+  // Da statistiche orarie a righe per ora, gia' scomposte in solare/batteria/rete
+  // con lo stesso criterio della striscia (prima la batteria, poi la rete, il resto solare).
+  _buildHourly(resp, dayStart, nowD) {
+    const bucket = (id) => {
+      const out = new Array(24).fill(0);
+      ((resp && resp[id]) || []).forEach((r) => {
+        const d = new Date(r.start);
+        if (d < dayStart) return;
+        const h = d.getHours();
+        if (h >= 0 && h < 24) out[h] += Math.max(0, r.change || 0);
+      });
+      return out;
+    };
+    const house = bucket(this.config.house);
+    const gimp = bucket(this.config.grid_import);
+    const dis = bucket(this.config.battery_discharge);
+    const rows = [];
+    for (let h = 0; h <= nowD.getHours(); h++) {
+      const hh = house[h];
+      if (!(hh > 0)) {
+        rows.push({ h: h, house: 0, sun: 0, batt: 0, grid: 0 });
+        continue;
+      }
+      const batt = Math.min(Math.max(0, dis[h]), hh);
+      const grid = Math.min(Math.max(0, gimp[h]), hh - batt);
+      rows.push({ h: h, house: hh, sun: Math.max(0, hh - batt - grid), batt: batt, grid: grid });
+    }
+    return rows;
   }
 
   _toPoints(arr) {
@@ -1702,6 +1754,7 @@ class EnergyPowerCard extends HTMLElement {
       '<span>Consumo casa</span><b>' + this._fmt(house, ' kWh', 1) + '</b></div>' +
       '<div class="epb-mx">' + segs + '</div>' +
       '<div class="epb-leg">' + leg + '</div>' +
+      this._balanceHourly() +
       '<div class="epb-grid">' +
       kpi(ic.sun, 'var(--epb-sun)', 'Solare prodotto', c.solar) +
       kpi(ic.down, 'var(--epb-grid)', 'Prelevata rete', c.grid_import) +
@@ -1710,6 +1763,43 @@ class EnergyPowerCard extends HTMLElement {
       '</div>' +
       '</div>';
     this._wireClicks();
+  }
+
+  // Profilo orario: barre impilate con la stessa scomposizione della striscia.
+  // Le ore non ancora trascorse restano vuote (non a zero). Riusa colori e legenda
+  // gia' presenti sopra, quindi non introduce ne' tinte ne' legende aggiuntive.
+  _balanceHourly() {
+    if (this.config.hourly === false) return '';
+    const rows = this._hourly;
+    if (!rows || !rows.length) return '';
+    let max = 0;
+    rows.forEach((r) => {
+      if (r.house > max) max = r.house;
+    });
+    if (!(max > 0)) return '';
+    let bars = '';
+    for (let h = 0; h < 24; h++) {
+      const r = rows[h];
+      if (!r) {
+        bars += '<div class="epb-hb epb-hb-void"></div>';
+        continue;
+      }
+      let inner = '';
+      [[r.grid, 'grid'], [r.batt, 'bat'], [r.sun, 'sun']].forEach((p) => {
+        if (p[0] > max / 250) inner += '<i class="epb-c-' + p[1] + '" style="flex:' + p[0].toFixed(4) + '"></i>';
+      });
+      const hh = ((r.house / max) * 100).toFixed(1);
+      bars +=
+        '<div class="epb-hb" title="' + (r.h < 10 ? '0' : '') + r.h + ':00 · ' + r.house.toFixed(2) + ' kWh">' +
+        '<div class="epb-hb-in" style="height:' + hh + '%">' + inner + '</div></div>';
+    }
+    return (
+      '<div class="epb-hr">' +
+      '<div class="epb-hr-hd"><span>Profilo orario</span><b>max ' + max.toFixed(2) + ' kWh/h</b></div>' +
+      '<div class="epb-hr-plot">' + bars + '</div>' +
+      '<div class="epb-hr-ax"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>' +
+      '</div>'
+    );
   }
 
   // true quando il tema Home Assistant attivo e' scuro (non dipende dall'OS).
@@ -2009,6 +2099,16 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-lg{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--epb-tx2);}' +
       '.epb-lg b{color:var(--epb-tx);font-weight:650;font-variant-numeric:tabular-nums;}' +
       '.epb-dot{width:9px;height:9px;border-radius:3px;flex:0 0 auto;}' +
+      // profilo orario: barre impilate, stessa scomposizione della striscia
+      '.epb-hr{margin-top:15px;padding-top:13px;border-top:1px solid var(--epb-bd);}' +
+      '.epb-hr-hd{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--epb-tx2);margin-bottom:8px;}' +
+      '.epb-hr-hd b{font-size:11px;letter-spacing:0;text-transform:none;font-weight:550;opacity:.85;font-variant-numeric:tabular-nums;}' +
+      '.epb-hr-plot{display:flex;align-items:flex-end;gap:2px;height:46px;}' +
+      '.epb-hb{flex:1;height:100%;display:flex;align-items:flex-end;min-width:0;}' +
+      '.epb-hb-in{width:100%;display:flex;flex-direction:column-reverse;border-radius:2px;overflow:hidden;background:var(--epb-track);}' +
+      '.epb-hb-in i{display:block;width:100%;}' +
+      '.epb-hb-void{opacity:0;}' +
+      '.epb-hr-ax{display:flex;justify-content:space-between;font-size:9.5px;color:var(--epb-tx2);margin-top:5px;opacity:.8;font-variant-numeric:tabular-nums;}' +
       '.epb-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--epb-bd);border-radius:13px;overflow:hidden;margin-top:14px;}' +
       '.epb-k{display:flex;align-items:center;gap:9px;padding:11px 12px;cursor:pointer;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));transition:background .12s;}' +
