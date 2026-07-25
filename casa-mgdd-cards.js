@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.28.0
+ * Version: 1.29.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1537,8 +1537,7 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _render() {
-    if (this.config.layout === 'panel') this._renderPanel();
-    else if (this.config.layout === 'plugs') this._renderPlugs();
+    if (this.config.layout === 'plugs') this._renderPlugs();
     else if (this.config.layout === 'loads') this._renderLoads();
     else if (this.config.layout === 'controls') this._renderControlTiles();
     else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
@@ -1956,22 +1955,6 @@ class EnergyPowerCard extends HTMLElement {
     this._wirePlugs();
   }
 
-  // layout panel: carichi attivi e prese in una card sola, affiancati quando c'e'
-  // spazio e impilati quando non ce n'e'. La soglia e' una container query sulla
-  // larghezza della CARD, non del viewport: HA non sa impilare due card separate
-  // su mobile, perche' grid_options non ha punti di rottura.
-  _renderPanel() {
-    const c = this.config;
-    this.innerHTML =
-      this._styles() +
-      '<div class="pnl-wrap"><div class="pnl">' +
-      '<div>' + this._loadsHtml() + '</div>' +
-      '<div>' + this._plugsHtml(c.plugs_title || 'Prese') + '</div>' +
-      '</div></div>';
-    this._wireClicks();
-    this._wirePlugs();
-  }
-
   _renderOverview() {
     const power = this._pw(this.config.power_entity);
     const day = this._num(this.config.energy_day_entity);
@@ -2168,10 +2151,6 @@ class EnergyPowerCard extends HTMLElement {
       '.mv-t.off .mv-n{color:var(--secondary-text-color,#6b6f76);}' +
       '.mv-s{font-size:10.5px;color:var(--secondary-text-color,#6b6f76);font-variant-numeric:tabular-nums;}' +
       '@container (max-width:300px){.mv-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}' +
-      // layout panel: affiancati sopra i 620px di card, impilati sotto
-      '.pnl-wrap{container-type:inline-size;}' +
-      '.pnl{display:grid;grid-template-columns:1fr;gap:12px;align-items:start;}' +
-      '@container (min-width:620px){.pnl{grid-template-columns:1fr 1fr;}}' +
       '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
       '.row{display:flex;align-items:center;gap:14px;padding:12px 0;cursor:pointer;}' +
       '.row[data-border]{border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
