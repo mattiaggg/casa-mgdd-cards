@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.24.0
+ * Version: 1.25.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1537,7 +1537,8 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _render() {
-    if (this.config.layout === 'loads') this._renderLoads();
+    if (this.config.layout === 'plugs') this._renderPlugs();
+    else if (this.config.layout === 'loads') this._renderLoads();
     else if (this.config.layout === 'controls') this._renderControlTiles();
     else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
     else if (this.config.layout === 'balance') this._renderBalance();
@@ -1867,12 +1868,24 @@ class EnergyPowerCard extends HTMLElement {
           '</div>'
         : '');
     if (!rows) return '';
+    // piede: circuiti di sola misura fermi. Quelli con interruttore non compaiono qui,
+    // vivono nella card delle prese (layout: plugs).
+    const idle = circuits
+      .filter((x) => !x.switch)
+      .map((x) => ({ name: x.name, val: this._num(x.entity) }))
+      .filter((x) => x.val !== null && x.val <= threshold)
+      .map((x) => x.name);
+    const idleHtml =
+      this.config.idle_footer === false || !idle.length
+        ? ''
+        : '<div class="load-foot">A riposo: ' + idle.join(', ') + '</div>';
     return (
       '<div class="loadlist">' +
       '<div class="load-top"><span class="hero-l">' + (this.config.loads_title || 'Carichi attivi adesso') +
       '</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
       compBar +
       rows +
+      idleHtml +
       '</div>'
     );
   }
@@ -1880,6 +1893,56 @@ class EnergyPowerCard extends HTMLElement {
   _renderLoads() {
     this.innerHTML = this._styles() + this._loadsHtml();
     this._wireClicks();
+  }
+
+  // Icone delle prese. Chiave `icon` del circuito: tv, wash, dry, iron, heat, plug.
+  _plugIcon(kind) {
+    const p = {
+      tv: '<rect x="2.5" y="4.5" width="19" height="12.5" rx="2"/><path d="M8 20.5h8"/>',
+      wash: '<rect x="4" y="2.8" width="16" height="18.4" rx="2.5"/><circle cx="12" cy="14" r="4.4"/><path d="M7.6 6.6h2"/>',
+      dry: '<rect x="4" y="2.8" width="16" height="18.4" rx="2.5"/><circle cx="12" cy="14" r="4.4"/><path d="M12 9.8v8.4"/>',
+      iron: '<path d="M3 16.5h13a5 5 0 0 0-5-5H6.5A3.5 3.5 0 0 0 3 15v1.5ZM16 16.5h5M8 8.2V7a2 2 0 0 1 2-2h6"/>',
+      heat: '<path d="M9 3.5c1.8 2 .4 3.4 0 5.2-.4 1.9 1.2 3 1.2 3M14.5 3.5c1.8 2 .4 3.4 0 5.2-.4 1.9 1.2 3 1.2 3M4.5 14.5h15M6.5 18.5h11"/>',
+      plug: '<path d="M9 3v6M15 3v6M6 9h12v2.5a6 6 0 0 1-12 0V9ZM12 17.5v3.5"/>',
+    };
+    return p[kind] || p.plug;
+  }
+
+  // layout plugs: pannello di comando compatto. Solo i circuiti con `switch`,
+  // una riga ciascuno con nome intero, stato e interruttore. Niente watt ne'
+  // sparkline: il consumo sta nella card dei carichi attivi.
+  _renderPlugs() {
+    const c = this.config;
+    const items = (c.circuits || []).filter((x) => x.switch);
+    let onCount = 0;
+    let rows = '';
+    items.forEach((x) => {
+      const st = this._hass ? this._hass.states[x.switch] : null;
+      const on = !!(st && st.state === 'on');
+      if (on) onCount++;
+      const w = this._pw(x.entity);
+      // "in attesa" = presa alimentata ma senza assorbimento (elettrodomestico fermo)
+      const det = w !== null && w > 0.5 ? this._fmt(w, ' W', w < 10 ? 1 : 0) : on ? 'in attesa' : 'spenta';
+      rows +=
+        '<div class="pw" data-entity="' + (x.entity || x.switch) + '">' +
+        '<span class="pwi' + (on ? '' : ' off') + '">' +
+        '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
+        this._plugIcon(x.icon) + '</svg></span>' +
+        '<span class="pwn">' + x.name + '</span>' +
+        '<span class="pwd">' + det + '</span>' +
+        '<span class="tg tg-' + (on ? 'on' : 'off') + '" data-switch="' + x.switch + '"><i></i></span>' +
+        '</div>';
+    });
+    if (!rows) rows = '<div class="pwempty">Nessun circuito con interruttore configurato.</div>';
+    this.innerHTML =
+      this._styles() +
+      '<div class="pwcard' + (this._isDark() ? ' pw-dark' : '') + '">' +
+      '<div class="load-top"><span class="hero-l">' + (c.title || 'Prese') + '</span>' +
+      '<span class="hero-tag">' + onCount + ' accese · ' + (items.length - onCount) + ' spente</span></div>' +
+      '<div class="pwlist">' + rows + '</div>' +
+      '</div>';
+    this._wireClicks();
+    this._wireSwitches();
   }
 
   _renderOverview() {
@@ -2042,13 +2105,32 @@ class EnergyPowerCard extends HTMLElement {
       '.loadlist{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px 6px;}' +
       '.load-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px;}' +
       '.comp{display:flex;height:6px;border-radius:3px;overflow:hidden;margin-bottom:5px;}' +
-      '.load-row{display:flex;align-items:center;gap:10px;padding:10px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
+      '.load-row{display:flex;align-items:center;gap:10px;padding:8px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
       '.load-row:last-child{border-bottom:none;}' +
       '.load-other{opacity:.65;cursor:default;}' +
       '.load-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}' +
       '.load-name{flex:1;min-width:0;font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '.load-pct{font-size:11px;color:var(--secondary-text-color,#6b6f76);width:38px;text-align:right;flex:0 0 auto;}' +
       '.load-w{font-size:15px;font-weight:600;color:var(--primary-text-color,#1c1c1e);width:56px;text-align:right;flex:0 0 auto;}' +
+      '.load-foot{font-size:10.5px;line-height:1.45;color:var(--secondary-text-color,#6b6f76);margin-top:10px;padding:10px 0 8px;border-top:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
+      // layout plugs: pannello di comando compatto
+      '.pwcard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px 8px;}' +
+      '.pwlist{display:flex;flex-direction:column;}' +
+      '.pw{display:grid;grid-template-columns:22px minmax(0,1fr) auto 30px;align-items:center;gap:9px;padding:7px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
+      '.pw:last-child{border-bottom:0;}' +
+      '.pwi{display:flex;color:#0E9384;}' +
+      '.pwi.off{color:var(--secondary-text-color,#6b6f76);opacity:.55;}' +
+      '.pwn{font-size:12.5px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.pwd{font-size:10.5px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;font-variant-numeric:tabular-nums;}' +
+      '.pwempty{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:6px 0 10px;}' +
+      '.tg{display:inline-flex;align-items:center;width:30px;height:18px;border-radius:20px;padding:2px;flex:0 0 auto;transition:background .15s;}' +
+      '.tg i{display:block;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.28);transition:transform .15s;}' +
+      '.tg-on{background:#0E9384;}' +
+      '.tg-on i{transform:translateX(12px);}' +
+      '.tg-off{background:rgba(127,127,127,.28);}' +
+      // step del verde ricalibrato per la superficie scura
+      '.pw-dark .pwi{color:#12A08C;}' +
+      '.pw-dark .tg-on{background:#12A08C;}' +
       '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
       '.row{display:flex;align-items:center;gap:14px;padding:12px 0;cursor:pointer;}' +
       '.row[data-border]{border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
