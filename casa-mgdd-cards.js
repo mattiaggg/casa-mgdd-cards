@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.27.0
+ * Version: 1.28.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1537,7 +1537,8 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _render() {
-    if (this.config.layout === 'plugs') this._renderPlugs();
+    if (this.config.layout === 'panel') this._renderPanel();
+    else if (this.config.layout === 'plugs') this._renderPlugs();
     else if (this.config.layout === 'loads') this._renderLoads();
     else if (this.config.layout === 'controls') this._renderControlTiles();
     else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
@@ -1900,10 +1901,10 @@ class EnergyPowerCard extends HTMLElement {
   // Solo i circuiti con `switch`: griglia di riquadri con icona in alto, nome e
   // stato sotto. Nessun interruttore separato: si tocca il riquadro e commuta,
   // l'icona colorata e' l'indicatore di stato. Tocco sull'icona = more-info.
-  _renderPlugs() {
+  _plugsHtml(title) {
     const c = this.config;
     const items = (c.circuits || []).filter((x) => x.switch);
-    const cols = c.columns || 3;
+    const cols = c.plugs_columns || c.columns || 3;
     let onCount = 0;
     let tiles = '';
     items.forEach((x) => {
@@ -1925,14 +1926,17 @@ class EnergyPowerCard extends HTMLElement {
     });
     if (!tiles) tiles = '<div class="pwempty">Nessun circuito con interruttore configurato.</div>';
     const accent = c.accent === 'teal' ? ' mv-teal' : '';
-    this.innerHTML =
-      this._styles() +
+    return (
       '<div class="pwcard' + (this._isDark() ? ' pw-dark' : '') + accent + '">' +
-      '<div class="load-top"><span class="hero-l">' + (c.title || 'Prese') + '</span>' +
+      '<div class="load-top"><span class="hero-l">' + (title || c.title || 'Prese') + '</span>' +
       '<span class="hero-tag">' + onCount + ' accese · ' + (items.length - onCount) + ' spente</span></div>' +
       '<div class="mv-grid" style="grid-template-columns:repeat(' + cols + ',minmax(0,1fr));">' + tiles + '</div>' +
-      '</div>';
-    // il riquadro commuta, l'icona apre il more-info senza propagare al riquadro
+      '</div>'
+    );
+  }
+
+  // il riquadro commuta, l'icona apre il more-info senza propagare al riquadro
+  _wirePlugs() {
     this.querySelectorAll('[data-plug]').forEach((el) => {
       el.addEventListener('click', () => {
         const id = el.getAttribute('data-plug');
@@ -1945,6 +1949,27 @@ class EnergyPowerCard extends HTMLElement {
         this._openMoreInfo(el.getAttribute('data-info'));
       });
     });
+  }
+
+  _renderPlugs() {
+    this.innerHTML = this._styles() + this._plugsHtml();
+    this._wirePlugs();
+  }
+
+  // layout panel: carichi attivi e prese in una card sola, affiancati quando c'e'
+  // spazio e impilati quando non ce n'e'. La soglia e' una container query sulla
+  // larghezza della CARD, non del viewport: HA non sa impilare due card separate
+  // su mobile, perche' grid_options non ha punti di rottura.
+  _renderPanel() {
+    const c = this.config;
+    this.innerHTML =
+      this._styles() +
+      '<div class="pnl-wrap"><div class="pnl">' +
+      '<div>' + this._loadsHtml() + '</div>' +
+      '<div>' + this._plugsHtml(c.plugs_title || 'Prese') + '</div>' +
+      '</div></div>';
+    this._wireClicks();
+    this._wirePlugs();
   }
 
   _renderOverview() {
@@ -2083,7 +2108,10 @@ class EnergyPowerCard extends HTMLElement {
       '.pill-up{color:#E24B4A;background:#E24B4A1f;}' +
       // layout overview (variante A): potenza, curva e tre scale temporali in una card,
       // staccata dalla lista dei carichi attivi da uno spacer piu' ampio
-      '.ovc{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:20px;padding:16px 16px 17px;}' +
+      // container-type: la card si adatta alla PROPRIA larghezza, non a quella del
+      // viewport. Una media query qui sbagliava bersaglio: su desktop in colonna
+      // stretta restava a 3 colonne larghe, su mobile spezzava anche quando ci stava.
+      '.ovc{container-type:inline-size;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:20px;padding:16px 16px 17px;}' +
       '.ovc + .loadlist{margin-top:22px;}' +
       '.ov-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}' +
       '.ov-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--secondary-text-color,#6b7280);}' +
@@ -2100,7 +2128,14 @@ class EnergyPowerCard extends HTMLElement {
       '.ov-cap{font-size:10px;color:var(--secondary-text-color,#6b7280);margin-top:7px;}' +
       '.ovc .hero-spark{margin-top:4px;}' +
       '.ovc .hero-spark svg{height:66px;}' +
-      '@media (max-width:460px){.ov-row{grid-template-columns:1fr 1fr;}.ov-c:last-child{grid-column:span 2;}}' +
+      // sotto i 400px di CARD si stringono i caratteri e le spaziature, ma le tre
+      // colonne restano: e' l'informazione che serve, spezzarla peggiora la lettura
+      '@container (max-width:400px){.ovc .ov-hero{font-size:38px;letter-spacing:-1.8px;}' +
+      '.ovc .ov-c{padding:9px 8px 10px;}.ovc .ov-l{font-size:10px;}' +
+      '.ovc .ov-v{font-size:17px;letter-spacing:-.5px;}.ovc .ov-vu{font-size:10px;}' +
+      '.ovc .pill{font-size:10px;padding:2px 7px;margin-top:6px;}.ovc .ov-cap{font-size:9px;margin-top:5px;}}' +
+      // solo quando davvero non ci stanno (card sotto i 290px) si passa a 2 + 1
+      '@container (max-width:290px){.ovc .ov-row{grid-template-columns:1fr 1fr;}.ovc .ov-c:last-child{grid-column:span 2;}}' +
       '.pill-cap{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:5px;}' +
       '.proj{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-top:14px;padding-top:10px;border-top:1px solid var(--divider-color,rgba(0,0,0,.07));display:flex;justify-content:space-between;}' +
       '.proj b{color:var(--primary-text-color,#1c1c1e);font-weight:600;}' +
@@ -2117,7 +2152,7 @@ class EnergyPowerCard extends HTMLElement {
       // layout plugs: pannello di comando in stile Mushroom (griglia verticale).
       // --mv-on / --mv-bg sono le tinte dello stato acceso: ambra (default, come
       // lo stato attivo degli switch in HA) o teal con accent: teal.
-      '.pwcard{--mv-on:#B87503;--mv-bg:rgba(184,117,3,.16);' +
+      '.pwcard{--mv-on:#B87503;--mv-bg:rgba(184,117,3,.16);container-type:inline-size;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 14px 15px;}' +
       '.pwcard.mv-teal{--mv-on:#0E9384;--mv-bg:rgba(14,147,132,.16);}' +
       '.pwcard.pw-dark{--mv-on:#D79A2B;--mv-bg:rgba(215,154,43,.22);}' +
@@ -2132,7 +2167,11 @@ class EnergyPowerCard extends HTMLElement {
       '.mv-n{font-size:12px;font-weight:500;color:var(--primary-text-color,#1c1c1e);text-align:center;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}' +
       '.mv-t.off .mv-n{color:var(--secondary-text-color,#6b6f76);}' +
       '.mv-s{font-size:10.5px;color:var(--secondary-text-color,#6b6f76);font-variant-numeric:tabular-nums;}' +
-      '@media (max-width:420px){.mv-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}' +
+      '@container (max-width:300px){.mv-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}' +
+      // layout panel: affiancati sopra i 620px di card, impilati sotto
+      '.pnl-wrap{container-type:inline-size;}' +
+      '.pnl{display:grid;grid-template-columns:1fr;gap:12px;align-items:start;}' +
+      '@container (min-width:620px){.pnl{grid-template-columns:1fr 1fr;}}' +
       '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
       '.row{display:flex;align-items:center;gap:14px;padding:12px 0;cursor:pointer;}' +
       '.row[data-border]{border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
