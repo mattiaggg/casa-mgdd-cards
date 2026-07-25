@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.22.0
+ * Version: 1.23.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1834,31 +1834,35 @@ class EnergyPowerCard extends HTMLElement {
       ? '<div class="hero-spark">' + this._trendArea + '</div>'
       : '<div class="loading">Caricamento\u2026</div>';
 
-    const pillVs = (current, prev, cap, dec) => {
-      if (current === null || prev === undefined || prev === null || prev <= 0) return '<div class="pair-trend">\u2014</div>';
+    // pillola di confronto: didascalia breve sotto, quella estesa nel tooltip
+    const pillVs = (current, prev, cap, capFull, dec) => {
+      if (current === null || prev === undefined || prev === null || prev <= 0) return '<div class="ov-d">\u2014</div>';
       const diff = current - prev;
       const up = diff > 0;
       const arrow = up ? '\u2191' : '\u2193';
       const cls = up ? 'pill-up' : 'pill-down';
       return (
-        '<div><span class="pill ' + cls + '">' + arrow + ' ' + Math.abs(diff).toFixed(dec) + ' kWh</span></div>' +
-        '<div class="pill-cap">' + cap + '</div>'
+        '<div class="ov-d" title="' + capFull + '"><span class="pill ' + cls + '">' + arrow + ' ' +
+        Math.abs(diff).toFixed(dec) + ' kWh</span><span class="ov-cap">' + cap + '</span></div>'
       );
     };
     const monthNames = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
     const nowD = new Date();
     const prevMonthName = monthNames[(nowD.getMonth() + 11) % 12];
-    const dayTrend = pillVs(day, this._yesterday, 'vs ieri, stessa ora', 1);
-    const monthTrend = pillVs(month, this._lastMonth, 'vs ' + prevMonthName + ', stesso giorno', 0);
-    let projHtml = '';
+    const dayTrend = pillVs(day, this._yesterday, 'vs ieri', 'vs ieri, stessa ora', 1);
+    const monthTrend = pillVs(month, this._lastMonth, 'vs ' + prevMonthName, 'vs ' + prevMonthName + ', stesso giorno', 0);
+    // terza colonna: proiezione di fine mese, in grigio perche' e' una stima
+    let projVal = null;
     if (month !== null) {
       const monthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1);
       const monthEnd = new Date(nowD.getFullYear(), nowD.getMonth() + 1, 1);
       const frac = (nowD - monthStart) / (monthEnd - monthStart);
-      if (frac > 0.03) {
-        projHtml = '<div class="proj"><span>Proiezione fine mese</span><b>~' + Math.round(month / frac) + ' kWh</b></div>';
-      }
+      if (frac > 0.03) projVal = Math.round(month / frac);
     }
+    const projCell =
+      '<div class="ov-c"><div class="ov-l">Fine mese</div>' +
+      '<div class="ov-v ov-est">' + (projVal === null ? '\u2014' : '~' + projVal + '<span class="ov-vu"> kWh</span>') + '</div>' +
+      '<div class="ov-d"><span class="ov-cap">proiezione</span></div></div>';
 
     const monitored = circuits.map((c) => this._num(c.entity)).filter((v) => v !== null);
     const monitoredSum = monitored.reduce((a, b) => a + b, 0);
@@ -1898,17 +1902,20 @@ class EnergyPowerCard extends HTMLElement {
 
     this.innerHTML =
       this._styles() +
-      '<div class="hero">' +
-      '<div class="hero-top"><span class="hero-l">' + (this.config.title || 'Consumo casa') + '</span><span class="hero-tag">' + (this.config.history_hours || 24) + 'h</span></div>' +
-      '<div class="hero-v">' + this._fmt(power, ' W', power !== null && power < 10 ? 1 : 0) + '</div>' +
+      // card unica: potenza, curva 24h e le tre scale temporali su una riga sola
+      '<div class="ovc">' +
+      '<div class="ov-hd"><span class="ov-t">' + (this.config.title || 'Consumo casa') + '</span>' +
+      '<span class="ov-p">' + (this.config.history_hours || 24) + 'h</span></div>' +
+      '<div class="ov-hero">' + this._fmt(power, '', power !== null && power < 10 ? 1 : 0) +
+      '<span class="ov-u">W</span></div>' +
       trendHtml +
+      '<div class="ov-row">' +
+      '<div class="ov-c"><div class="ov-l">Oggi</div><div class="ov-v">' +
+      this._fmt(day, '', 1) + '<span class="ov-vu"> kWh</span></div>' + dayTrend + '</div>' +
+      '<div class="ov-c"><div class="ov-l">Mese</div><div class="ov-v">' +
+      this._fmt(month, '', 0) + '<span class="ov-vu"> kWh</span></div>' + monthTrend + '</div>' +
+      projCell +
       '</div>' +
-      '<div class="pairhero">' +
-      '<div class="pair">' +
-      '<div class="stat-tile"><div class="stat-l">Oggi</div><div class="stat-v">' + this._fmt(day, ' kWh', 1) + '</div>' + dayTrend + '</div>' +
-      '<div class="stat-tile"><div class="stat-l">Mese</div><div class="stat-v">' + this._fmt(month, ' kWh', 0) + '</div>' + monthTrend + '</div>' +
-      '</div>' +
-      projHtml +
       '</div>' +
       (activeHtml
         ? '<div class="loadlist">' +
@@ -1991,6 +1998,24 @@ class EnergyPowerCard extends HTMLElement {
       '.pill{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;border-radius:20px;padding:3px 9px;margin-top:7px;}' +
       '.pill-down{color:#1D9E75;background:#1D9E751f;}' +
       '.pill-up{color:#E24B4A;background:#E24B4A1f;}' +
+      // layout overview (variante A): hero e statistiche in una card sola
+      '.ovc{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:20px;padding:16px 16px 17px;margin-bottom:14px;}' +
+      '.ov-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}' +
+      '.ov-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--secondary-text-color,#6b7280);}' +
+      '.ov-p{font-size:10.5px;font-weight:600;color:var(--secondary-text-color,#6b7280);background:rgba(127,127,127,.10);padding:3px 9px;border-radius:20px;}' +
+      '.ov-hero{font-size:46px;font-weight:670;letter-spacing:-2.4px;line-height:1;color:var(--primary-text-color,#10131a);font-variant-numeric:tabular-nums;display:flex;align-items:baseline;}' +
+      '.ov-u{font-size:16px;font-weight:550;letter-spacing:0;color:var(--secondary-text-color,#6b7280);margin-left:5px;}' +
+      '.ov-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--divider-color,rgba(0,0,0,.08));border-radius:14px;overflow:hidden;margin-top:12px;}' +
+      '.ov-c{background:var(--ha-card-background,var(--card-background-color,#fff));padding:11px 12px 12px;}' +
+      '.ov-l{font-size:11px;color:var(--secondary-text-color,#6b7280);}' +
+      '.ov-v{font-size:21px;font-weight:660;letter-spacing:-.7px;margin-top:5px;color:var(--primary-text-color,#10131a);font-variant-numeric:tabular-nums;}' +
+      '.ov-vu{font-size:12px;font-weight:500;color:var(--secondary-text-color,#6b7280);letter-spacing:0;}' +
+      '.ov-est,.ov-est .ov-vu{color:var(--secondary-text-color,#6b7280);}' +
+      '.ov-d{display:flex;align-items:center;flex-wrap:wrap;gap:2px 6px;min-height:20px;font-size:12px;color:var(--secondary-text-color,#6b7280);}' +
+      '.ov-cap{font-size:10px;color:var(--secondary-text-color,#6b7280);margin-top:7px;}' +
+      '.ovc .hero-spark{margin-top:4px;}' +
+      '.ovc .hero-spark svg{height:66px;}' +
+      '@media (max-width:460px){.ov-row{grid-template-columns:1fr 1fr;}.ov-c:last-child{grid-column:span 2;}}' +
       '.pill-cap{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:5px;}' +
       '.proj{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-top:14px;padding-top:10px;border-top:1px solid var(--divider-color,rgba(0,0,0,.07));display:flex;justify-content:space-between;}' +
       '.proj b{color:var(--primary-text-color,#1c1c1e);font-weight:600;}' +
