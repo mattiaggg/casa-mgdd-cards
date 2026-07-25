@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.23.2
+ * Version: 1.24.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1537,7 +1537,8 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _render() {
-    if (this.config.layout === 'controls') this._renderControlTiles();
+    if (this.config.layout === 'loads') this._renderLoads();
+    else if (this.config.layout === 'controls') this._renderControlTiles();
     else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
     else if (this.config.layout === 'balance') this._renderBalance();
     else if (this.config.layout === 'tiles') this._renderTiles();
@@ -1817,10 +1818,10 @@ class EnergyPowerCard extends HTMLElement {
     });
   }
 
-  _renderOverview() {
+  // Blocco "Carichi attivi adesso". Usato dal layout overview (salvo loads: false)
+  // e disponibile come card a se' con layout: loads, cosi' e' spostabile in dashboard.
+  _loadsHtml() {
     const power = this._pw(this.config.power_entity);
-    const day = this._num(this.config.energy_day_entity);
-    const month = this._num(this.config.energy_month_entity);
     const circuits = this.config.circuits || [];
     const threshold = this.config.active_threshold != null ? this.config.active_threshold : 1;
     const activeCount = this.config.active_count || 6;
@@ -1829,6 +1830,62 @@ class EnergyPowerCard extends HTMLElement {
       .filter((c) => c.val !== null && c.val > threshold)
       .sort((a, b) => b.val - a.val)
       .slice(0, activeCount);
+
+    const monitored = circuits.map((c) => this._num(c.entity)).filter((v) => v !== null);
+    const monitoredSum = monitored.reduce((a, b) => a + b, 0);
+    const other = power !== null && power - monitoredSum > 1 ? power - monitoredSum : null;
+    const pctOf = (v) => (power ? Math.round((v / power) * 100) + '%' : '');
+    // barra di composizione: segmenti proporzionali sul totale
+    const compSegs = active
+      .map((c) => {
+        const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
+        const w = power ? (c.val / power) * 100 : 0;
+        return '<div style="width:' + w.toFixed(1) + '%;background:' + color + '"></div>';
+      })
+      .join('');
+    const compBar = active.length && power ? '<div class="comp">' + compSegs + '<div style="flex:1;background:var(--divider-color,rgba(0,0,0,.08))"></div></div>' : '';
+    const rows =
+      active
+        .map((c) => {
+          const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
+          return (
+            '<div class="load-row" data-entity="' + c.entity + '">' +
+            '<span class="load-dot" style="background:' + color + '"></span>' +
+            '<span class="load-name">' + c.name + '</span>' +
+            '<span class="load-pct">' + pctOf(c.val) + '</span>' +
+            '<span class="load-w">' + this._fmt(c.val, ' W', c.val < 10 ? 1 : 0) + '</span>' +
+            '</div>'
+          );
+        })
+        .join('') +
+      (other !== null && active.length
+        ? '<div class="load-row load-other">' +
+          '<span class="load-dot" style="background:var(--divider-color,rgba(0,0,0,.08))"></span>' +
+          '<span class="load-name">Altro (non monitorato)</span>' +
+          '<span class="load-pct">' + pctOf(other) + '</span>' +
+          '<span class="load-w">~' + other.toFixed(0) + ' W</span>' +
+          '</div>'
+        : '');
+    if (!rows) return '';
+    return (
+      '<div class="loadlist">' +
+      '<div class="load-top"><span class="hero-l">' + (this.config.loads_title || 'Carichi attivi adesso') +
+      '</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
+      compBar +
+      rows +
+      '</div>'
+    );
+  }
+
+  _renderLoads() {
+    this.innerHTML = this._styles() + this._loadsHtml();
+    this._wireClicks();
+  }
+
+  _renderOverview() {
+    const power = this._pw(this.config.power_entity);
+    const day = this._num(this.config.energy_day_entity);
+    const month = this._num(this.config.energy_month_entity);
 
     const trendHtml = this._trendArea
       ? '<div class="hero-spark">' + this._trendArea + '</div>'
@@ -1864,41 +1921,8 @@ class EnergyPowerCard extends HTMLElement {
       '<div class="ov-v ov-est">' + (projVal === null ? '\u2014' : '~' + projVal + '<span class="ov-vu"> kWh</span>') + '</div>' +
       '<div class="ov-d"><span class="ov-cap">proiezione</span></div></div>';
 
-    const monitored = circuits.map((c) => this._num(c.entity)).filter((v) => v !== null);
-    const monitoredSum = monitored.reduce((a, b) => a + b, 0);
-    const other = power !== null && power - monitoredSum > 1 ? power - monitoredSum : null;
-    const pctOf = (v) => (power ? Math.round((v / power) * 100) + '%' : '');
-    // barra di composizione: segmenti proporzionali sul totale
-    const compSegs = active
-      .map((c) => {
-        const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
-        const w = power ? (c.val / power) * 100 : 0;
-        return '<div style="width:' + w.toFixed(1) + '%;background:' + color + '"></div>';
-      })
-      .join('');
-    const compBar = active.length && power ? '<div class="comp">' + compSegs + '<div style="flex:1;background:var(--divider-color,rgba(0,0,0,.08))"></div></div>' : '';
-    const activeHtml =
-      active
-        .map((c) => {
-          const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
-          return (
-            '<div class="load-row" data-entity="' + c.entity + '">' +
-            '<span class="load-dot" style="background:' + color + '"></span>' +
-            '<span class="load-name">' + c.name + '</span>' +
-            '<span class="load-pct">' + pctOf(c.val) + '</span>' +
-            '<span class="load-w">' + this._fmt(c.val, ' W', c.val < 10 ? 1 : 0) + '</span>' +
-            '</div>'
-          );
-        })
-        .join('') +
-      (other !== null && active.length
-        ? '<div class="load-row load-other">' +
-          '<span class="load-dot" style="background:var(--divider-color,rgba(0,0,0,.08))"></span>' +
-          '<span class="load-name">Altro (non monitorato)</span>' +
-          '<span class="load-pct">' + pctOf(other) + '</span>' +
-          '<span class="load-w">~' + other.toFixed(0) + ' W</span>' +
-          '</div>'
-        : '');
+    // i carichi restano nella card solo se non sono stati spostati su una card propria
+    const activeHtml = this.config.loads === false ? '' : this._loadsHtml();
 
     this.innerHTML =
       this._styles() +
@@ -1917,13 +1941,7 @@ class EnergyPowerCard extends HTMLElement {
       projCell +
       '</div>' +
       '</div>' +
-      (activeHtml
-        ? '<div class="loadlist">' +
-          '<div class="load-top"><span class="hero-l">Carichi attivi adesso</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
-          compBar +
-          activeHtml +
-          '</div>'
-        : '');
+      activeHtml;
     this._wireClicks();
   }
 
@@ -2000,7 +2018,8 @@ class EnergyPowerCard extends HTMLElement {
       '.pill-up{color:#E24B4A;background:#E24B4A1f;}' +
       // layout overview (variante A): potenza, curva e tre scale temporali in una card,
       // staccata dalla lista dei carichi attivi da uno spacer piu' ampio
-      '.ovc{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:20px;padding:16px 16px 17px;margin-bottom:22px;}' +
+      '.ovc{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:20px;padding:16px 16px 17px;}' +
+      '.ovc + .loadlist{margin-top:22px;}' +
       '.ov-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}' +
       '.ov-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--secondary-text-color,#6b7280);}' +
       '.ov-p{font-size:10.5px;font-weight:600;color:var(--secondary-text-color,#6b7280);background:rgba(127,127,127,.10);padding:3px 9px;border-radius:20px;}' +
