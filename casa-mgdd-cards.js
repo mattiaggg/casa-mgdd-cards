@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.29.0
+ * Version: 1.29.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1742,7 +1742,7 @@ class EnergyPowerCard extends HTMLElement {
     if (!segs) segs = '<div class="epb-seg epb-seg-empty" style="flex:1"></div>';
 
     const kpi = (icon, color, label, entity) =>
-      '<div class="epb-k" data-entity="' + (entity || '') + '">' + svg(icon, color) +
+      '<div class="epb-k" style="--k:' + color + '" data-entity="' + (entity || '') + '">' + svg(icon, color) +
       '<div><div class="epb-kl">' + label + '</div><div class="epb-kv">' +
       this._fmt(this._num(entity), '', 1) + '<span class="epb-u"> kWh</span></div></div></div>';
 
@@ -2143,7 +2143,9 @@ class EnergyPowerCard extends HTMLElement {
       '.pwempty{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:6px 0 10px;}' +
       '.mv-grid{display:grid;gap:8px;}' +
       '.mv-t{background:rgba(127,127,127,.07);border-radius:12px;padding:12px 8px 10px;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer;min-width:0;transition:background .12s;}' +
-      '.mv-t:hover{background:rgba(127,127,127,.14);}' +
+      // hover come il tile card di HA: velo del colore di stato all'8%, non un blocco grigio
+      '.mv-t:hover{background:color-mix(in srgb,var(--mv-on) 8%,rgba(127,127,127,.07));}' +
+      '.mv-t.off:hover{background:rgba(127,127,127,.11);}' +
       // forma icona Mushroom: quadrato arrotondato 42px, tinta dello stato
       '.mv-sh{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:var(--mv-bg);color:var(--mv-on);flex:0 0 auto;transition:background .12s,color .12s;}' +
       '.mv-t.off .mv-sh{background:rgba(127,127,127,.13);color:var(--secondary-text-color,#8b909a);}' +
@@ -2259,7 +2261,7 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--epb-bd);border-radius:13px;overflow:hidden;margin-top:14px;}' +
       '.epb-k{display:flex;align-items:center;gap:9px;padding:11px 12px;cursor:pointer;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));transition:background .12s;}' +
-      '.epb-k:hover{background:var(--epb-fill);}' +
+      '.epb-k:hover{background:color-mix(in srgb,var(--k,#888) 8%,var(--ha-card-background,var(--card-background-color,#fff)));}' +
       '.epb-kl{font-size:11px;color:var(--epb-tx2);line-height:1.2;}' +
       '.epb-kv{font-size:16px;font-weight:650;letter-spacing:-.3px;margin-top:3px;font-variant-numeric:tabular-nums;}' +
       '.epb-u{font-size:11px;font-weight:500;color:var(--epb-tx2);}' +
