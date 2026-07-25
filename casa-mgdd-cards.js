@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.26.0
+ * Version: 1.27.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1896,46 +1896,55 @@ class EnergyPowerCard extends HTMLElement {
     return p[kind] || p.plug;
   }
 
-  // layout plugs: pannello di comando compatto. Solo i circuiti con `switch`,
-  // una riga ciascuno con nome intero, stato e interruttore. Niente watt ne'
-  // sparkline: il consumo sta nella card dei carichi attivi.
+  // layout plugs: pannello di comando in stile Mushroom (variante verticale).
+  // Solo i circuiti con `switch`: griglia di riquadri con icona in alto, nome e
+  // stato sotto. Nessun interruttore separato: si tocca il riquadro e commuta,
+  // l'icona colorata e' l'indicatore di stato. Tocco sull'icona = more-info.
   _renderPlugs() {
     const c = this.config;
     const items = (c.circuits || []).filter((x) => x.switch);
+    const cols = c.columns || 3;
     let onCount = 0;
-    let rows = '';
+    let tiles = '';
     items.forEach((x) => {
       const st = this._hass ? this._hass.states[x.switch] : null;
       const on = !!(st && st.state === 'on');
       if (on) onCount++;
       const w = this._pw(x.entity);
-      // "in attesa" = presa alimentata ma senza assorbimento (elettrodomestico fermo)
-      const det = w !== null && w > 0.5 ? this._fmt(w, ' W', w < 10 ? 1 : 0) : on ? 'in attesa' : 'spenta';
-      rows +=
-        '<div class="pw" data-entity="' + (x.entity || x.switch) + '">' +
-        '<span class="pwi' + (on ? '' : ' off') + '">' +
-        '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
+      // "In attesa" = presa alimentata ma senza assorbimento (elettrodomestico fermo)
+      const det = w !== null && w > 0.5 ? this._fmt(w, ' W', w < 10 ? 1 : 0) : on ? 'In attesa' : 'Spenta';
+      tiles +=
+        '<div class="mv-t' + (on ? '' : ' off') + '" data-plug="' + x.switch + '" title="' +
+        x.name + ' · ' + (on ? 'tocca per spegnere' : 'tocca per accendere') + '">' +
+        '<span class="mv-sh" data-info="' + (x.entity || x.switch) + '">' +
+        '<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' +
         this._plugIcon(x.icon) + '</svg></span>' +
-        '<span class="pwn">' + x.name + '</span>' +
-        '<span class="pwd">' + det + '</span>' +
-        // pulsante di accensione in stile Home Assistant (riquadro con icona),
-        // non l'interruttore a slitta di iOS
-        '<span class="pb' + (on ? ' pb-on' : '') + '" data-switch="' + x.switch + '" title="' +
-        (on ? 'Spegni' : 'Accendi') + '">' +
-        '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">' +
-        '<path d="M12 3.5v8.2"/><path d="M7 6.6a7 7 0 1 0 10 0"/></svg></span>' +
+        '<span class="mv-n">' + x.name + '</span>' +
+        '<span class="mv-s">' + det + '</span>' +
         '</div>';
     });
-    if (!rows) rows = '<div class="pwempty">Nessun circuito con interruttore configurato.</div>';
+    if (!tiles) tiles = '<div class="pwempty">Nessun circuito con interruttore configurato.</div>';
+    const accent = c.accent === 'teal' ? ' mv-teal' : '';
     this.innerHTML =
       this._styles() +
-      '<div class="pwcard' + (this._isDark() ? ' pw-dark' : '') + '">' +
+      '<div class="pwcard' + (this._isDark() ? ' pw-dark' : '') + accent + '">' +
       '<div class="load-top"><span class="hero-l">' + (c.title || 'Prese') + '</span>' +
       '<span class="hero-tag">' + onCount + ' accese · ' + (items.length - onCount) + ' spente</span></div>' +
-      '<div class="pwlist">' + rows + '</div>' +
+      '<div class="mv-grid" style="grid-template-columns:repeat(' + cols + ',minmax(0,1fr));">' + tiles + '</div>' +
       '</div>';
-    this._wireClicks();
-    this._wireSwitches();
+    // il riquadro commuta, l'icona apre il more-info senza propagare al riquadro
+    this.querySelectorAll('[data-plug]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = el.getAttribute('data-plug');
+        if (id && this._hass) this._hass.callService('switch', 'toggle', { entity_id: id });
+      });
+    });
+    this.querySelectorAll('[data-info]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        this._openMoreInfo(el.getAttribute('data-info'));
+      });
+    });
   }
 
   _renderOverview() {
@@ -2105,25 +2114,25 @@ class EnergyPowerCard extends HTMLElement {
       '.load-name{flex:1;min-width:0;font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '.load-pct{font-size:11px;color:var(--secondary-text-color,#6b6f76);width:38px;text-align:right;flex:0 0 auto;}' +
       '.load-w{font-size:15px;font-weight:600;color:var(--primary-text-color,#1c1c1e);width:56px;text-align:right;flex:0 0 auto;}' +
-      // layout plugs: pannello di comando compatto
-      '.pwcard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px 10px;}' +
-      '.pwlist{display:flex;flex-direction:column;}' +
-      '.pw{display:grid;grid-template-columns:22px minmax(0,1fr) auto 34px;align-items:center;gap:10px;padding:6px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
-      '.pw:last-child{border-bottom:0;}' +
-      '.pwi{display:flex;color:#0E9384;}' +
-      '.pwi.off{color:var(--secondary-text-color,#6b6f76);opacity:.55;}' +
-      '.pwn{font-size:12.5px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '.pwd{font-size:10.5px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;font-variant-numeric:tabular-nums;}' +
+      // layout plugs: pannello di comando in stile Mushroom (griglia verticale).
+      // --mv-on / --mv-bg sono le tinte dello stato acceso: ambra (default, come
+      // lo stato attivo degli switch in HA) o teal con accent: teal.
+      '.pwcard{--mv-on:#B87503;--mv-bg:rgba(184,117,3,.16);' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 14px 15px;}' +
+      '.pwcard.mv-teal{--mv-on:#0E9384;--mv-bg:rgba(14,147,132,.16);}' +
+      '.pwcard.pw-dark{--mv-on:#D79A2B;--mv-bg:rgba(215,154,43,.22);}' +
+      '.pwcard.pw-dark.mv-teal{--mv-on:#12A08C;--mv-bg:rgba(18,160,140,.22);}' +
       '.pwempty{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:6px 0 10px;}' +
-      // pulsante di accensione: riquadro arrotondato con icona, come i controlli HA
-      '.pb{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:rgba(127,127,127,.12);color:var(--secondary-text-color,#6b6f76);cursor:pointer;transition:background .12s,color .12s;}' +
-      '.pb:hover{background:rgba(127,127,127,.20);}' +
-      '.pb-on{background:rgba(14,147,132,.16);color:#0E9384;}' +
-      '.pb-on:hover{background:rgba(14,147,132,.24);}' +
-      // step del verde ricalibrato per la superficie scura
-      '.pw-dark .pwi{color:#12A08C;}' +
-      '.pw-dark .pb-on{background:rgba(18,160,140,.22);color:#12A08C;}' +
-      '.pw-dark .pb-on:hover{background:rgba(18,160,140,.30);}' +
+      '.mv-grid{display:grid;gap:8px;}' +
+      '.mv-t{background:rgba(127,127,127,.07);border-radius:12px;padding:12px 8px 10px;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer;min-width:0;transition:background .12s;}' +
+      '.mv-t:hover{background:rgba(127,127,127,.14);}' +
+      // forma icona Mushroom: quadrato arrotondato 42px, tinta dello stato
+      '.mv-sh{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:var(--mv-bg);color:var(--mv-on);flex:0 0 auto;transition:background .12s,color .12s;}' +
+      '.mv-t.off .mv-sh{background:rgba(127,127,127,.13);color:var(--secondary-text-color,#8b909a);}' +
+      '.mv-n{font-size:12px;font-weight:500;color:var(--primary-text-color,#1c1c1e);text-align:center;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}' +
+      '.mv-t.off .mv-n{color:var(--secondary-text-color,#6b6f76);}' +
+      '.mv-s{font-size:10.5px;color:var(--secondary-text-color,#6b6f76);font-variant-numeric:tabular-nums;}' +
+      '@media (max-width:420px){.mv-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}' +
       '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
       '.row{display:flex;align-items:center;gap:14px;padding:12px 0;cursor:pointer;}' +
       '.row[data-border]{border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
