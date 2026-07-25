@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.23.1
+ * Version: 1.23.2
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1902,16 +1902,13 @@ class EnergyPowerCard extends HTMLElement {
 
     this.innerHTML =
       this._styles() +
-      // prima card: potenza istantanea e curva 24h
+      // card unica: potenza, curva 24h e le tre scale temporali
       '<div class="ovc">' +
       '<div class="ov-hd"><span class="ov-t">' + (this.config.title || 'Consumo casa') + '</span>' +
       '<span class="ov-p">' + (this.config.history_hours || 24) + 'h</span></div>' +
       '<div class="ov-hero">' + this._fmt(power, '', power !== null && power < 10 ? 1 : 0) +
       '<span class="ov-u">W</span></div>' +
       trendHtml +
-      '</div>' +
-      // seconda card: le tre scale temporali
-      '<div class="ovs">' +
       '<div class="ov-row">' +
       '<div class="ov-c"><div class="ov-l">Oggi</div><div class="ov-v">' +
       this._fmt(day, '', 1) + '<span class="ov-vu"> kWh</span></div>' + dayTrend + '</div>' +
@@ -2001,17 +1998,16 @@ class EnergyPowerCard extends HTMLElement {
       '.pill{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;border-radius:20px;padding:3px 9px;margin-top:7px;}' +
       '.pill-down{color:#1D9E75;background:#1D9E751f;}' +
       '.pill-up{color:#E24B4A;background:#E24B4A1f;}' +
-      // layout overview (variante A): card potenza + card delle tre scale temporali
-      '.ovc{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:20px;padding:16px 16px 17px;margin-bottom:10px;}' +
-      '.ovs{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:20px;padding:5px 4px;margin-bottom:14px;}' +
+      // layout overview (variante A): potenza, curva e tre scale temporali in una card,
+      // staccata dalla lista dei carichi attivi da uno spacer piu' ampio
+      '.ovc{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:20px;padding:16px 16px 17px;margin-bottom:22px;}' +
       '.ov-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}' +
       '.ov-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--secondary-text-color,#6b7280);}' +
       '.ov-p{font-size:10.5px;font-weight:600;color:var(--secondary-text-color,#6b7280);background:rgba(127,127,127,.10);padding:3px 9px;border-radius:20px;}' +
       '.ov-hero{font-size:46px;font-weight:670;letter-spacing:-2.4px;line-height:1;color:var(--primary-text-color,#10131a);font-variant-numeric:tabular-nums;display:flex;align-items:baseline;}' +
       '.ov-u{font-size:16px;font-weight:550;letter-spacing:0;color:var(--secondary-text-color,#6b7280);margin-left:5px;}' +
-      '.ov-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));}' +
-      '.ov-c{padding:11px 14px 12px;}' +
-      '.ov-c + .ov-c{border-left:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
+      '.ov-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--divider-color,rgba(0,0,0,.08));border-radius:14px;overflow:hidden;margin-top:12px;}' +
+      '.ov-c{background:var(--ha-card-background,var(--card-background-color,#fff));padding:11px 12px 12px;}' +
       '.ov-l{font-size:11px;color:var(--secondary-text-color,#6b7280);}' +
       '.ov-v{font-size:21px;font-weight:660;letter-spacing:-.7px;margin-top:5px;color:var(--primary-text-color,#10131a);font-variant-numeric:tabular-nums;}' +
       '.ov-vu{font-size:12px;font-weight:500;color:var(--secondary-text-color,#6b7280);letter-spacing:0;}' +
@@ -2020,8 +2016,7 @@ class EnergyPowerCard extends HTMLElement {
       '.ov-cap{font-size:10px;color:var(--secondary-text-color,#6b7280);margin-top:7px;}' +
       '.ovc .hero-spark{margin-top:4px;}' +
       '.ovc .hero-spark svg{height:66px;}' +
-      '@media (max-width:460px){.ov-row{grid-template-columns:1fr 1fr;}' +
-      '.ov-c:last-child{grid-column:span 2;border-left:0;border-top:1px solid var(--divider-color,rgba(0,0,0,.08));}}' +
+      '@media (max-width:460px){.ov-row{grid-template-columns:1fr 1fr;}.ov-c:last-child{grid-column:span 2;}}' +
       '.pill-cap{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:5px;}' +
       '.proj{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-top:14px;padding-top:10px;border-top:1px solid var(--divider-color,rgba(0,0,0,.07));display:flex;justify-content:space-between;}' +
       '.proj b{color:var(--primary-text-color,#1c1c1e);font-weight:600;}' +
