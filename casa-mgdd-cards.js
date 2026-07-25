@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.20.0
+ * Version: 1.21.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1621,57 +1621,100 @@ class EnergyPowerCard extends HTMLElement {
     this._wireClicks();
   }
 
-  // layout balance (variante C): bilancio energetico giornaliero.
-  // 6 tile (rete prelievo/immissione, casa, solare, batteria carica/scarica)
-  // + barra di autosufficienza calcolata da consumo casa e prelievo rete.
+  // layout balance (variante "Arc"): bilancio energetico giornaliero.
+  // Arco dell'autosufficienza + riga consumo casa + striscia con la scomposizione
+  // (solare / batteria / rete) e legenda + 4 KPI.
+  // Progettato per i sensori utility_meter *_today della Powerwall.
   _renderBalance() {
     const c = this.config;
     const ic = {
-      down: '<path d="M12 4v14M6 12l6 6 6-6"/>',
-      up: '<path d="M12 20V6M6 12l6-6 6 6"/>',
-      home: '<path d="M4 11 12 4l8 7M6 10v10h12V10"/>',
-      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.2 17.2 18.6 18.6M18.6 5.4 17.2 6.8M6.8 17.2 5.4 18.6"/>',
-      batt: '<rect x="4" y="8" width="14" height="8" rx="1.5"/><path d="M20 11v2"/>',
+      down: '<path d="M12 3.5v17M6 13.5l6 6.5 6-6.5"/>',
+      up: '<path d="M12 20.5v-17M6 10.5l6-6.5 6 6.5"/>',
+      home: '<path d="M3.6 11.2 12 4l8.4 7.2M6 10v10h12V10"/>',
+      sun: '<circle cx="12" cy="12" r="4.2"/><path d="M12 2.4v2.2M12 19.4v2.2M2.4 12h2.2M19.4 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/>',
+      batt: '<rect x="3.5" y="7.5" width="14.5" height="9" rx="2"/><path d="M20.5 10.8v2.4"/>',
     };
-    const svg = (p, color) =>
-      '<svg class="epb-ic" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + p + '</svg>';
-    const tile = (label, entity, path, color) => {
-      const v = this._num(entity);
-      return (
-        '<div class="epb-tile" data-entity="' + (entity || '') + '">' +
-        '<div class="epb-th">' + svg(path, color) + '<span class="epb-l">' + label + '</span></div>' +
-        '<div class="epb-v">' + this._fmt(v, '', 1) + '<span class="epb-u"> kWh</span></div>' +
-        '</div>'
-      );
-    };
-    const tiles =
-      tile('Prelevata rete', c.grid_import, ic.down, '#BA7517') +
-      tile('Esportata', c.grid_export, ic.up, '#0F6E56') +
-      tile('Consumo casa', c.house, ic.home, '#185FA5') +
-      tile('Solare prodotto', c.solar, ic.sun, '#EF9F27') +
-      tile('Batteria carica', c.battery_charge, ic.batt, '#7F77DD') +
-      tile('Batteria scarica', c.battery_discharge, ic.batt, '#534AB7');
+    const svg = (p, color, s) =>
+      '<svg class="epb-ic" viewBox="0 0 24 24" width="' + (s || 15) + '" height="' + (s || 15) + '" fill="none" stroke="' + color +
+      '" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' + p + '</svg>';
+
     const house = this._num(c.house);
     const gimp = this._num(c.grid_import);
+    const dis = this._num(c.battery_discharge);
+    // Scomposizione del consumo casa nelle sue tre origini. Ordine di attribuzione:
+    // prima la batteria, poi la rete, il resto e' solare diretto. La quota di rete e'
+    // limitata al consumo residuo: cosi' la carica della batteria da rete non falsa
+    // l'autosufficienza (col vecchio 1-gimp/house andava negativa e veniva troncata a 0).
+    let battH = 0;
+    let gridH = 0;
+    let sunH = 0;
     let selfSuff = null;
-    if (house !== null && house > 0 && gimp !== null) {
-      selfSuff = Math.max(0, Math.min(100, (1 - gimp / house) * 100));
+    if (house !== null && house > 0) {
+      battH = Math.min(dis === null ? 0 : Math.max(0, dis), house);
+      gridH = Math.min(gimp === null ? 0 : Math.max(0, gimp), house - battH);
+      sunH = Math.max(0, house - battH - gridH);
+      selfSuff = Math.max(0, Math.min(100, (1 - gridH / house) * 100));
     }
-    const pct = selfSuff === null ? '--' : Math.round(selfSuff) + '%';
-    const barW = selfSuff === null ? 0 : selfSuff;
-    const bar =
-      '<div class="epb-ss">' +
-      '<div class="epb-ss-top"><span class="epb-ss-l">Autosufficienza</span><span class="epb-ss-v">' + pct + '</span></div>' +
-      '<div class="epb-ss-track"><div class="epb-ss-fill" style="width:' + barW.toFixed(0) + '%"></div></div>' +
+    const pctTxt = selfSuff === null ? '--' : Math.round(selfSuff);
+    // semicerchio r=62 -> lunghezza pi*62
+    const ARC = 194.8;
+    const arcFill = selfSuff === null ? 0 : (ARC * selfSuff) / 100;
+    const gauge =
+      '<div class="epb-arc">' +
+      '<svg viewBox="0 0 150 84" width="150" height="84" aria-hidden="true">' +
+      '<path d="M13 75a62 62 0 0 1 124 0" fill="none" stroke="var(--epb-track)" stroke-width="11" stroke-linecap="round"/>' +
+      '<path d="M13 75a62 62 0 0 1 124 0" fill="none" stroke="var(--epb-good)" stroke-width="11" stroke-linecap="round" stroke-dasharray="' +
+      arcFill.toFixed(1) + ' ' + ARC + '"/>' +
+      '</svg>' +
+      '<div class="epb-arc-c"><div class="epb-arc-p">' + pctTxt + '<span class="epb-arc-pp">%</span></div>' +
+      '<div class="epb-arc-l">autosufficienza</div></div>' +
       '</div>';
+
+    const parts = [
+      ['Solare', sunH, 'sun'],
+      ['Batteria', battH, 'bat'],
+      ['Rete', gridH, 'grid'],
+    ];
+    const tot = house !== null && house > 0 ? house : 0;
+    let segs = '';
+    let leg = '';
+    parts.forEach((p) => {
+      const share = tot ? (p[1] / tot) * 100 : 0;
+      if (share >= 0.4) segs += '<div class="epb-seg epb-c-' + p[2] + '" style="flex:' + share.toFixed(3) + '"></div>';
+      // legenda sempre presente: l'identita' non deve dipendere dal solo colore
+      leg += '<span class="epb-lg"><i class="epb-dot epb-c-' + p[2] + '"></i>' + p[0] +
+        '<b>' + (tot ? Math.round(share) : '--') + '%</b></span>';
+    });
+    if (!segs) segs = '<div class="epb-seg epb-seg-empty" style="flex:1"></div>';
+
+    const kpi = (icon, color, label, entity) =>
+      '<div class="epb-k" data-entity="' + (entity || '') + '">' + svg(icon, color) +
+      '<div><div class="epb-kl">' + label + '</div><div class="epb-kv">' +
+      this._fmt(this._num(entity), '', 1) + '<span class="epb-u"> kWh</span></div></div></div>';
+
     this.innerHTML =
       this._styles() +
-      '<div class="epb-wrap">' +
-      '<div class="epb-title">' + (c.title || 'Bilancio energetico') + '</div>' +
-      '<div class="epb-grid">' + tiles + '</div>' +
-      bar +
+      '<div class="epb-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
+      '<div class="epb-hd"><span class="epb-t">' + (c.title || 'Bilancio energetico') + '</span>' +
+      '<span class="epb-pill">' + (c.period_label || 'oggi') + '</span></div>' +
+      gauge +
+      '<div class="epb-sub" data-entity="' + (c.house || '') + '">' + svg(ic.home, 'var(--epb-tx2)') +
+      '<span>Consumo casa</span><b>' + this._fmt(house, ' kWh', 1) + '</b></div>' +
+      '<div class="epb-mx">' + segs + '</div>' +
+      '<div class="epb-leg">' + leg + '</div>' +
+      '<div class="epb-grid">' +
+      kpi(ic.sun, 'var(--epb-sun)', 'Solare prodotto', c.solar) +
+      kpi(ic.down, 'var(--epb-grid)', 'Prelevata rete', c.grid_import) +
+      kpi(ic.up, 'var(--epb-grid)', 'Immessa in rete', c.grid_export) +
+      kpi(ic.batt, 'var(--epb-bat)', 'Batteria scaricata', c.battery_discharge) +
+      '</div>' +
       '</div>';
     this._wireClicks();
+  }
+
+  // true quando il tema Home Assistant attivo e' scuro (non dipende dall'OS).
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
   }
 
   _wireSwitches() {
@@ -1932,24 +1975,48 @@ class EnergyPowerCard extends HTMLElement {
       '.ephg-spark .epc-spark{height:30px;}' +
       '.ephg-tile.off .ephg-val{color:var(--secondary-text-color,#9aa0aa);}' +
       '.ephg-tile.off .ephg-spark{filter:grayscale(1);opacity:.45;}' +
-      // layout balance (C): bilancio energetico, 6 tile + barra autosufficienza
-      '.epb-wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:16px 16px 18px;}' +
-      '.epb-title{font-size:16px;font-weight:600;color:var(--primary-text-color,#1c1c1e);margin-bottom:12px;}' +
-      '.epb-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;}' +
-      '@media (max-width:479px){.epb-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}' +
-      '.epb-tile{background:rgba(127,127,127,.09);border-radius:12px;padding:10px 12px;cursor:pointer;transition:background .12s;}' +
-      '.epb-tile:hover{background:rgba(127,127,127,.16);}' +
-      '.epb-th{display:flex;align-items:center;gap:6px;margin-bottom:7px;min-width:0;}' +
-      '.epb-ic{flex:0 0 auto;}' +
-      '.epb-l{font-size:12px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '.epb-v{font-size:22px;font-weight:600;letter-spacing:-.5px;line-height:1;color:var(--primary-text-color,#1c1c1e);font-variant-numeric:tabular-nums;}' +
-      '.epb-u{font-size:12px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
-      '.epb-ss{background:rgba(127,127,127,.09);border-radius:12px;padding:11px 13px;margin-top:10px;}' +
-      '.epb-ss-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px;}' +
-      '.epb-ss-l{font-size:13px;color:var(--secondary-text-color,#6b6f76);}' +
-      '.epb-ss-v{font-size:15px;font-weight:600;color:#1D9E75;font-variant-numeric:tabular-nums;}' +
-      '.epb-ss-track{height:6px;border-radius:3px;background:rgba(127,127,127,.18);overflow:hidden;}' +
-      '.epb-ss-fill{height:100%;background:#1D9E75;border-radius:3px;}' +
+      // layout balance ("Arc"): arco autosufficienza + scomposizione + 4 KPI.
+      // Tinte dati: step distinti per chiaro e scuro (non un'inversione automatica),
+      // validati su banda di luminosita', separazione CVD e contrasto sulla superficie.
+      '.epb-wrap{--epb-sun:#C97C05;--epb-bat:#6E56CF;--epb-grid:#0E9384;--epb-good:#0E9384;' +
+      '--epb-tx:var(--primary-text-color,#10131a);--epb-tx2:var(--secondary-text-color,#6b7280);' +
+      '--epb-bd:var(--divider-color,rgba(15,23,42,.09));--epb-fill:rgba(127,127,127,.09);' +
+      '--epb-track:rgba(127,127,127,.18);' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--epb-bd);border-radius:20px;padding:17px 17px 18px;color:var(--epb-tx);}' +
+      '.epb-wrap.epb-dark{--epb-sun:#C98420;--epb-bat:#7B67D8;--epb-grid:#12A08C;--epb-good:#12A08C;' +
+      '--epb-fill:rgba(255,255,255,.055);--epb-track:rgba(255,255,255,.12);}' +
+      '.epb-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}' +
+      '.epb-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--epb-tx2);}' +
+      '.epb-pill{font-size:10.5px;font-weight:600;letter-spacing:.4px;color:var(--epb-tx2);background:var(--epb-fill);padding:3px 9px;border-radius:20px;}' +
+      '.epb-ic{flex:0 0 auto;display:block;}' +
+      '.epb-arc{position:relative;display:flex;justify-content:center;}' +
+      '.epb-arc svg{display:block;}' +
+      '.epb-arc-c{position:absolute;left:0;right:0;bottom:2px;text-align:center;}' +
+      '.epb-arc-p{font-size:34px;font-weight:670;letter-spacing:-1.6px;line-height:1;font-variant-numeric:tabular-nums;}' +
+      '.epb-arc-pp{font-size:16px;font-weight:600;letter-spacing:-.3px;color:var(--epb-tx2);margin-left:1px;}' +
+      '.epb-arc-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);margin-top:4px;}' +
+      '.epb-sub{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--epb-tx2);margin:14px 0 9px;cursor:pointer;}' +
+      '.epb-sub b{margin-left:auto;color:var(--epb-tx);font-weight:650;font-size:14.5px;font-variant-numeric:tabular-nums;}' +
+      // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo
+      '.epb-mx{display:flex;height:9px;border-radius:5px;overflow:hidden;gap:2px;background:var(--epb-track);}' +
+      '.epb-seg{height:100%;}' +
+      '.epb-seg-empty{background:var(--epb-track);}' +
+      '.epb-c-sun{background:var(--epb-sun);}' +
+      '.epb-c-bat{background:var(--epb-bat);}' +
+      '.epb-c-grid{background:var(--epb-grid);}' +
+      '.epb-leg{display:flex;flex-wrap:wrap;gap:5px 14px;margin-top:9px;}' +
+      '.epb-lg{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--epb-tx2);}' +
+      '.epb-lg b{color:var(--epb-tx);font-weight:650;font-variant-numeric:tabular-nums;}' +
+      '.epb-dot{width:9px;height:9px;border-radius:3px;flex:0 0 auto;}' +
+      '.epb-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--epb-bd);border-radius:13px;overflow:hidden;margin-top:14px;}' +
+      '.epb-k{display:flex;align-items:center;gap:9px;padding:11px 12px;cursor:pointer;' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));transition:background .12s;}' +
+      '.epb-k:hover{background:var(--epb-fill);}' +
+      '.epb-kl{font-size:11px;color:var(--epb-tx2);line-height:1.2;}' +
+      '.epb-kv{font-size:16px;font-weight:650;letter-spacing:-.3px;margin-top:3px;font-variant-numeric:tabular-nums;}' +
+      '.epb-u{font-size:11px;font-weight:500;color:var(--epb-tx2);}' +
+      '@media (max-width:359px){.epb-grid{grid-template-columns:1fr;}}' +
       '</style>'
     );
   }
