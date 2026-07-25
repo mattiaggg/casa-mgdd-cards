@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.25.0
+ * Version: 1.26.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1868,24 +1868,12 @@ class EnergyPowerCard extends HTMLElement {
           '</div>'
         : '');
     if (!rows) return '';
-    // piede: circuiti di sola misura fermi. Quelli con interruttore non compaiono qui,
-    // vivono nella card delle prese (layout: plugs).
-    const idle = circuits
-      .filter((x) => !x.switch)
-      .map((x) => ({ name: x.name, val: this._num(x.entity) }))
-      .filter((x) => x.val !== null && x.val <= threshold)
-      .map((x) => x.name);
-    const idleHtml =
-      this.config.idle_footer === false || !idle.length
-        ? ''
-        : '<div class="load-foot">A riposo: ' + idle.join(', ') + '</div>';
     return (
       '<div class="loadlist">' +
       '<div class="load-top"><span class="hero-l">' + (this.config.loads_title || 'Carichi attivi adesso') +
       '</span><span class="hero-tag">' + this._fmt(power, ' W', 0) + '</span></div>' +
       compBar +
       rows +
-      idleHtml +
       '</div>'
     );
   }
@@ -1930,7 +1918,12 @@ class EnergyPowerCard extends HTMLElement {
         this._plugIcon(x.icon) + '</svg></span>' +
         '<span class="pwn">' + x.name + '</span>' +
         '<span class="pwd">' + det + '</span>' +
-        '<span class="tg tg-' + (on ? 'on' : 'off') + '" data-switch="' + x.switch + '"><i></i></span>' +
+        // pulsante di accensione in stile Home Assistant (riquadro con icona),
+        // non l'interruttore a slitta di iOS
+        '<span class="pb' + (on ? ' pb-on' : '') + '" data-switch="' + x.switch + '" title="' +
+        (on ? 'Spegni' : 'Accendi') + '">' +
+        '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">' +
+        '<path d="M12 3.5v8.2"/><path d="M7 6.6a7 7 0 1 0 10 0"/></svg></span>' +
         '</div>';
     });
     if (!rows) rows = '<div class="pwempty">Nessun circuito con interruttore configurato.</div>';
@@ -2112,25 +2105,25 @@ class EnergyPowerCard extends HTMLElement {
       '.load-name{flex:1;min-width:0;font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '.load-pct{font-size:11px;color:var(--secondary-text-color,#6b6f76);width:38px;text-align:right;flex:0 0 auto;}' +
       '.load-w{font-size:15px;font-weight:600;color:var(--primary-text-color,#1c1c1e);width:56px;text-align:right;flex:0 0 auto;}' +
-      '.load-foot{font-size:10.5px;line-height:1.45;color:var(--secondary-text-color,#6b6f76);margin-top:10px;padding:10px 0 8px;border-top:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
       // layout plugs: pannello di comando compatto
-      '.pwcard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px 8px;}' +
+      '.pwcard{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px 10px;}' +
       '.pwlist{display:flex;flex-direction:column;}' +
-      '.pw{display:grid;grid-template-columns:22px minmax(0,1fr) auto 30px;align-items:center;gap:9px;padding:7px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
+      '.pw{display:grid;grid-template-columns:22px minmax(0,1fr) auto 34px;align-items:center;gap:10px;padding:6px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
       '.pw:last-child{border-bottom:0;}' +
       '.pwi{display:flex;color:#0E9384;}' +
       '.pwi.off{color:var(--secondary-text-color,#6b6f76);opacity:.55;}' +
       '.pwn{font-size:12.5px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '.pwd{font-size:10.5px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;font-variant-numeric:tabular-nums;}' +
       '.pwempty{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:6px 0 10px;}' +
-      '.tg{display:inline-flex;align-items:center;width:30px;height:18px;border-radius:20px;padding:2px;flex:0 0 auto;transition:background .15s;}' +
-      '.tg i{display:block;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.28);transition:transform .15s;}' +
-      '.tg-on{background:#0E9384;}' +
-      '.tg-on i{transform:translateX(12px);}' +
-      '.tg-off{background:rgba(127,127,127,.28);}' +
+      // pulsante di accensione: riquadro arrotondato con icona, come i controlli HA
+      '.pb{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:rgba(127,127,127,.12);color:var(--secondary-text-color,#6b6f76);cursor:pointer;transition:background .12s,color .12s;}' +
+      '.pb:hover{background:rgba(127,127,127,.20);}' +
+      '.pb-on{background:rgba(14,147,132,.16);color:#0E9384;}' +
+      '.pb-on:hover{background:rgba(14,147,132,.24);}' +
       // step del verde ricalibrato per la superficie scura
       '.pw-dark .pwi{color:#12A08C;}' +
-      '.pw-dark .tg-on{background:#12A08C;}' +
+      '.pw-dark .pb-on{background:rgba(18,160,140,.22);color:#12A08C;}' +
+      '.pw-dark .pb-on:hover{background:rgba(18,160,140,.30);}' +
       '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
       '.row{display:flex;align-items:center;gap:14px;padding:12px 0;cursor:pointer;}' +
       '.row[data-border]{border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
