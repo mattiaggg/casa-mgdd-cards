@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.36.0
+ * Version: 1.37.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3146,6 +3146,9 @@ class EnergyMonthlyCard extends HTMLElement {
     chart.addEventListener('touchmove', (e) => {
       if (e.touches && e.touches.length) show(idxFromEvent(e.touches[0]));
     }, { passive: true });
+    // senza questo il riquadro restava appeso al grafico dopo lo scorrimento
+    chart.addEventListener('touchend', hide, { passive: true });
+    chart.addEventListener('touchcancel', hide, { passive: true });
   }
 
   _styles() {
@@ -3327,7 +3330,13 @@ class EnergyFlowCard extends HTMLElement {
     if (!this._stage) return;
     // decide layout in base alla larghezza della card (mobile < 480px), poi rileggi (l'aspect cambia)
     const w0 = this._stage.getBoundingClientRect().width;
-    const mobile = w0 > 0 && w0 < 480;
+    // Larghezza 0 = card fuori dallo schermo o non ancora impaginata: si tiene la
+    // modalita' corrente. Trattarla come "non mobile" faceva passare l'aspect
+    // dello stage da 1/1 a 2.6/1, cioe' la card perdeva di colpo ~220px di
+    // altezza mentre scorreva via, il documento si accorciava e iOS agganciava
+    // lo scroll piu' in alto: era questo a far "tornare su" la vista Energy.
+    if (w0 <= 0) return;
+    const mobile = w0 < 480;
     if (mobile !== this._mobile) { this._mobile = mobile; if (this._card) this._card.classList.toggle('ef-mobile', mobile); }
     const r = this._stage.getBoundingClientRect();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -3704,7 +3713,9 @@ class CasaMgddProbeCard extends HTMLElement {
         });
       });
     }
-    this._deep(this._viewRoot(), 'hui-card').forEach((el) => {
+    // selettore ampio: a seconda della versione di HA la card e' avvolta in
+    // hui-card, oppure e' direttamente l'elemento con dentro un ha-card
+    this._deep(this._viewRoot(), 'hui-card, ha-card').forEach((el) => {
       if (this._log.has(el)) return;
       this._log.set(el, { label: this._label(el), h: null, n: 0, last: 0, scroll: 0 });
       this._ro.observe(el);
