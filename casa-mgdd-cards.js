@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.41.0
+ * Version: 1.41.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -524,7 +524,7 @@ class TemperatureBentoCard extends HTMLElement {
       '.zc-spark{display:block;width:100%;height:46px;overflow:visible;}' +
       '.zc-mark{position:absolute;top:0;bottom:0;width:1px;background:var(--zc);opacity:0;transform:translateX(-0.5px);pointer-events:none;transition:opacity .1s;}' +
       '.zc-dot{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--zc);border:2px solid var(--ha-card-background,var(--card-background-color,#fff));opacity:0;transform:translate(-50%,-50%);pointer-events:none;transition:opacity .1s;}' +
-      '.zc-tip{position:absolute;top:-4px;transform:translate(-50%,-100%);background:var(--primary-text-color,#1c1c1e);color:var(--ha-card-background,var(--card-background-color,#fff));font-size:11px;font-weight:500;padding:3px 7px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .1s;z-index:2;}' +
+      '.zc-tip{position:absolute;top:-4px;transform:translate(-50%,-100%);background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#1c1c1e);border:1px solid var(--divider-color,rgba(0,0,0,.1));box-shadow:0 6px 18px rgba(0,0,0,.18);border-radius:10px;padding:5px 9px;font-size:11px;font-weight:600;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .1s;z-index:2;}' +
       '.zchart.zc-active .zc-mark,.zchart.zc-active .zc-dot,.zchart.zc-active .zc-tip{opacity:1;}' +
       '.chart-loading{grid-column:1/-1;font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:30px 0;text-align:center;}' +
       '@media (max-width:700px){.top2{grid-template-columns:1fr;}}' +
@@ -2466,6 +2466,10 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-hr-plot{position:relative;display:flex;align-items:flex-end;gap:2px;height:46px;}' +
       '.epb-hb{flex:1;height:100%;display:flex;align-items:flex-end;min-width:0;}' +
       '.epb-hb[data-tot]:hover .epb-hb-in{outline:1.5px solid var(--epb-tx2);outline-offset:1px;}' +
+      // Tooltip: superficie della card, bordo e ombra. Stessa ricetta per tutti
+      // (profilo orario, consumo giornaliero/mensile, grafico di zona): la pillola
+      // invertita con sfondo --primary-text-color diventava illeggibile in tema
+      // scuro, dove quel colore e' quasi bianco come il testo che ci stava sopra.
       // tooltip del profilo orario: ora, totale e scomposizione per sorgente
       '.epb-tip{position:absolute;bottom:calc(100% + 8px);z-index:5;pointer-events:none;' +
       'min-width:158px;padding:9px 11px 8px;border-radius:11px;' +
@@ -2771,7 +2775,7 @@ class EnergyHistoryCard extends HTMLElement {
         tip = document.createElement('div');
         tip.className = 'bartip';
         tip.style.cssText =
-          'position:absolute;pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:var(--ha-card-background,var(--card-background-color,#fff));font-size:11px;font-weight:500;padding:3px 8px;border-radius:6px;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:2;transform:translate(-50%,-100%);top:-6px;';
+          'position:absolute;pointer-events:none;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#1c1c1e);border:1px solid var(--divider-color,rgba(0,0,0,.1));box-shadow:0 6px 18px rgba(0,0,0,.18);border-radius:10px;padding:5px 9px;font-size:11px;font-weight:600;white-space:nowrap;opacity:0;transition:opacity .1s;z-index:2;transform:translate(-50%,-100%);top:-6px;';
         container.appendChild(tip);
       }
       const showTip = (bar) => {
@@ -3195,7 +3199,7 @@ class EnergyMonthlyCard extends HTMLElement {
       '.emc-avglab{position:absolute;left:4px;transform:translateY(-50%);font-size:10px;font-weight:600;background:var(--ha-card-background,var(--card-background-color,#fff));padding:0 5px;border-radius:8px;pointer-events:none;white-space:nowrap;}' +
       '.emc-hline{position:absolute;top:0;height:120px;width:1px;background:var(--secondary-text-color,#8a8d93);opacity:0;transform:translateX(-0.5px);pointer-events:none;transition:opacity .08s;}' +
       '.emc-hdot{position:absolute;width:8px;height:8px;border-radius:50%;border:2px solid var(--ha-card-background,#fff);opacity:0;transform:translate(-50%,-50%);pointer-events:none;transition:opacity .08s;}' +
-      '.emc-tip{position:absolute;opacity:0;transform:translate(-50%,-100%);pointer-events:none;background:var(--primary-text-color,#1c1c1e);color:var(--ha-card-background,#fff);font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px;white-space:nowrap;transition:opacity .08s;z-index:2;}' +
+      '.emc-tip{position:absolute;opacity:0;transform:translate(-50%,-100%);pointer-events:none;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#1c1c1e);border:1px solid var(--divider-color,rgba(0,0,0,.1));box-shadow:0 6px 18px rgba(0,0,0,.18);border-radius:10px;padding:5px 9px;font-size:11px;font-weight:600;white-space:nowrap;transition:opacity .08s;z-index:2;}' +
       '.emc-xlabels{display:flex;margin-top:6px;}' +
       '.emc-xlabels span{flex:1;font-size:10px;color:var(--secondary-text-color,#6b6f76);text-align:center;white-space:nowrap;}' +
       '.emc-loading{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:32px 0;text-align:center;}' +
