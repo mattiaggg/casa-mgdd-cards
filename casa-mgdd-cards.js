@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.33.0
+ * Version: 1.33.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2872,7 +2872,9 @@ class EnergyMonthlyCard extends HTMLElement {
         end_time: new Date(now).toISOString(),
         statistic_ids: [this.config.entity],
         period: period,
-        types: ['change'],
+        // `state` serve a completare il periodo in corso: e' il valore del
+        // contatore a fine ultima ora compilata (vedi _render)
+        types: ['change', 'state'],
       });
       let arr = (resp && resp[this.config.entity]) || [];
       arr = arr.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
