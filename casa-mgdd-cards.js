@@ -5,21 +5,38 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.31.0
+ * Version: 1.32.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
 // Evita di ricostruire il DOM a ogni cambio di hass globale: senza, qualunque
 // entità che si aggiorna (es. sensori di potenza ogni 1-2s) forza il re-render
 // e su iOS Safari lo scroll della vista torna in cima di continuo.
+// Solo il valore, non last_updated: molti sensori di potenza ripubblicano lo
+// stesso stato ogni 1-2 s, e includere il timestamp faceva ricostruire il DOM
+// anche quando sullo schermo non cambiava nulla.
 function mgddStatesSig(hass, ids) {
   if (!hass) return '';
   let out = '';
   for (const id of ids) {
     const s = id && hass.states[id];
-    out += id + '=' + (s ? s.state + '@' + s.last_updated : 'x') + ';';
+    out += id + '=' + (s ? s.state : 'x') + ';';
   }
   return out;
+}
+
+// Il foglio di stile viene inserito una volta sola per elemento: a ogni
+// aggiornamento si riscrive solo il contenuto. Reinserire lo <style> forzava un
+// ricalcolo di stile dell'intero sottoalbero a ogni refresh e su iOS Safari
+// bastava a far risalire lo scroll della vista.
+// Il contenitore e' display:contents, quindi non introduce una scatola in piu'
+// e non altera ne' il layout ne' i selettori fra fratelli.
+function mgddPaint(el, styles, html) {
+  if (!el._mgddBody || el._mgddBody.parentNode !== el) {
+    el.innerHTML = styles + '<div class="mgdd-body" style="display:contents"></div>';
+    el._mgddBody = el.querySelector('.mgdd-body');
+  }
+  el._mgddBody.innerHTML = html;
 }
 
 // ===== temperature-bento-card.js =====
@@ -1295,9 +1312,35 @@ class EnergyPowerCard extends HTMLElement {
     const sig = mgddStatesSig(hass, ids);
     if (sig !== this._lastSig) {
       this._lastSig = sig;
-      this._render();
+      this._paintThrottled();
     }
     this._maybeFetchHistory();
+  }
+
+  // I sensori di potenza pubblicano ogni 1-2 s: senza un intervallo minimo la
+  // card ridisegna di continuo. `refresh` (secondi, default 2) accorpa gli
+  // aggiornamenti ravvicinati; l'ultimo arrivato viene comunque disegnato.
+  _paintThrottled() {
+    const gap = (this.config.refresh != null ? this.config.refresh : 2) * 1000;
+    const now = Date.now();
+    if (!gap || !this._paintedAt || now - this._paintedAt >= gap) {
+      this._paintedAt = now;
+      this._render();
+      return;
+    }
+    if (this._paintTimer) return;
+    this._paintTimer = setTimeout(() => {
+      this._paintTimer = null;
+      this._paintedAt = Date.now();
+      this._render();
+    }, gap - (now - this._paintedAt));
+  }
+
+  disconnectedCallback() {
+    if (this._paintTimer) {
+      clearTimeout(this._paintTimer);
+      this._paintTimer = null;
+    }
   }
 
   getCardSize() {
@@ -1618,7 +1661,7 @@ class EnergyPowerCard extends HTMLElement {
         );
       })
       .join('');
-    this.innerHTML = this._styles() + '<div class="epc-tiles">' + tiles + '</div>';
+    mgddPaint(this, this._styles(), '<div class="epc-tiles">' + tiles + '</div>');
     this._wireClicks();
   }
 
@@ -1655,7 +1698,7 @@ class EnergyPowerCard extends HTMLElement {
         );
       })
       .join('');
-    this.innerHTML = this._styles() + '<div class="epcs-tiles">' + tiles + '</div>';
+    mgddPaint(this, this._styles(), '<div class="epcs-tiles">' + tiles + '</div>');
     this._wireSwitches();
     this._wireClicks();
   }
@@ -1686,7 +1729,7 @@ class EnergyPowerCard extends HTMLElement {
         );
       })
       .join('');
-    this.innerHTML = this._styles() + '<div class="ephg-tiles">' + tiles + '</div>';
+    mgddPaint(this, this._styles(), '<div class="ephg-tiles">' + tiles + '</div>');
     this._wireSwitches();
     this._wireClicks();
   }
@@ -1762,8 +1805,7 @@ class EnergyPowerCard extends HTMLElement {
       '<div><div class="epb-kl">' + label + '</div><div class="epb-kv">' +
       this._fmt(this._num(entity), '', 1) + '<span class="epb-u"> kWh</span></div></div></div>';
 
-    this.innerHTML =
-      this._styles() +
+    mgddPaint(this, this._styles(),
       '<div class="epb-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
       '<div class="epb-hd"><span class="epb-t">' + (c.title || 'Bilancio energetico') + '</span>' +
       '<span class="epb-pill">' + (c.period_label || 'oggi') + '</span></div>' +
@@ -1779,7 +1821,7 @@ class EnergyPowerCard extends HTMLElement {
       kpi(ic.up, 'var(--epb-grid)', 'Immessa in rete', c.grid_export) +
       kpi(ic.batt, 'var(--epb-bat)', 'Batteria scaricata', c.battery_discharge) +
       '</div>' +
-      '</div>';
+      '</div>');
     this._wireClicks();
     this._wireBalanceTip();
   }
@@ -1936,7 +1978,7 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _renderLoads() {
-    this.innerHTML = this._styles() + this._loadsHtml();
+    mgddPaint(this, this._styles(), this._loadsHtml());
     this._wireClicks();
   }
 
@@ -2011,7 +2053,7 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _renderPlugs() {
-    this.innerHTML = this._styles() + this._plugsHtml();
+    mgddPaint(this, this._styles(), this._plugsHtml());
     this._wirePlugs();
   }
 
@@ -2057,8 +2099,7 @@ class EnergyPowerCard extends HTMLElement {
     // i carichi restano nella card solo se non sono stati spostati su una card propria
     const activeHtml = this.config.loads === false ? '' : this._loadsHtml();
 
-    this.innerHTML =
-      this._styles() +
+    mgddPaint(this, this._styles(),
       // card unica: potenza, curva 24h e le tre scale temporali
       '<div class="ovc">' +
       '<div class="ov-hd"><span class="ov-t">' + (this.config.title || 'Consumo casa') + '</span>' +
@@ -2074,7 +2115,7 @@ class EnergyPowerCard extends HTMLElement {
       projCell +
       '</div>' +
       '</div>' +
-      activeHtml;
+      activeHtml);
     this._wireClicks();
   }
 
@@ -2118,7 +2159,7 @@ class EnergyPowerCard extends HTMLElement {
         );
       })
       .join('');
-    this.innerHTML = this._styles() + '<div class="wrap">' + rows + '</div>';
+    mgddPaint(this, this._styles(), '<div class="wrap">' + rows + '</div>');
     this._wireClicks();
   }
 
@@ -2380,10 +2421,19 @@ window.customCards.push({
 class EnergyControlsCard extends HTMLElement {
   setConfig(config) {
     this.config = config;
+    this._lastSig = null;
   }
 
   set hass(hass) {
     this._hass = hass;
+    const c = this.config || {};
+    const u = c.ups || {};
+    const ids = (c.switches || []).map((s) => s.entity).concat(
+      [u.battery_entity, u.load_entity, u.status_entity, u.time_left_entity, u.power_entity, u.energy_entity]
+    ).filter(Boolean);
+    const sig = mgddStatesSig(hass, ids);
+    if (sig === this._lastSig) return;
+    this._lastSig = sig;
     this._render();
   }
 
@@ -2444,7 +2494,7 @@ class EnergyControlsCard extends HTMLElement {
         );
       })
       .join('');
-    this.innerHTML = this._styles() + '<div class="grid2">' + rows + '</div>';
+    mgddPaint(this, this._styles(), '<div class="grid2">' + rows + '</div>');
     this.querySelectorAll('.row').forEach((row) => {
       row.addEventListener('click', (e) => {
         const entity = row.getAttribute('data-entity');
@@ -2473,7 +2523,7 @@ class EnergyControlsCard extends HTMLElement {
     const html = stats
       .map((s) => '<div class="stat"><div class="stat-l">' + s.l + '</div><div class="stat-v"' + (s.color ? ' style="color:' + s.color + '"' : '') + '>' + s.v + '</div></div>')
       .join('');
-    this.innerHTML = this._styles() + '<div class="grid2">' + html + '</div>';
+    mgddPaint(this, this._styles(), '<div class="grid2">' + html + '</div>');
   }
 
   _styles() {
@@ -2517,11 +2567,16 @@ class EnergyHistoryCard extends HTMLElement {
     this._daily = null;
     this._monthly = null;
     this._fetchedAt = 0;
+    this._lastSig = null;
   }
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    const sig = mgddStatesSig(hass, [this.config.entity]);
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
     this._maybeFetch();
   }
 
@@ -2691,8 +2746,7 @@ class EnergyHistoryCard extends HTMLElement {
       { avg: monthlyAvg, avgFmt: monthlyAvg !== null ? monthlyAvg.toFixed(0) : '', isCurrent: isSameMonth }
     );
 
-    this.innerHTML =
-      this._styles() +
+    mgddPaint(this, this._styles(),
       '<ha-card class="flat">' +
       '<div class="hcard">' +
       '<div class="card-top"><span class="card-label">Consumo giornaliero</span><span class="card-tag">' + (this.config.days_to_show || 14) + 'gg</span></div>' +
@@ -2706,7 +2760,7 @@ class EnergyHistoryCard extends HTMLElement {
       '<div class="card-sub">media, esclude mese in corso</div>' +
       monthlyHtml +
       '</div>' +
-      '</ha-card>';
+      '</ha-card>');
     this._wireTooltips();
   }
 
@@ -2760,6 +2814,7 @@ class EnergyMonthlyCard extends HTMLElement {
     this._data = null;
     this._error = null;
     this._fetchedAt = 0;
+    this._lastSig = null;
     // id gradiente univoco per istanza: in light DOM gli id sono globali,
     // due card con lo stesso id condividerebbero il colore del riempimento
     if (!this._uid) {
@@ -2770,7 +2825,11 @@ class EnergyMonthlyCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    const sig = mgddStatesSig(hass, [this.config.entity]);
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
     this._maybeFetch();
   }
 
@@ -2948,8 +3007,7 @@ class EnergyMonthlyCard extends HTMLElement {
       }
     }
 
-    this.innerHTML =
-      this._styles() +
+    mgddPaint(this, this._styles(),
       '<ha-card class="emc-flat">' +
       '<div class="emc-card">' +
       '<div class="emc-top">' +
@@ -2958,7 +3016,7 @@ class EnergyMonthlyCard extends HTMLElement {
       '</div>' +
       body +
       '</div>' +
-      '</ha-card>';
+      '</ha-card>');
     this._wire();
   }
 
@@ -3159,8 +3217,7 @@ class EnergyFlowCard extends HTMLElement {
   }
 
   _build() {
-    this.innerHTML =
-      this._styles() +
+    mgddPaint(this, this._styles(),
       '<div class="ef-card">' +
       '<div class="ef-stage"><canvas></canvas>' +
       '<span class="ef-live"><i></i>ora</span>' +
@@ -3168,7 +3225,7 @@ class EnergyFlowCard extends HTMLElement {
       this._node('rete', 'Rete') +
       this._node('batt', 'Batteria') +
       this._node('casa', 'Casa') +
-      '</div></div>';
+      '</div></div>');
     this._card = this.querySelector('.ef-card');
     this._live = this.querySelector('.ef-live');
     this._stage = this.querySelector('.ef-stage');
