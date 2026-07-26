@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.32.0
+ * Version: 1.33.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1944,29 +1944,37 @@ class EnergyPowerCard extends HTMLElement {
       })
       .join('');
     const compBar = active.length && power ? '<div class="comp">' + compSegs + '<div style="flex:1;background:var(--divider-color,rgba(0,0,0,.08))"></div></div>' : '';
-    const rows =
-      active
-        .map((c) => {
-          const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
-          return (
-            '<div class="load-row" data-entity="' + c.entity + '">' +
-            '<span class="load-dot" style="background:' + color + '"></span>' +
-            '<span class="load-name">' + c.name + '</span>' +
-            '<span class="load-pct">' + pctOf(c.val) + '</span>' +
-            '<span class="load-w">' + this._fmt(c.val, ' W', c.val < 10 ? 1 : 0) + '</span>' +
-            '</div>'
-          );
-        })
-        .join('') +
-      (other !== null && active.length
-        ? '<div class="load-row load-other">' +
+    const list = active.map((c) => {
+      const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
+      return (
+        '<div class="load-row" data-entity="' + c.entity + '">' +
+        '<span class="load-dot" style="background:' + color + '"></span>' +
+        '<span class="load-name">' + c.name + '</span>' +
+        '<span class="load-pct">' + pctOf(c.val) + '</span>' +
+        '<span class="load-w">' + this._fmt(c.val, ' W', c.val < 10 ? 1 : 0) + '</span>' +
+        '</div>'
+      );
+    });
+    if (other !== null && active.length) {
+      list.push(
+        '<div class="load-row load-other">' +
           '<span class="load-dot" style="background:var(--divider-color,rgba(0,0,0,.08))"></span>' +
           '<span class="load-name">Altro (non monitorato)</span>' +
           '<span class="load-pct">' + pctOf(other) + '</span>' +
           '<span class="load-w">~' + other.toFixed(0) + ' W</span>' +
           '</div>'
-        : '');
-    if (!rows) return '';
+      );
+    }
+    if (!list.length) return '';
+    // Altezza fissa: la lista tiene sempre lo stesso numero di righe. Senza
+    // questo, un carico che scende sotto soglia fa sparire una riga, la card si
+    // accorcia e su iOS lo scroll della vista risale. I posti liberi restano
+    // vuoti; il segnaposto contiene uno spazio nella stessa classe della
+    // potenza, cosi' la riga misura esattamente come una reale.
+    const slots = this.config.loads_rows != null ? this.config.loads_rows : activeCount + 1;
+    list[list.length - 1] = list[list.length - 1].replace('class="load-row', 'class="load-row load-end');
+    while (list.length < slots) list.push('<div class="load-row load-ph"><span class="load-w">&nbsp;</span></div>');
+    const rows = list.join('');
     return (
       '<div class="loadlist">' +
       '<div class="load-top"><span class="hero-l">' + (this.config.loads_title || 'Carichi attivi adesso') +
@@ -2232,6 +2240,9 @@ class EnergyPowerCard extends HTMLElement {
       '.load-row{display:flex;align-items:center;gap:10px;padding:8px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
       '.load-row:last-child{border-bottom:none;}' +
       '.load-other{opacity:.65;cursor:default;}' +
+      // ultima riga reale e segnaposti: nessun divisore, nessun cursore
+      '.load-end{border-bottom:none;}' +
+      '.load-ph{border-bottom:none;cursor:default;pointer-events:none;}' +
       '.load-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}' +
       '.load-name{flex:1;min-width:0;font-size:13px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
       '.load-pct{font-size:11px;color:var(--secondary-text-color,#6b6f76);width:38px;text-align:right;flex:0 0 auto;}' +
