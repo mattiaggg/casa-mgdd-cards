@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.30.0
+ * Version: 1.31.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2859,8 +2859,6 @@ class EnergyMonthlyCard extends HTMLElement {
       const now = new Date();
       const data = this._data;
       const n = data.length;
-      const vals = data.map((d) => Math.max(0, d.change || 0));
-      const vmax = Math.max.apply(null, vals) || 1;
       const isCurrent = (d) => {
         const dt = new Date(d.start);
         if (isDay) return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth() && dt.getDate() === now.getDate();
@@ -2873,6 +2871,19 @@ class EnergyMonthlyCard extends HTMLElement {
         return monthLabels[dt.getMonth()] + ' ' + dt.getFullYear();
       };
       const curIdx = data.findIndex(isCurrent);
+      // Il periodo in corso si fermerebbe all'ultima ora compilata dal recorder
+      // (le statistiche a lungo termine sono orarie): lo completiamo col delta
+      // fra il valore live del contatore e quello di fine ultima ora, che la
+      // statistica riporta in `state`. Cosi' il periodo in corso coincide con
+      // il contatore giornaliero invece di restare fino a un'ora indietro.
+      let live = 0;
+      if (curIdx >= 0 && cfg.live_current !== false && st) {
+        const cum = parseFloat(st.state);
+        const upTo = parseFloat(data[curIdx].state);
+        if (isFinite(cum) && isFinite(upTo) && cum > upTo) live = cum - upTo;
+      }
+      const vals = data.map((d, i) => Math.max(0, (d.change || 0) + (i === curIdx ? live : 0)));
+      const vmax = Math.max.apply(null, vals) || 1;
       const showIdx = curIdx >= 0 ? curIdx : n - 1;
       bigVal = fmt(vals[showIdx]) + ' ' + uom;
       bigCap = curIdx >= 0 ? (isDay ? 'oggi' : 'mese in corso') : fullLabel(data[showIdx]);
