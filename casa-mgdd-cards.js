@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.38.0
+ * Version: 1.38.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3611,6 +3611,7 @@ class CasaMgddProbeCard extends HTMLElement {
     this.config = config || {};
     this._ev = [];
     this._sizes = new Map();
+    this._recent = [];
     this._touch = 0;
     this._t0 = Date.now();
   }
@@ -3638,7 +3639,7 @@ class CasaMgddProbeCard extends HTMLElement {
     this._sc = this._scroller();
     this._prev = this._read();
     this._patch();
-    this._sample = setInterval(() => this._step(), 100);
+    this._sample = setInterval(() => this._step(), 50);
     this._watch = setInterval(() => this._observeCards(), 3000);
     this._observeCards();
     this._tick = setInterval(() => this._paint(), 700);
@@ -3692,6 +3693,13 @@ class CasaMgddProbeCard extends HTMLElement {
       } catch (e) {}
       return O.wto.apply(window, arguments);
     };
+    O.foc = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function () {
+      try {
+        rec('focus su ' + this.localName);
+      } catch (e) {}
+      return O.foc.apply(this, arguments);
+    };
     O.eto = Element.prototype.scrollTo;
     if (O.eto) {
       Element.prototype.scrollTo = function () {
@@ -3711,6 +3719,7 @@ class CasaMgddProbeCard extends HTMLElement {
     if (O.siv) Element.prototype.scrollIntoView = O.siv;
     if (O.wto) window.scrollTo = O.wto;
     if (O.eto) Element.prototype.scrollTo = O.eto;
+    if (O.foc) HTMLElement.prototype.focus = O.foc;
     CasaMgddProbeCard._orig = null;
   }
 
@@ -3765,8 +3774,14 @@ class CasaMgddProbeCard extends HTMLElement {
     const manual = Date.now() - this._touch < 300;
     if (dSh <= -8) this._push('H', dSh + 'px altezza (a top ' + cur.top + ')');
     if (dTop <= -100 && !manual) {
-      const cause = dSh <= -8 ? 'con ' + dSh + 'px di altezza: riaggancio' : 'ALTEZZA INVARIATA: scroll spostato via codice';
-      this._push('J', dTop + 'px ' + cause);
+      // chi ha cambiato altezza negli ultimi 400ms, con lo scrollHeight di allora
+      const now = Date.now();
+      const near = this._recent.filter((r) => now - r.t < 400);
+      const who = near.length
+        ? near.map((r) => r.label + ' ' + (r.d > 0 ? '+' : '') + r.d + ' (sh ' + r.sh + ')').join(' / ')
+        : 'nessun cambio di altezza nei 400ms precedenti';
+      const cause = dSh <= -8 ? 'sh ' + dSh : 'sh invariato ora';
+      this._push('J', dTop + 'px · ' + cause + ' · ' + who);
     }
     this._prev = cur;
   }
@@ -3817,6 +3832,10 @@ class CasaMgddProbeCard extends HTMLElement {
           rec.n++;
           rec.last = d;
           if (Date.now() - this._touch < 500) rec.scroll++;
+          // lo scrollHeight letto QUI cattura anche i restringimenti che durano
+          // meno di un campionamento: e' il punto in cui il salto si decide
+          this._recent.push({ t: Date.now(), label: rec.label, d: d, sh: this._sc ? this._sc.scrollHeight : 0 });
+          if (this._recent.length > 40) this._recent.shift();
         });
       });
     }
