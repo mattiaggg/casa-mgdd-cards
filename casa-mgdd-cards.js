@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.37.1
+ * Version: 1.38.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3637,6 +3637,7 @@ class CasaMgddProbeCard extends HTMLElement {
     );
     this._sc = this._scroller();
     this._prev = this._read();
+    this._patch();
     this._sample = setInterval(() => this._step(), 100);
     this._watch = setInterval(() => this._observeCards(), 3000);
     this._observeCards();
@@ -3644,8 +3645,78 @@ class CasaMgddProbeCard extends HTMLElement {
     this._paint();
   }
 
+  // Intercetta chi sposta lo scroll, per leggerne la traccia di chiamata. Sono
+  // wrapper trasparenti: passano tutto all'originale e registrano soltanto.
+  // Se il salto avviene e qui non compare nulla, non lo fa codice JavaScript:
+  // e' la webview dell'app, e va cercato fuori dalla dashboard.
+  _patch() {
+    if (CasaMgddProbeCard._orig) return;
+    const rec = (what) => {
+      const st = (new Error().stack || '').split('\n').slice(1, 4)
+        .map((l) => l.trim().replace(/https?:\/\/[^/]+\//, '').slice(0, 70))
+        .join('  ·  ');
+      this._push('C', what + ' ← ' + (st || 'traccia non disponibile'));
+    };
+    const big = (el) => el === document.documentElement || el === document.body || (el.scrollHeight - el.clientHeight > 200);
+    const O = {};
+    O.sd = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    if (O.sd && O.sd.set) {
+      Object.defineProperty(Element.prototype, 'scrollTop', {
+        configurable: true,
+        enumerable: O.sd.enumerable,
+        get: O.sd.get,
+        set: function (v) {
+          try {
+            if (big(this)) {
+              const cur = O.sd.get.call(this);
+              if (Math.abs(v - cur) > 100) rec('scrollTop=' + Math.round(v) + ' (era ' + Math.round(cur) + ')');
+            }
+          } catch (e) {
+            /* la diagnostica non deve mai rompere lo scroll */
+          }
+          O.sd.set.call(this, v);
+        },
+      });
+    }
+    O.siv = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function () {
+      try {
+        rec('scrollIntoView su ' + this.localName);
+      } catch (e) {}
+      return O.siv.apply(this, arguments);
+    };
+    O.wto = window.scrollTo;
+    window.scrollTo = function () {
+      try {
+        rec('window.scrollTo(' + Array.prototype.slice.call(arguments).map((a) => (a && typeof a === 'object' ? JSON.stringify(a) : a)).join(',') + ')');
+      } catch (e) {}
+      return O.wto.apply(window, arguments);
+    };
+    O.eto = Element.prototype.scrollTo;
+    if (O.eto) {
+      Element.prototype.scrollTo = function () {
+        try {
+          if (big(this)) rec('scrollTo su ' + this.localName);
+        } catch (e) {}
+        return O.eto.apply(this, arguments);
+      };
+    }
+    CasaMgddProbeCard._orig = O;
+  }
+
+  _unpatch() {
+    const O = CasaMgddProbeCard._orig;
+    if (!O) return;
+    if (O.sd) Object.defineProperty(Element.prototype, 'scrollTop', O.sd);
+    if (O.siv) Element.prototype.scrollIntoView = O.siv;
+    if (O.wto) window.scrollTo = O.wto;
+    if (O.eto) Element.prototype.scrollTo = O.eto;
+    CasaMgddProbeCard._orig = null;
+  }
+
   disconnectedCallback() {
     this._on = false;
+    this._unpatch();
     [this._sample, this._watch, this._tick].forEach((t) => {
       if (t) clearInterval(t);
     });
@@ -3682,7 +3753,7 @@ class CasaMgddProbeCard extends HTMLElement {
   _push(kind, txt) {
     const t = ((Date.now() - this._t0) / 1000).toFixed(1);
     this._ev.unshift({ t: t, kind: kind, txt: txt });
-    if (this._ev.length > 10) this._ev.pop();
+    if (this._ev.length > 12) this._ev.pop();
   }
 
   _step() {
@@ -3763,8 +3834,8 @@ class CasaMgddProbeCard extends HTMLElement {
     const ev = this._ev
       .map(
         (e) =>
-          '<tr><td>' + e.t + 's</td><td class="' + (e.kind === 'J' ? 'j' : 'h') + '">' +
-          (e.kind === 'J' ? 'SALTO' : 'altezza') + '</td><td>' + e.txt + '</td></tr>'
+          '<tr><td>' + e.t + 's</td><td class="' + (e.kind === 'J' ? 'j' : e.kind === 'C' ? 'c' : 'h') + '">' +
+          (e.kind === 'J' ? 'SALTO' : e.kind === 'C' ? 'CHIAMATA' : 'altezza') + '</td><td>' + e.txt + '</td></tr>'
       )
       .join('');
     const cards = Array.from(this._sizes.values())
@@ -3798,7 +3869,8 @@ class CasaMgddProbeCard extends HTMLElement {
       '.pr table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;margin-top:6px;}' +
       '.pr th{text-align:left;font-weight:500;color:var(--secondary-text-color,#6b7280);border-bottom:1px solid var(--divider-color,rgba(0,0,0,.1));padding:3px 4px;}' +
       '.pr td{padding:3px 4px;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.06));vertical-align:top;}' +
-      '.pr td.j{color:#C2410C;font-weight:600;} .pr td.h{color:#0E7490;}' +
+      '.pr td.j{color:#C2410C;font-weight:600;} .pr td.h{color:#0E7490;} .pr td.c{color:#6D28D9;font-weight:600;}' +
+      '.pr td:last-child{word-break:break-word;font-size:11px;}' +
       '.pr-n{color:var(--secondary-text-color,#6b7280);line-height:1.45;}';
     this.insertBefore(s, this.firstChild);
   }
