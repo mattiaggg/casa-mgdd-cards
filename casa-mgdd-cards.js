@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.33.1
+ * Version: 1.34.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1341,6 +1341,11 @@ class EnergyPowerCard extends HTMLElement {
       clearTimeout(this._paintTimer);
       this._paintTimer = null;
     }
+    if (this._mqNarrow && this._mqOnChange) {
+      if (this._mqNarrow.removeEventListener) this._mqNarrow.removeEventListener('change', this._mqOnChange);
+      else this._mqNarrow.removeListener(this._mqOnChange);
+      this._mqNarrow = null;
+    }
   }
 
   getCardSize() {
@@ -1579,23 +1584,41 @@ class EnergyPowerCard extends HTMLElement {
     return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="60" height="22"><path d="' + line + '" fill="none" stroke="' + (color || '#EF9F27') + '" stroke-width="1.6"/></svg>';
   }
 
-  _render() {
-    // loads e plugs stanno spesso affiancati nella stessa riga: si allungano
-    // all'altezza della riga invece di fermarsi al proprio contenuto.
-    const fill =
-      (this.config.layout === 'plugs' || this.config.layout === 'loads') && this.config.stretch !== false;
+  // loads e plugs stanno spesso affiancati nella stessa riga: si allungano
+  // all'altezza della riga invece di fermarsi al proprio contenuto.
+  // Solo da EPC_FILL_MIN in su: sotto quella larghezza la vista e' a colonna
+  // singola, l'allungamento non serve, e forzare height:100% dentro una riga di
+  // griglia ad altezza automatica crea una dipendenza circolare fra contenuto e
+  // riga. Su iOS Safari basta a far risalire lo scroll della vista.
+  _applyFill() {
+    const c = this.config || {};
+    const wide = !(this._mqNarrow && this._mqNarrow.matches);
+    const fill = (c.layout === 'plugs' || c.layout === 'loads') && c.stretch !== false && wide;
     this.classList.toggle('epc-fill', fill);
-    if (fill) {
-      this.style.display = 'block';
-      this.style.height = '100%';
-      // hui-card sta fra la cella della griglia e questa card: senza altezza
-      // propria il 100% qui sopra non avrebbe riferimento
-      const p = this.parentElement;
-      if (p && p.localName === 'hui-card') {
-        p.style.display = 'block';
-        p.style.height = '100%';
-      }
+    this.style.display = fill ? 'block' : '';
+    this.style.height = fill ? '100%' : '';
+    // hui-card sta fra la cella della griglia e questa card: senza altezza
+    // propria il 100% qui sopra non avrebbe riferimento
+    const p = this.parentElement;
+    if (p && p.localName === 'hui-card') {
+      p.style.display = fill ? 'block' : '';
+      p.style.height = fill ? '100%' : '';
     }
+  }
+
+  connectedCallback() {
+    if (!this._mqNarrow && window.matchMedia) {
+      const min = this.config && this.config.stretch_min != null ? this.config.stretch_min : 768;
+      this._mqNarrow = window.matchMedia('(max-width:' + (min - 1) + 'px)');
+      this._mqOnChange = () => this._applyFill();
+      if (this._mqNarrow.addEventListener) this._mqNarrow.addEventListener('change', this._mqOnChange);
+      else this._mqNarrow.addListener(this._mqOnChange);
+    }
+    this._applyFill();
+  }
+
+  _render() {
+    this._applyFill();
     if (this.config.layout === 'plugs') this._renderPlugs();
     else if (this.config.layout === 'loads') this._renderLoads();
     else if (this.config.layout === 'controls') this._renderControlTiles();
