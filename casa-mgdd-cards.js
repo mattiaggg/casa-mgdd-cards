@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.37.0
+ * Version: 1.37.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3330,13 +3330,7 @@ class EnergyFlowCard extends HTMLElement {
     if (!this._stage) return;
     // decide layout in base alla larghezza della card (mobile < 480px), poi rileggi (l'aspect cambia)
     const w0 = this._stage.getBoundingClientRect().width;
-    // Larghezza 0 = card fuori dallo schermo o non ancora impaginata: si tiene la
-    // modalita' corrente. Trattarla come "non mobile" faceva passare l'aspect
-    // dello stage da 1/1 a 2.6/1, cioe' la card perdeva di colpo ~220px di
-    // altezza mentre scorreva via, il documento si accorciava e iOS agganciava
-    // lo scroll piu' in alto: era questo a far "tornare su" la vista Energy.
-    if (w0 <= 0) return;
-    const mobile = w0 < 480;
+    const mobile = w0 > 0 && w0 < 480;
     if (mobile !== this._mobile) { this._mobile = mobile; if (this._card) this._card.classList.toggle('ef-mobile', mobile); }
     const r = this._stage.getBoundingClientRect();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -3604,16 +3598,21 @@ window.customCards.push({
 });
 
 // ===== casa-mgdd-probe-card.js =====
-// Card DIAGNOSTICA, temporanea. Non mostra dati di casa: sorveglia l'altezza di
-// tutte le card della vista e riporta quali cambiano, di quanto e quante volte,
-// distinguendo i cambi avvenuti mentre la vista scorre. Serve a individuare chi
-// sposta lo scroll su iOS invece di procedere per ipotesi.
+// Card DIAGNOSTICA, temporanea. Non legge entita': sorveglia il contenitore che
+// scorre e registra due cose distinte, che hanno cause opposte:
+//   - ALTEZZA: scrollHeight che si accorcia. Il contenuto si e' ristretto e iOS
+//     e' costretto a riagganciare la posizione entro il nuovo fondo pagina.
+//   - SALTO: scrollTop che risale da solo senza che l'altezza cambi. Qui non e'
+//     un riaggancio: qualcuno sta spostando lo scroll via codice.
+// Registra anche l'altezza delle card, se qualcuna cambia.
 // Uso: type: custom:casa-mgdd-probe-card  -> leggere, poi rimuovere la card.
 class CasaMgddProbeCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
-    this._log = new Map();
-    this._scrollAt = 0;
+    this._ev = [];
+    this._sizes = new Map();
+    this._touch = 0;
+    this._t0 = Date.now();
   }
 
   set hass(hass) {
@@ -3630,38 +3629,77 @@ class CasaMgddProbeCard extends HTMLElement {
     this.innerHTML = '<div class="pr"></div>';
     this._out = this.querySelector('.pr');
     this._style();
-    const mark = () => {
-      this._scrollAt = Date.now();
+    this._mark = () => {
+      this._touch = Date.now();
     };
-    this._mark = mark;
-    ['scroll', 'touchmove', 'wheel'].forEach((e) => window.addEventListener(e, mark, { capture: true, passive: true }));
-    // il primo giro puo' arrivare prima che la vista sia completa: si riscansiona
-    this._scan();
-    this._rescan = setInterval(() => this._scan(), 4000);
+    ['touchstart', 'touchmove', 'touchend', 'wheel'].forEach((e) =>
+      window.addEventListener(e, this._mark, { capture: true, passive: true })
+    );
+    this._sc = this._scroller();
+    this._prev = this._read();
+    this._sample = setInterval(() => this._step(), 100);
+    this._watch = setInterval(() => this._observeCards(), 3000);
+    this._observeCards();
+    this._tick = setInterval(() => this._paint(), 700);
     this._paint();
-    this._tick = setInterval(() => this._paint(), 1000);
   }
 
   disconnectedCallback() {
     this._on = false;
+    [this._sample, this._watch, this._tick].forEach((t) => {
+      if (t) clearInterval(t);
+    });
     if (this._ro) this._ro.disconnect();
-    if (this._tick) clearInterval(this._tick);
-    if (this._rescan) clearInterval(this._rescan);
-    if (this._mark) ['scroll', 'touchmove', 'wheel'].forEach((e) => window.removeEventListener(e, this._mark, { capture: true }));
-  }
-
-  // risale fino al contenitore della vista attraversando gli shadow root
-  _viewRoot() {
-    let n = this;
-    for (let i = 0; i < 40 && n; i++) {
-      const ln = n.localName || '';
-      if (ln === 'hui-view' || ln === 'hui-sections-view' || ln === 'hui-masonry-view' || ln === 'ha-panel-lovelace') return n;
-      n = n.parentNode ? (n.parentNode.host || n.parentNode) : null;
+    if (this._mark) {
+      ['touchstart', 'touchmove', 'touchend', 'wheel'].forEach((e) => window.removeEventListener(e, this._mark, { capture: true }));
     }
-    return document.body;
   }
 
-  // querySelectorAll che scende anche dentro gli shadow root
+  // il contenitore che scorre: primo antenato con overflow scorrevole
+  _scroller() {
+    let n = this.parentNode;
+    for (let i = 0; i < 60 && n; i++) {
+      if (n.nodeType === 1) {
+        let ov = '';
+        try {
+          ov = getComputedStyle(n).overflowY;
+        } catch (e) {
+          ov = '';
+        }
+        if ((ov === 'auto' || ov === 'scroll' || ov === 'overlay') && n.scrollHeight - n.clientHeight > 40) return n;
+      }
+      n = n.parentNode ? n.parentNode.host || n.parentNode : null;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  _read() {
+    const s = this._sc;
+    if (!s) return { top: 0, sh: 0, ch: 0 };
+    return { top: Math.round(s.scrollTop), sh: Math.round(s.scrollHeight), ch: Math.round(s.clientHeight) };
+  }
+
+  _push(kind, txt) {
+    const t = ((Date.now() - this._t0) / 1000).toFixed(1);
+    this._ev.unshift({ t: t, kind: kind, txt: txt });
+    if (this._ev.length > 10) this._ev.pop();
+  }
+
+  _step() {
+    const cur = this._read();
+    const pr = this._prev;
+    const dTop = cur.top - pr.top;
+    const dSh = cur.sh - pr.sh;
+    // dito sul vetro da meno di 300ms: lo scorrimento e' voluto
+    const manual = Date.now() - this._touch < 300;
+    if (dSh <= -8) this._push('H', dSh + 'px altezza (a top ' + cur.top + ')');
+    if (dTop <= -100 && !manual) {
+      const cause = dSh <= -8 ? 'con ' + dSh + 'px di altezza: riaggancio' : 'ALTEZZA INVARIATA: scroll spostato via codice';
+      this._push('J', dTop + 'px ' + cause);
+    }
+    this._prev = cur;
+  }
+
   _deep(root, sel) {
     const out = [];
     const seen = new Set();
@@ -3684,63 +3722,70 @@ class CasaMgddProbeCard extends HTMLElement {
   }
 
   _label(el) {
-    let inner = null;
-    if (el.shadowRoot && el.shadowRoot.firstElementChild) inner = el.shadowRoot.firstElementChild.localName;
-    if (!inner && el.firstElementChild) inner = el.firstElementChild.localName;
     const cfg = el._config || el.config;
-    const type = cfg && cfg.type ? String(cfg.type).replace('custom:', '') : null;
-    return type || inner || el.localName;
+    if (cfg && cfg.type) return String(cfg.type).replace('custom:', '');
+    if (el.shadowRoot && el.shadowRoot.firstElementChild) return el.shadowRoot.firstElementChild.localName;
+    if (el.firstElementChild) return el.firstElementChild.localName;
+    return el.localName;
   }
 
-  _scan() {
+  _observeCards() {
     if (!this._ro) {
-      this._ro = new ResizeObserver((entries) => {
-        entries.forEach((en) => {
-          const el = en.target;
-          const h = Math.round(en.contentRect.height);
-          const rec = this._log.get(el);
+      this._ro = new ResizeObserver((ents) => {
+        ents.forEach((en) => {
+          const rec = this._sizes.get(en.target);
           if (!rec) return;
+          const h = Math.round(en.contentRect.height);
           if (rec.h === null) {
             rec.h = h;
             return;
           }
           const d = h - rec.h;
-          if (Math.abs(d) < 1) return;
           rec.h = h;
+          if (Math.abs(d) < 2) return;
           rec.n++;
           rec.last = d;
-          if (Date.now() - this._scrollAt < 500) rec.scroll++;
+          if (Date.now() - this._touch < 500) rec.scroll++;
         });
       });
     }
-    // selettore ampio: a seconda della versione di HA la card e' avvolta in
-    // hui-card, oppure e' direttamente l'elemento con dentro un ha-card
-    this._deep(this._viewRoot(), 'hui-card, ha-card').forEach((el) => {
-      if (this._log.has(el)) return;
-      this._log.set(el, { label: this._label(el), h: null, n: 0, last: 0, scroll: 0 });
+    const root = this._sc && this._sc.nodeType === 1 ? this._sc : document.body;
+    this._deep(root, 'hui-card, ha-card').forEach((el) => {
+      if (this._sizes.has(el)) return;
+      this._sizes.set(el, { label: this._label(el), h: null, n: 0, last: 0, scroll: 0 });
       this._ro.observe(el);
     });
   }
 
   _paint() {
     if (!this._out) return;
-    const rows = Array.from(this._log.values())
-      .filter((r) => r.n > 0)
-      .sort((a, b) => b.n - a.n)
-      .slice(0, 12)
+    const cur = this._read();
+    const ev = this._ev
       .map(
-        (r) =>
-          '<tr><td>' + r.label + '</td><td>' + r.n + '</td><td>' + r.scroll + '</td><td>' +
-          (r.last > 0 ? '+' : '') + r.last + '</td></tr>'
+        (e) =>
+          '<tr><td>' + e.t + 's</td><td class="' + (e.kind === 'J' ? 'j' : 'h') + '">' +
+          (e.kind === 'J' ? 'SALTO' : 'altezza') + '</td><td>' + e.txt + '</td></tr>'
       )
       .join('');
+    const cards = Array.from(this._sizes.values())
+      .filter((r) => r.n > 0)
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 8)
+      .map((r) => '<tr><td>' + r.label + '</td><td>' + r.n + '</td><td>' + r.scroll + '</td><td>' + (r.last > 0 ? '+' : '') + r.last + '</td></tr>')
+      .join('');
+    const scName = this._sc
+      ? this._sc.localName + (this._sc.className ? '.' + String(this._sc.className).split(' ')[0] : '')
+      : '?';
     this._out.innerHTML =
-      '<div class="pr-t">Sonda altezze · ' + this._log.size + ' card sorvegliate</div>' +
-      (rows
-        ? '<table><thead><tr><th>card</th><th>cambi</th><th>durante scroll</th><th>ultimo</th></tr></thead><tbody>' +
-          rows + '</tbody></table>'
-        : '<div class="pr-e">Nessun cambio di altezza rilevato.</div>') +
-      '<div class="pr-n">Scorri la vista su e giù per qualche secondo, poi leggi la colonna "durante scroll": chi ha numeri alti è il responsabile.</div>';
+      '<div class="pr-t">Sonda scroll</div>' +
+      '<div class="pr-n">scroller <b>' + scName + '</b> · top <b>' + cur.top + '</b> · contenuto <b>' + cur.sh +
+      '</b> · finestra <b>' + cur.ch + '</b> · card viste <b>' + this._sizes.size + '</b></div>' +
+      (ev
+        ? '<table><thead><tr><th>t</th><th>ev</th><th>cosa</th></tr></thead><tbody>' + ev + '</tbody></table>'
+        : '<div class="pr-n">Nessun evento ancora. Scorri fino in fondo e aspetta il salto.</div>') +
+      (cards
+        ? '<div class="pr-t2">Card che cambiano altezza</div><table><thead><tr><th>card</th><th>cambi</th><th>in scroll</th><th>ultimo</th></tr></thead><tbody>' + cards + '</tbody></table>'
+        : '');
   }
 
   _style() {
@@ -3749,12 +3794,12 @@ class CasaMgddProbeCard extends HTMLElement {
     s.textContent =
       '.pr{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.1));' +
       'border-radius:14px;padding:12px 14px;font-size:12px;color:var(--primary-text-color,#111);}' +
-      '.pr-t{font-weight:600;margin-bottom:8px;}' +
-      '.pr table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;}' +
+      '.pr-t{font-weight:600;margin-bottom:6px;} .pr-t2{font-weight:600;margin:10px 0 4px;}' +
+      '.pr table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;margin-top:6px;}' +
       '.pr th{text-align:left;font-weight:500;color:var(--secondary-text-color,#6b7280);border-bottom:1px solid var(--divider-color,rgba(0,0,0,.1));padding:3px 4px;}' +
-      '.pr td{padding:3px 4px;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.06));}' +
-      '.pr td:first-child{word-break:break-all;}' +
-      '.pr-e,.pr-n{color:var(--secondary-text-color,#6b7280);margin-top:8px;line-height:1.4;}';
+      '.pr td{padding:3px 4px;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.06));vertical-align:top;}' +
+      '.pr td.j{color:#C2410C;font-weight:600;} .pr td.h{color:#0E7490;}' +
+      '.pr-n{color:var(--secondary-text-color,#6b7280);line-height:1.45;}';
     this.insertBefore(s, this.firstChild);
   }
 }
@@ -3762,6 +3807,6 @@ class CasaMgddProbeCard extends HTMLElement {
 customElements.define('casa-mgdd-probe-card', CasaMgddProbeCard);
 window.customCards.push({
   type: 'casa-mgdd-probe-card',
-  name: 'Sonda altezze (diagnostica)',
-  description: 'Temporanea: riporta quali card cambiano altezza e quante volte durante lo scorrimento.',
+  name: 'Sonda scroll (diagnostica)',
+  description: 'Temporanea: registra quando il contenuto si accorcia e quando lo scroll viene spostato via codice.',
 });
