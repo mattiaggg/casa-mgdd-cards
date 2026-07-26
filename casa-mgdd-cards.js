@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.39.0
+ * Version: 1.40.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -38,16 +38,25 @@ function mgddStatesSig(hass, ids) {
 // altezza, qui si toglie la sovrapposizione fra le due cose: mentre scorri
 // nessuna card si ridisegna, e il ridisegno riparte appena ti fermi.
 let mgddLastScroll = 0;
+// mgddLastInput conta solo il dito o la rotella. Serve a distinguere lo
+// scorrimento voluto dall'utente da quello che il browser fa da solo: l'evento
+// `scroll` arriva in entrambi i casi e da solo non discrimina.
+let mgddLastInput = 0;
 function mgddScrollGuard() {
   if (mgddScrollGuard._on) return;
   mgddScrollGuard._on = true;
-  const mark = () => {
+  const scrolled = () => {
     mgddLastScroll = Date.now();
+  };
+  const input = () => {
+    mgddLastInput = Date.now();
+    mgddLastScroll = mgddLastInput;
   };
   // capture: lo scroll non fa bubbling, ma in fase di captura arriva comunque
   // qui anche quando scorre un contenitore interno
-  ['scroll', 'touchmove', 'wheel'].forEach((ev) =>
-    window.addEventListener(ev, mark, { capture: true, passive: true })
+  window.addEventListener('scroll', scrolled, { capture: true, passive: true });
+  ['touchstart', 'touchmove', 'touchend', 'wheel', 'keydown'].forEach((ev) =>
+    window.addEventListener(ev, input, { capture: true, passive: true })
   );
 }
 
@@ -79,6 +88,7 @@ function mgddIdlePaint(el, fn, quiet) {
 // l'altezza corrente come minimo, si scambia, e si libera al frame successivo,
 // quando il nuovo contenuto e' gia' impaginato.
 function mgddPaint(el, styles, html) {
+  mgddScrollGuard();
   if (!el._mgddBody || el._mgddBody.parentNode !== el) {
     el.innerHTML = styles + '<div class="mgdd-body" style="display:contents"></div>';
     el._mgddBody = el.querySelector('.mgdd-body');
@@ -97,7 +107,25 @@ function mgddPaint(el, styles, html) {
       el.style.minHeight = '';
     });
   }
+  // Rete di sicurezza: si annota la posizione di scorrimento prima dello scambio
+  // e, se il browser la sposta da solo mentre l'utente non sta facendo nulla, la
+  // si rimette dov'era. Non conta perche' il browser la sposti (riaggancio a un
+  // massimo momentaneo, riallineamento a uno snap, correzione di ancoraggio):
+  // qui la si annulla in ogni caso, entro lo stesso frame, quindi non si vede.
+  const sc = document.scrollingElement || document.documentElement;
+  const top0 = sc ? sc.scrollTop : 0;
+  const inputStamp = mgddLastInput;
   el._mgddBody.innerHTML = html;
+  if (sc && top0 > 0) {
+    const restore = () => {
+      // se nel frattempo e' arrivato un tocco o una rotellata, l'utente comanda
+      if (mgddLastInput !== inputStamp || Date.now() - mgddLastInput < 150) return;
+      const d = sc.scrollTop - top0;
+      if (d < -24 || d > 24) sc.scrollTop = top0;
+    };
+    restore();
+    requestAnimationFrame(restore);
+  }
 }
 
 // ===== temperature-bento-card.js =====
