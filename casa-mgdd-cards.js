@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.29.1
+ * Version: 1.30.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1537,6 +1537,22 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   _render() {
+    // loads e plugs stanno spesso affiancati nella stessa riga: si allungano
+    // all'altezza della riga invece di fermarsi al proprio contenuto.
+    const fill =
+      (this.config.layout === 'plugs' || this.config.layout === 'loads') && this.config.stretch !== false;
+    this.classList.toggle('epc-fill', fill);
+    if (fill) {
+      this.style.display = 'block';
+      this.style.height = '100%';
+      // hui-card sta fra la cella della griglia e questa card: senza altezza
+      // propria il 100% qui sopra non avrebbe riferimento
+      const p = this.parentElement;
+      if (p && p.localName === 'hui-card') {
+        p.style.display = 'block';
+        p.style.height = '100%';
+      }
+    }
     if (this.config.layout === 'plugs') this._renderPlugs();
     else if (this.config.layout === 'loads') this._renderLoads();
     else if (this.config.layout === 'controls') this._renderControlTiles();
@@ -1765,6 +1781,7 @@ class EnergyPowerCard extends HTMLElement {
       '</div>' +
       '</div>';
     this._wireClicks();
+    this._wireBalanceTip();
   }
 
   // Profilo orario: barre impilate con la stessa scomposizione della striscia.
@@ -1791,17 +1808,57 @@ class EnergyPowerCard extends HTMLElement {
         if (p[0] > max / 250) inner += '<i class="epb-c-' + p[1] + '" style="flex:' + p[0].toFixed(4) + '"></i>';
       });
       const hh = ((r.house / max) * 100).toFixed(1);
+      // i valori restano sull'elemento: il tooltip li legge senza rigenerare l'HTML
       bars +=
-        '<div class="epb-hb" title="' + (r.h < 10 ? '0' : '') + r.h + ':00 · ' + r.house.toFixed(2) + ' kWh">' +
+        '<div class="epb-hb" data-h="' + r.h + '" data-tot="' + r.house.toFixed(3) + '"' +
+        ' data-sun="' + r.sun.toFixed(3) + '" data-bat="' + r.batt.toFixed(3) + '" data-grid="' + r.grid.toFixed(3) + '">' +
         '<div class="epb-hb-in" style="height:' + hh + '%">' + inner + '</div></div>';
     }
     return (
       '<div class="epb-hr">' +
       '<div class="epb-hr-hd"><span>Profilo orario</span><b>max ' + max.toFixed(2) + ' kWh/h</b></div>' +
-      '<div class="epb-hr-plot">' + bars + '</div>' +
+      '<div class="epb-hr-plot">' + bars + '<div class="epb-tip" hidden></div></div>' +
       '<div class="epb-hr-ax"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>' +
       '</div>'
     );
+  }
+
+  // Tooltip del profilo orario: ora, consumo e scomposizione per sorgente.
+  // Sostituisce il title nativo, che mostrava solo il totale.
+  _wireBalanceTip() {
+    const plot = this.querySelector('.epb-hr-plot');
+    const tip = this.querySelector('.epb-tip');
+    if (!plot || !tip) return;
+    const row = (label, cls, val, tot) =>
+      '<div class="epb-tr"><i class="epb-dot epb-c-' + cls + '"></i><span>' + label + '</span>' +
+      '<b>' + val.toFixed(2) + '</b><em>' + (tot ? Math.round((val / tot) * 100) : 0) + '%</em></div>';
+    const show = (bar) => {
+      const tot = parseFloat(bar.getAttribute('data-tot'));
+      const sun = parseFloat(bar.getAttribute('data-sun'));
+      const bat = parseFloat(bar.getAttribute('data-bat'));
+      const grid = parseFloat(bar.getAttribute('data-grid'));
+      const h = parseInt(bar.getAttribute('data-h'), 10);
+      tip.innerHTML =
+        '<div class="epb-tt">' + (h < 10 ? '0' : '') + h + ':00 – ' + (h < 9 ? '0' : '') + (h + 1) + ':00' +
+        '<b>' + tot.toFixed(2) + ' kWh</b></div>' +
+        row('Solare', 'sun', sun, tot) + row('Batteria', 'bat', bat, tot) + row('Rete', 'grid', grid, tot);
+      tip.hidden = false;
+      // ancorato alla barra, poi rientrato nei bordi del grafico
+      const pw = plot.clientWidth;
+      const tw = tip.offsetWidth;
+      let left = bar.offsetLeft + bar.offsetWidth / 2 - tw / 2;
+      if (left < 0) left = 0;
+      if (left + tw > pw) left = pw - tw;
+      tip.style.left = left + 'px';
+    };
+    plot.addEventListener('mousemove', (ev) => {
+      const bar = ev.target.closest ? ev.target.closest('.epb-hb') : null;
+      if (bar && bar.hasAttribute('data-tot')) show(bar);
+      else tip.hidden = true;
+    });
+    plot.addEventListener('mouseleave', () => {
+      tip.hidden = true;
+    });
   }
 
   // true quando il tema Home Assistant attivo e' scuro (non dipende dall'OS).
@@ -1898,8 +1955,9 @@ class EnergyPowerCard extends HTMLElement {
 
   // layout plugs: pannello di comando in stile Mushroom (variante verticale).
   // Solo i circuiti con `switch`: griglia di riquadri con icona in alto, nome e
-  // stato sotto. Nessun interruttore separato: si tocca il riquadro e commuta,
-  // l'icona colorata e' l'indicatore di stato. Tocco sull'icona = more-info.
+  // stato sotto. Nessun interruttore separato: l'icona colorata e' insieme
+  // indicatore di stato e comando (tocco = commuta); il resto del riquadro
+  // (nome e stato) apre il more-info.
   _plugsHtml(title) {
     const c = this.config;
     const items = (c.circuits || []).filter((x) => x.switch);
@@ -1914,9 +1972,10 @@ class EnergyPowerCard extends HTMLElement {
       // "In attesa" = presa alimentata ma senza assorbimento (elettrodomestico fermo)
       const det = w !== null && w > 0.5 ? this._fmt(w, ' W', w < 10 ? 1 : 0) : on ? 'In attesa' : 'Spenta';
       tiles +=
-        '<div class="mv-t' + (on ? '' : ' off') + '" data-plug="' + x.switch + '" title="' +
-        x.name + ' · ' + (on ? 'tocca per spegnere' : 'tocca per accendere') + '">' +
-        '<span class="mv-sh" data-info="' + (x.entity || x.switch) + '">' +
+        '<div class="mv-t' + (on ? '' : ' off') + '" data-info="' + (x.entity || x.switch) +
+        '" title="' + x.name + ' · dettagli">' +
+        '<span class="mv-sh" data-plug="' + x.switch + '" title="' +
+        (on ? 'Spegni' : 'Accendi') + ' ' + x.name + '">' +
         '<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' +
         this._plugIcon(x.icon) + '</svg></span>' +
         '<span class="mv-n">' + x.name + '</span>' +
@@ -1934,10 +1993,11 @@ class EnergyPowerCard extends HTMLElement {
     );
   }
 
-  // il riquadro commuta, l'icona apre il more-info senza propagare al riquadro
+  // l'icona commuta, il resto del riquadro apre il more-info
   _wirePlugs() {
     this.querySelectorAll('[data-plug]').forEach((el) => {
-      el.addEventListener('click', () => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         const id = el.getAttribute('data-plug');
         if (id && this._hass) this._hass.callService('switch', 'toggle', { entity_id: id });
       });
@@ -2123,6 +2183,9 @@ class EnergyPowerCard extends HTMLElement {
       '.proj{font-size:11px;color:var(--secondary-text-color,#6b6f76);margin-top:14px;padding-top:10px;border-top:1px solid var(--divider-color,rgba(0,0,0,.07));display:flex;justify-content:space-between;}' +
       '.proj b{color:var(--primary-text-color,#1c1c1e);font-weight:600;}' +
       '.loadlist{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px 6px;}' +
+      // card affiancate (loads/plugs): riempiono l'altezza della riga della griglia
+      'energy-power-card.epc-fill{display:block;height:100%;}' +
+      '.epc-fill .loadlist,.epc-fill .pwcard{height:100%;box-sizing:border-box;}' +
       '.load-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px;}' +
       '.comp{display:flex;height:6px;border-radius:3px;overflow:hidden;margin-bottom:5px;}' +
       '.load-row{display:flex;align-items:center;gap:10px;padding:8px 0;cursor:pointer;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.07));}' +
@@ -2142,13 +2205,20 @@ class EnergyPowerCard extends HTMLElement {
       '.pwcard.pw-dark.mv-teal{--mv-on:#12A08C;--mv-bg:rgba(18,160,140,.22);}' +
       '.pwempty{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:6px 0 10px;}' +
       '.mv-grid{display:grid;gap:8px;}' +
-      '.mv-t{background:rgba(127,127,127,.07);border-radius:12px;padding:12px 8px 10px;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer;min-width:0;transition:background .12s;}' +
+      // riquadro sulla superficie della card (niente riempimento grigio): a
+      // delimitarlo basta il bordo, cosi' l'unica tinta e' quella dell'icona
+      '.mv-t{background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.08));box-sizing:border-box;' +
+      'border-radius:12px;padding:11px 8px 9px;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer;min-width:0;transition:background .12s;}' +
       // hover come il tile card di HA: velo del colore di stato all'8%, non un blocco grigio
-      '.mv-t:hover{background:color-mix(in srgb,var(--mv-on) 8%,rgba(127,127,127,.07));}' +
-      '.mv-t.off:hover{background:rgba(127,127,127,.11);}' +
-      // forma icona Mushroom: quadrato arrotondato 42px, tinta dello stato
-      '.mv-sh{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:var(--mv-bg);color:var(--mv-on);flex:0 0 auto;transition:background .12s,color .12s;}' +
-      '.mv-t.off .mv-sh{background:rgba(127,127,127,.13);color:var(--secondary-text-color,#8b909a);}' +
+      '.mv-t:hover{background:color-mix(in srgb,var(--mv-on) 6%,var(--ha-card-background,var(--card-background-color,#fff)));}' +
+      '.mv-t.off:hover{background:rgba(127,127,127,.06);}' +
+      // forma icona Mushroom: quadrato arrotondato 42px, tinta dello stato.
+      // E' anche il comando: tocco = commuta, quindi ha un hover suo piu' marcato.
+      '.mv-sh{width:42px;height:42px;border-radius:12px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:var(--mv-bg);color:var(--mv-on);flex:0 0 auto;cursor:pointer;transition:background .12s,color .12s,box-shadow .12s;}' +
+      '.mv-sh:hover{box-shadow:0 0 0 2px color-mix(in srgb,var(--mv-on) 40%,transparent);}' +
+      '.mv-t.off .mv-sh{background:transparent;border:1px solid var(--divider-color,rgba(0,0,0,.13));color:var(--secondary-text-color,#8b909a);}' +
+      '.mv-t.off .mv-sh:hover{box-shadow:0 0 0 2px rgba(127,127,127,.28);}' +
       '.mv-n{font-size:12px;font-weight:500;color:var(--primary-text-color,#1c1c1e);text-align:center;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}' +
       '.mv-t.off .mv-n{color:var(--secondary-text-color,#6b6f76);}' +
       '.mv-s{font-size:10.5px;color:var(--secondary-text-color,#6b6f76);font-variant-numeric:tabular-nums;}' +
@@ -2215,15 +2285,17 @@ class EnergyPowerCard extends HTMLElement {
       '.ephg-tile.off .ephg-val{color:var(--secondary-text-color,#9aa0aa);}' +
       '.ephg-tile.off .ephg-spark{filter:grayscale(1);opacity:.45;}' +
       // layout balance ("Arc"): arco autosufficienza + scomposizione + 4 KPI.
-      // Tinte dati: step distinti per chiaro e scuro (non un'inversione automatica),
-      // validati su banda di luminosita', separazione CVD e contrasto sulla superficie.
-      '.epb-wrap{--epb-sun:#C97C05;--epb-bat:#6E56CF;--epb-grid:#0E9384;--epb-good:#0E9384;' +
+      // Tinte dati allineate a energy-flow-card: sole arancio, batteria verde,
+      // rete azzurro. L'arco dell'autosufficienza usa il viola della casa, cosi'
+      // non si confonde con nessuna delle tre sorgenti. Step distinti per chiaro
+      // e scuro (non un'inversione automatica).
+      '.epb-wrap{--epb-sun:#E08A00;--epb-bat:#0FB57E;--epb-grid:#0EA5E9;--epb-good:#6D5AE6;' +
       '--epb-tx:var(--primary-text-color,#10131a);--epb-tx2:var(--secondary-text-color,#6b7280);' +
       '--epb-bd:var(--divider-color,rgba(15,23,42,.09));--epb-fill:rgba(127,127,127,.09);' +
       '--epb-track:rgba(127,127,127,.18);' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));' +
       'border:1px solid var(--epb-bd);border-radius:20px;padding:17px 17px 18px;color:var(--epb-tx);}' +
-      '.epb-wrap.epb-dark{--epb-sun:#C98420;--epb-bat:#7B67D8;--epb-grid:#12A08C;--epb-good:#12A08C;' +
+      '.epb-wrap.epb-dark{--epb-sun:#F5B301;--epb-bat:#22E39A;--epb-grid:#38BDF8;--epb-good:#8B7BFF;' +
       '--epb-fill:rgba(255,255,255,.055);--epb-track:rgba(255,255,255,.12);}' +
       '.epb-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}' +
       '.epb-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--epb-tx2);}' +
@@ -2252,8 +2324,22 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-hr{margin-top:15px;padding-top:13px;border-top:1px solid var(--epb-bd);}' +
       '.epb-hr-hd{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--epb-tx2);margin-bottom:8px;}' +
       '.epb-hr-hd b{font-size:11px;letter-spacing:0;text-transform:none;font-weight:550;opacity:.85;font-variant-numeric:tabular-nums;}' +
-      '.epb-hr-plot{display:flex;align-items:flex-end;gap:2px;height:46px;}' +
+      '.epb-hr-plot{position:relative;display:flex;align-items:flex-end;gap:2px;height:46px;}' +
       '.epb-hb{flex:1;height:100%;display:flex;align-items:flex-end;min-width:0;}' +
+      '.epb-hb[data-tot]:hover .epb-hb-in{outline:1.5px solid var(--epb-tx2);outline-offset:1px;}' +
+      // tooltip del profilo orario: ora, totale e scomposizione per sorgente
+      '.epb-tip{position:absolute;bottom:calc(100% + 8px);z-index:5;pointer-events:none;' +
+      'min-width:158px;padding:9px 11px 8px;border-radius:11px;' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--epb-bd);box-shadow:0 6px 20px rgba(0,0,0,.13);}' +
+      '.epb-tip[hidden]{display:none;}' +
+      '.epb-tt{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:11px;' +
+      'color:var(--epb-tx2);padding-bottom:6px;margin-bottom:5px;border-bottom:1px solid var(--epb-bd);}' +
+      '.epb-tt b{font-size:12.5px;font-weight:650;color:var(--epb-tx);font-variant-numeric:tabular-nums;}' +
+      '.epb-tr{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--epb-tx2);padding:1.5px 0;}' +
+      '.epb-tr span{flex:1;}' +
+      '.epb-tr b{font-weight:650;color:var(--epb-tx);font-variant-numeric:tabular-nums;}' +
+      '.epb-tr em{font-style:normal;width:32px;text-align:right;opacity:.75;font-variant-numeric:tabular-nums;}' +
       '.epb-hb-in{width:100%;display:flex;flex-direction:column-reverse;border-radius:2px;overflow:hidden;background:var(--epb-track);}' +
       '.epb-hb-in i{display:block;width:100%;}' +
       '.epb-hb-void{opacity:0;}' +
