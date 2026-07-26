@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.38.2
+ * Version: 1.38.3
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3703,6 +3703,24 @@ class CasaMgddProbeCard extends HTMLElement {
       } catch (e) {}
       return O.wto.apply(window, arguments);
     };
+    O.esc = Element.prototype.scroll;
+    if (O.esc) {
+      Element.prototype.scroll = function () {
+        try {
+          if (big(this)) rec('scroll su ' + this.localName);
+        } catch (e) {}
+        return O.esc.apply(this, arguments);
+      };
+    }
+    O.sivn = Element.prototype.scrollIntoViewIfNeeded;
+    if (O.sivn) {
+      Element.prototype.scrollIntoViewIfNeeded = function () {
+        try {
+          rec('scrollIntoViewIfNeeded su ' + this.localName);
+        } catch (e) {}
+        return O.sivn.apply(this, arguments);
+      };
+    }
     O.wby = window.scrollBy;
     window.scrollBy = function () {
       try {
@@ -3756,6 +3774,8 @@ class CasaMgddProbeCard extends HTMLElement {
     if (O.wby) window.scrollBy = O.wby;
     if (O.eby) Element.prototype.scrollBy = O.eby;
     if (O.wsc) window.scroll = O.wsc;
+    if (O.esc) Element.prototype.scroll = O.esc;
+    if (O.sivn) Element.prototype.scrollIntoViewIfNeeded = O.sivn;
     CasaMgddProbeCard._orig = null;
   }
 
@@ -3818,8 +3838,12 @@ class CasaMgddProbeCard extends HTMLElement {
         : 'nessun cambio di altezza nei 400ms precedenti';
       // storia di contenuto/finestra: se sh non scende in nessun frame non e' un
       // riaggancio; se cala ch e' la barra del browser che si apre o chiude
-      const hist = this._frames.slice(-8).map((f) => f.sh + '/' + f.ch).join(' ');
-      this._push('J', dTop + 'px · ' + who + ' · sh/ch: ' + hist);
+      const hist = this._frames.slice(-9).map((f) => f.top).join(' ');
+      const geo = this._frames.slice(-9).every((f) => f.sh === cur.sh && f.ch === cur.ch)
+        ? 'sh/ch fermi (' + cur.sh + '/' + cur.ch + ')'
+        : 'sh/ch VARIATI: ' + this._frames.slice(-9).map((f) => f.sh + '/' + f.ch).join(' ');
+      const finger = this._touch ? ((Date.now() - this._touch) / 1000).toFixed(1) + 's dal dito' : 'mai toccato';
+      this._push('J', dTop + 'px · ' + finger + ' · ' + geo + ' · top: ' + hist + ' · ' + who);
     }
     this._prev = cur;
   }
