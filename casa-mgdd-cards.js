@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.40.0
+ * Version: 1.40.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -117,14 +117,18 @@ function mgddPaint(el, styles, html) {
   const inputStamp = mgddLastInput;
   el._mgddBody.innerHTML = html;
   if (sc && top0 > 0) {
+    // La correzione del browser non arriva sempre nello stesso frame dello
+    // scambio: si ricontrolla per qualche frame. Soglia bassa, perche' anche uno
+    // spostamento di pochi pixel si vede come scatto.
+    let tries = 0;
     const restore = () => {
       // se nel frattempo e' arrivato un tocco o una rotellata, l'utente comanda
       if (mgddLastInput !== inputStamp || Date.now() - mgddLastInput < 150) return;
       const d = sc.scrollTop - top0;
-      if (d < -24 || d > 24) sc.scrollTop = top0;
+      if (d < -2 || d > 2) sc.scrollTop = top0;
+      if (++tries < 6) requestAnimationFrame(restore);
     };
     restore();
-    requestAnimationFrame(restore);
   }
 }
 
