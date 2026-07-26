@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.38.3
+ * Version: 1.38.4
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3832,10 +3832,10 @@ class CasaMgddProbeCard extends HTMLElement {
     if (dTop <= -100 && !manual) {
       // chi ha cambiato altezza negli ultimi 400ms, con lo scrollHeight di allora
       const now = Date.now();
-      const near = this._recent.filter((r) => now - r.t < 400);
+      const near = this._recent.filter((r) => now - r.t < 900);
       const who = near.length
         ? near.map((r) => r.label + ' ' + (r.d > 0 ? '+' : '') + r.d + ' (sh ' + r.sh + ')').join(' / ')
-        : 'nessun cambio di altezza nei 400ms precedenti';
+        : 'NESSUN cambio di altezza in 900ms';
       // storia di contenuto/finestra: se sh non scende in nessun frame non e' un
       // riaggancio; se cala ch e' la barra del browser che si apre o chiude
       const hist = this._frames.slice(-9).map((f) => f.top).join(' ');
@@ -3872,9 +3872,20 @@ class CasaMgddProbeCard extends HTMLElement {
   _label(el) {
     const cfg = el._config || el.config;
     if (cfg && cfg.type) return String(cfg.type).replace('custom:', '');
-    if (el.shadowRoot && el.shadowRoot.firstElementChild) return el.shadowRoot.firstElementChild.localName;
-    if (el.firstElementChild) return el.firstElementChild.localName;
-    return el.localName;
+    // il custom element piu' vicino risalendo, anche oltre gli shadow root:
+    // e' il nome che identifica la card a cui appartiene l'elemento
+    let owner = '';
+    let n = el;
+    for (let i = 0; i < 12 && n; i++) {
+      if (n.localName && n.localName.indexOf('-') > 0) {
+        owner = n.localName.replace('hui-', '');
+        break;
+      }
+      n = n.parentNode ? n.parentNode.host || n.parentNode : null;
+    }
+    const cls = el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : '';
+    const self = el.localName + cls;
+    return owner && owner !== el.localName ? owner + '>' + self : self;
   }
 
   _observeCards() {
@@ -3897,13 +3908,23 @@ class CasaMgddProbeCard extends HTMLElement {
           // lo scrollHeight letto QUI cattura anche i restringimenti che durano
           // meno di un campionamento: e' il punto in cui il salto si decide
           this._recent.push({ t: Date.now(), label: rec.label, d: d, sh: this._sc ? this._sc.scrollHeight : 0 });
-          if (this._recent.length > 40) this._recent.shift();
+          if (this._recent.length > 120) this._recent.shift();
         });
       });
     }
     const root = this._sc && this._sc.nodeType === 1 ? this._sc : document.body;
-    this._deep(root, 'hui-card, ha-card').forEach((el) => {
+    // tetto agli osservati: la sonda non deve pesare piu' della dashboard
+    if (this._sizes.size > 700) return;
+    this._deep(root, '*').forEach((el) => {
       if (this._sizes.has(el)) return;
+      // solo i blocchi abbastanza alti da poter spostare lo scroll
+      let h = 0;
+      try {
+        h = el.offsetHeight || 0;
+      } catch (e) {
+        h = 0;
+      }
+      if (h < 30) return;
       this._sizes.set(el, { label: this._label(el), h: null, n: 0, last: 0, scroll: 0 });
       this._ro.observe(el);
     });
@@ -3922,7 +3943,7 @@ class CasaMgddProbeCard extends HTMLElement {
     const cards = Array.from(this._sizes.values())
       .filter((r) => r.n > 0)
       .sort((a, b) => b.n - a.n)
-      .slice(0, 8)
+      .slice(0, 14)
       .map((r) => '<tr><td>' + r.label + '</td><td>' + r.n + '</td><td>' + r.scroll + '</td><td>' + (r.last > 0 ? '+' : '') + r.last + '</td></tr>')
       .join('');
     const scName = this._sc
