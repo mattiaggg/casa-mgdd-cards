@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.38.1
+ * Version: 1.38.2
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3639,7 +3639,17 @@ class CasaMgddProbeCard extends HTMLElement {
     this._sc = this._scroller();
     this._prev = this._read();
     this._patch();
-    this._sample = setInterval(() => this._step(), 50);
+    // un campione per frame: un restringimento che dura un solo frame non sfugge
+    this._frames = [];
+    const raf = () => {
+      if (!this._on) return;
+      const r = this._read();
+      this._frames.push(r);
+      if (this._frames.length > 20) this._frames.shift();
+      this._step(r);
+      requestAnimationFrame(raf);
+    };
+    requestAnimationFrame(raf);
     this._watch = setInterval(() => this._observeCards(), 3000);
     this._observeCards();
     this._tick = setInterval(() => this._paint(), 700);
@@ -3653,9 +3663,9 @@ class CasaMgddProbeCard extends HTMLElement {
   _patch() {
     if (CasaMgddProbeCard._orig) return;
     const rec = (what) => {
-      const st = (new Error().stack || '').split('\n').slice(1, 4)
-        .map((l) => l.trim().replace(/https?:\/\/[^/]+\//, '').slice(0, 70))
-        .join('  ·  ');
+      const st = (new Error().stack || '').split('\n').slice(1, 9)
+        .map((l) => l.trim().replace(/https?:\/\/[^/]+\//, '').slice(0, 60))
+        .join(' <= ');
       this._push('C', what + ' ← ' + (st || 'traccia non disponibile'));
     };
     const big = (el) => el === document.documentElement || el === document.body || (el.scrollHeight - el.clientHeight > 200);
@@ -3693,6 +3703,29 @@ class CasaMgddProbeCard extends HTMLElement {
       } catch (e) {}
       return O.wto.apply(window, arguments);
     };
+    O.wby = window.scrollBy;
+    window.scrollBy = function () {
+      try {
+        rec('window.scrollBy(' + Array.prototype.slice.call(arguments).map((a) => (a && typeof a === 'object' ? JSON.stringify(a) : a)).join(',') + ')');
+      } catch (e) {}
+      return O.wby.apply(window, arguments);
+    };
+    O.eby = Element.prototype.scrollBy;
+    if (O.eby) {
+      Element.prototype.scrollBy = function () {
+        try {
+          if (big(this)) rec('scrollBy su ' + this.localName);
+        } catch (e) {}
+        return O.eby.apply(this, arguments);
+      };
+    }
+    O.wsc = window.scroll;
+    window.scroll = function () {
+      try {
+        rec('window.scroll(...)');
+      } catch (e) {}
+      return O.wsc.apply(window, arguments);
+    };
     O.foc = HTMLElement.prototype.focus;
     HTMLElement.prototype.focus = function () {
       try {
@@ -3720,13 +3753,16 @@ class CasaMgddProbeCard extends HTMLElement {
     if (O.wto) window.scrollTo = O.wto;
     if (O.eto) Element.prototype.scrollTo = O.eto;
     if (O.foc) HTMLElement.prototype.focus = O.foc;
+    if (O.wby) window.scrollBy = O.wby;
+    if (O.eby) Element.prototype.scrollBy = O.eby;
+    if (O.wsc) window.scroll = O.wsc;
     CasaMgddProbeCard._orig = null;
   }
 
   disconnectedCallback() {
     this._on = false;
     this._unpatch();
-    [this._sample, this._watch, this._tick].forEach((t) => {
+    [this._watch, this._tick].forEach((t) => {
       if (t) clearInterval(t);
     });
     if (this._ro) this._ro.disconnect();
@@ -3765,8 +3801,8 @@ class CasaMgddProbeCard extends HTMLElement {
     if (this._ev.length > 12) this._ev.pop();
   }
 
-  _step() {
-    const cur = this._read();
+  _step(read) {
+    const cur = read || this._read();
     const pr = this._prev;
     const dTop = cur.top - pr.top;
     const dSh = cur.sh - pr.sh;
@@ -3780,8 +3816,10 @@ class CasaMgddProbeCard extends HTMLElement {
       const who = near.length
         ? near.map((r) => r.label + ' ' + (r.d > 0 ? '+' : '') + r.d + ' (sh ' + r.sh + ')').join(' / ')
         : 'nessun cambio di altezza nei 400ms precedenti';
-      const cause = dSh <= -8 ? 'sh ' + dSh : 'sh invariato ora';
-      this._push('J', dTop + 'px · ' + cause + ' · ' + who);
+      // storia di contenuto/finestra: se sh non scende in nessun frame non e' un
+      // riaggancio; se cala ch e' la barra del browser che si apre o chiude
+      const hist = this._frames.slice(-8).map((f) => f.sh + '/' + f.ch).join(' ');
+      this._push('J', dTop + 'px · ' + who + ' · sh/ch: ' + hist);
     }
     this._prev = cur;
   }
