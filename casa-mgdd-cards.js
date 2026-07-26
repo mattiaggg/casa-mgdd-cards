@@ -3,9 +3,9 @@
  * Libreria unica di card custom per la dashboard Home Assistant.
  * Contiene: temperature-bento-card, temperature-row-card, weather-alert-card,
  * energy-power-card, energy-controls-card, energy-history-card,
- * energy-monthly-card.
+ * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.35.0
+ * Version: 1.36.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3594,3 +3594,163 @@ window.customCards.push({
   description: 'Flusso energia Rete/Solare/Batteria/Casa con linee neon animate. Config via YAML.',
 });
 
+// ===== casa-mgdd-probe-card.js =====
+// Card DIAGNOSTICA, temporanea. Non mostra dati di casa: sorveglia l'altezza di
+// tutte le card della vista e riporta quali cambiano, di quanto e quante volte,
+// distinguendo i cambi avvenuti mentre la vista scorre. Serve a individuare chi
+// sposta lo scroll su iOS invece di procedere per ipotesi.
+// Uso: type: custom:casa-mgdd-probe-card  -> leggere, poi rimuovere la card.
+class CasaMgddProbeCard extends HTMLElement {
+  setConfig(config) {
+    this.config = config || {};
+    this._log = new Map();
+    this._scrollAt = 0;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+  }
+
+  getCardSize() {
+    return 4;
+  }
+
+  connectedCallback() {
+    if (this._on) return;
+    this._on = true;
+    this.innerHTML = '<div class="pr"></div>';
+    this._out = this.querySelector('.pr');
+    this._style();
+    const mark = () => {
+      this._scrollAt = Date.now();
+    };
+    this._mark = mark;
+    ['scroll', 'touchmove', 'wheel'].forEach((e) => window.addEventListener(e, mark, { capture: true, passive: true }));
+    // il primo giro puo' arrivare prima che la vista sia completa: si riscansiona
+    this._scan();
+    this._rescan = setInterval(() => this._scan(), 4000);
+    this._paint();
+    this._tick = setInterval(() => this._paint(), 1000);
+  }
+
+  disconnectedCallback() {
+    this._on = false;
+    if (this._ro) this._ro.disconnect();
+    if (this._tick) clearInterval(this._tick);
+    if (this._rescan) clearInterval(this._rescan);
+    if (this._mark) ['scroll', 'touchmove', 'wheel'].forEach((e) => window.removeEventListener(e, this._mark, { capture: true }));
+  }
+
+  // risale fino al contenitore della vista attraversando gli shadow root
+  _viewRoot() {
+    let n = this;
+    for (let i = 0; i < 40 && n; i++) {
+      const ln = n.localName || '';
+      if (ln === 'hui-view' || ln === 'hui-sections-view' || ln === 'hui-masonry-view' || ln === 'ha-panel-lovelace') return n;
+      n = n.parentNode ? (n.parentNode.host || n.parentNode) : null;
+    }
+    return document.body;
+  }
+
+  // querySelectorAll che scende anche dentro gli shadow root
+  _deep(root, sel) {
+    const out = [];
+    const seen = new Set();
+    const walk = (node) => {
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      let list = [];
+      try {
+        list = node.querySelectorAll ? Array.from(node.querySelectorAll('*')) : [];
+      } catch (e) {
+        return;
+      }
+      list.forEach((el) => {
+        if (el.matches && el.matches(sel)) out.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      });
+    };
+    walk(root);
+    return out;
+  }
+
+  _label(el) {
+    let inner = null;
+    if (el.shadowRoot && el.shadowRoot.firstElementChild) inner = el.shadowRoot.firstElementChild.localName;
+    if (!inner && el.firstElementChild) inner = el.firstElementChild.localName;
+    const cfg = el._config || el.config;
+    const type = cfg && cfg.type ? String(cfg.type).replace('custom:', '') : null;
+    return type || inner || el.localName;
+  }
+
+  _scan() {
+    if (!this._ro) {
+      this._ro = new ResizeObserver((entries) => {
+        entries.forEach((en) => {
+          const el = en.target;
+          const h = Math.round(en.contentRect.height);
+          const rec = this._log.get(el);
+          if (!rec) return;
+          if (rec.h === null) {
+            rec.h = h;
+            return;
+          }
+          const d = h - rec.h;
+          if (Math.abs(d) < 1) return;
+          rec.h = h;
+          rec.n++;
+          rec.last = d;
+          if (Date.now() - this._scrollAt < 500) rec.scroll++;
+        });
+      });
+    }
+    this._deep(this._viewRoot(), 'hui-card').forEach((el) => {
+      if (this._log.has(el)) return;
+      this._log.set(el, { label: this._label(el), h: null, n: 0, last: 0, scroll: 0 });
+      this._ro.observe(el);
+    });
+  }
+
+  _paint() {
+    if (!this._out) return;
+    const rows = Array.from(this._log.values())
+      .filter((r) => r.n > 0)
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 12)
+      .map(
+        (r) =>
+          '<tr><td>' + r.label + '</td><td>' + r.n + '</td><td>' + r.scroll + '</td><td>' +
+          (r.last > 0 ? '+' : '') + r.last + '</td></tr>'
+      )
+      .join('');
+    this._out.innerHTML =
+      '<div class="pr-t">Sonda altezze · ' + this._log.size + ' card sorvegliate</div>' +
+      (rows
+        ? '<table><thead><tr><th>card</th><th>cambi</th><th>durante scroll</th><th>ultimo</th></tr></thead><tbody>' +
+          rows + '</tbody></table>'
+        : '<div class="pr-e">Nessun cambio di altezza rilevato.</div>') +
+      '<div class="pr-n">Scorri la vista su e giù per qualche secondo, poi leggi la colonna "durante scroll": chi ha numeri alti è il responsabile.</div>';
+  }
+
+  _style() {
+    if (this.querySelector('style')) return;
+    const s = document.createElement('style');
+    s.textContent =
+      '.pr{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.1));' +
+      'border-radius:14px;padding:12px 14px;font-size:12px;color:var(--primary-text-color,#111);}' +
+      '.pr-t{font-weight:600;margin-bottom:8px;}' +
+      '.pr table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;}' +
+      '.pr th{text-align:left;font-weight:500;color:var(--secondary-text-color,#6b7280);border-bottom:1px solid var(--divider-color,rgba(0,0,0,.1));padding:3px 4px;}' +
+      '.pr td{padding:3px 4px;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.06));}' +
+      '.pr td:first-child{word-break:break-all;}' +
+      '.pr-e,.pr-n{color:var(--secondary-text-color,#6b7280);margin-top:8px;line-height:1.4;}';
+    this.insertBefore(s, this.firstChild);
+  }
+}
+
+customElements.define('casa-mgdd-probe-card', CasaMgddProbeCard);
+window.customCards.push({
+  type: 'casa-mgdd-probe-card',
+  name: 'Sonda altezze (diagnostica)',
+  description: 'Temporanea: riporta quali card cambiano altezza e quante volte durante lo scorrimento.',
+});
