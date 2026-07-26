@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
  *
- * Version: 1.38.4
+ * Version: 1.39.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -67,10 +67,35 @@ function mgddIdlePaint(el, fn, quiet) {
   }, wait);
 }
 
+// Riscrivere il contenuto svuota e ricrea il sottoalbero. Se in quell'istante
+// qualcosa forza un calcolo del layout (un getBoundingClientRect di un'altra
+// card, un ResizeObserver, una container query da rivalutare) il browser vede
+// per un attimo una pagina piu' corta e, se sei vicino al fondo, riaggancia
+// subito la posizione di scorrimento entro il nuovo massimo. Il contenuto
+// ricompare, l'altezza torna, ma lo scorrimento resta dov'e' stato agganciato:
+// e' il salto verso l'alto, e per questo cade sempre subito dopo un ridisegno e
+// non durante lo scorrimento.
+// Rimedio: la card non puo' diventare piu' bassa durante lo scambio. Si fissa
+// l'altezza corrente come minimo, si scambia, e si libera al frame successivo,
+// quando il nuovo contenuto e' gia' impaginato.
 function mgddPaint(el, styles, html) {
   if (!el._mgddBody || el._mgddBody.parentNode !== el) {
     el.innerHTML = styles + '<div class="mgdd-body" style="display:contents"></div>';
     el._mgddBody = el.querySelector('.mgdd-body');
+  }
+  let h = 0;
+  try {
+    h = el.offsetHeight || 0;
+  } catch (e) {
+    h = 0;
+  }
+  if (h > 0) {
+    el.style.minHeight = h + 'px';
+    if (el._mgddRelease) cancelAnimationFrame(el._mgddRelease);
+    el._mgddRelease = requestAnimationFrame(() => {
+      el._mgddRelease = null;
+      el.style.minHeight = '';
+    });
   }
   el._mgddBody.innerHTML = html;
 }
