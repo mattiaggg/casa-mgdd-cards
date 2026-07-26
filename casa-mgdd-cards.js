@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.34.0
+ * Version: 1.35.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -31,6 +31,42 @@ function mgddStatesSig(hass, ids) {
 // bastava a far risalire lo scroll della vista.
 // Il contenitore e' display:contents, quindi non introduce una scatola in piu'
 // e non altera ne' il layout ne' i selettori fra fratelli.
+// Ridisegni sospesi mentre la vista scorre. Qualunque variazione di altezza
+// durante lo scorrimento sposta il contenuto sotto il dito, e WebKit non ha lo
+// scroll anchoring che su Chrome compensa lo spostamento: il risultato e' che la
+// posizione di scorrimento risale. Invece di rincorrere quale card cambia
+// altezza, qui si toglie la sovrapposizione fra le due cose: mentre scorri
+// nessuna card si ridisegna, e il ridisegno riparte appena ti fermi.
+let mgddLastScroll = 0;
+function mgddScrollGuard() {
+  if (mgddScrollGuard._on) return;
+  mgddScrollGuard._on = true;
+  const mark = () => {
+    mgddLastScroll = Date.now();
+  };
+  // capture: lo scroll non fa bubbling, ma in fase di captura arriva comunque
+  // qui anche quando scorre un contenitore interno
+  ['scroll', 'touchmove', 'wheel'].forEach((ev) =>
+    window.addEventListener(ev, mark, { capture: true, passive: true })
+  );
+}
+
+// Esegue fn subito se la vista e' ferma, altrimenti appena si ferma.
+function mgddIdlePaint(el, fn, quiet) {
+  mgddScrollGuard();
+  const q = quiet || 400;
+  const wait = q - (Date.now() - mgddLastScroll);
+  if (wait <= 0) {
+    fn();
+    return;
+  }
+  if (el._mgddIdle) return;
+  el._mgddIdle = setTimeout(() => {
+    el._mgddIdle = null;
+    mgddIdlePaint(el, fn, q);
+  }, wait);
+}
+
 function mgddPaint(el, styles, html) {
   if (!el._mgddBody || el._mgddBody.parentNode !== el) {
     el.innerHTML = styles + '<div class="mgdd-body" style="display:contents"></div>';
@@ -1325,14 +1361,14 @@ class EnergyPowerCard extends HTMLElement {
     const now = Date.now();
     if (!gap || !this._paintedAt || now - this._paintedAt >= gap) {
       this._paintedAt = now;
-      this._render();
+      mgddIdlePaint(this, () => this._render());
       return;
     }
     if (this._paintTimer) return;
     this._paintTimer = setTimeout(() => {
       this._paintTimer = null;
       this._paintedAt = Date.now();
-      this._render();
+      mgddIdlePaint(this, () => this._render());
     }, gap - (now - this._paintedAt));
   }
 
@@ -1340,6 +1376,10 @@ class EnergyPowerCard extends HTMLElement {
     if (this._paintTimer) {
       clearTimeout(this._paintTimer);
       this._paintTimer = null;
+    }
+    if (this._mgddIdle) {
+      clearTimeout(this._mgddIdle);
+      this._mgddIdle = null;
     }
     if (this._mqNarrow && this._mqOnChange) {
       if (this._mqNarrow.removeEventListener) this._mqNarrow.removeEventListener('change', this._mqOnChange);
@@ -2468,7 +2508,7 @@ class EnergyControlsCard extends HTMLElement {
     const sig = mgddStatesSig(hass, ids);
     if (sig === this._lastSig) return;
     this._lastSig = sig;
-    this._render();
+    mgddIdlePaint(this, () => this._render());
   }
 
   getCardSize() {
@@ -2609,7 +2649,7 @@ class EnergyHistoryCard extends HTMLElement {
     const sig = mgddStatesSig(hass, [this.config.entity]);
     if (sig !== this._lastSig) {
       this._lastSig = sig;
-      this._render();
+      mgddIdlePaint(this, () => this._render());
     }
     this._maybeFetch();
   }
@@ -2639,8 +2679,11 @@ class EnergyHistoryCard extends HTMLElement {
       });
       this._daily = (dailyResp && dailyResp[this.config.entity]) || [];
     } catch (e) {
-      this._daily = [];
-      this._dailyError = (e && e.message) || String(e);
+      // dati precedenti conservati: vedi energy-monthly-card
+      if (!this._daily || !this._daily.length) {
+        this._daily = [];
+        this._dailyError = (e && e.message) || String(e);
+      }
       console.error('energy-history-card: errore statistiche giornaliere', e);
     }
     try {
@@ -2655,8 +2698,11 @@ class EnergyHistoryCard extends HTMLElement {
       });
       this._monthly = (monthlyResp && monthlyResp[this.config.entity]) || [];
     } catch (e) {
-      this._monthly = [];
-      this._monthlyError = (e && e.message) || String(e);
+      // dati precedenti conservati: vedi energy-monthly-card
+      if (!this._monthly || !this._monthly.length) {
+        this._monthly = [];
+        this._monthlyError = (e && e.message) || String(e);
+      }
       console.error('energy-history-card: errore statistiche mensili', e);
     }
     this._render();
@@ -2862,7 +2908,7 @@ class EnergyMonthlyCard extends HTMLElement {
     const sig = mgddStatesSig(hass, [this.config.entity]);
     if (sig !== this._lastSig) {
       this._lastSig = sig;
-      this._render();
+      mgddIdlePaint(this, () => this._render());
     }
     this._maybeFetch();
   }
@@ -2903,8 +2949,12 @@ class EnergyMonthlyCard extends HTMLElement {
       arr = arr.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
       this._data = arr;
     } catch (e) {
-      this._data = [];
-      this._error = (e && e.message) || String(e);
+      // si tengono i dati precedenti: azzerarli faceva collassare la card a una
+      // riga di testo, e un salto di altezza in fondo alla vista sposta lo scroll
+      if (!this._data || !this._data.length) {
+        this._data = [];
+        this._error = (e && e.message) || String(e);
+      }
       console.error('energy-monthly-card: errore statistiche mensili', e);
     }
     this._render();
