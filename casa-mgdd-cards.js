@@ -3,9 +3,9 @@
  * Libreria unica di card custom per la dashboard Home Assistant.
  * Contiene: temperature-bento-card, temperature-row-card, weather-alert-card,
  * energy-power-card, energy-controls-card, energy-history-card,
- * energy-monthly-card, casa-mgdd-probe-card (diagnostica).
+ * energy-monthly-card.
  *
- * Version: 1.40.1
+ * Version: 1.41.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -31,49 +31,20 @@ function mgddStatesSig(hass, ids) {
 // bastava a far risalire lo scroll della vista.
 // Il contenitore e' display:contents, quindi non introduce una scatola in piu'
 // e non altera ne' il layout ne' i selettori fra fratelli.
-// Ridisegni sospesi mentre la vista scorre. Qualunque variazione di altezza
-// durante lo scorrimento sposta il contenuto sotto il dito, e WebKit non ha lo
-// scroll anchoring che su Chrome compensa lo spostamento: il risultato e' che la
-// posizione di scorrimento risale. Invece di rincorrere quale card cambia
-// altezza, qui si toglie la sovrapposizione fra le due cose: mentre scorri
-// nessuna card si ridisegna, e il ridisegno riparte appena ti fermi.
-let mgddLastScroll = 0;
-// mgddLastInput conta solo il dito o la rotella. Serve a distinguere lo
-// scorrimento voluto dall'utente da quello che il browser fa da solo: l'evento
-// `scroll` arriva in entrambi i casi e da solo non discrimina.
+// Ultimo istante in cui l'utente ha agito sullo scorrimento: dito, rotella o
+// tastiera. Deliberatamente NON include l'evento `scroll`, che arriva anche
+// quando e' il browser a spostare la posizione da solo: e' proprio quel caso che
+// la rete di sicurezza in mgddPaint deve poter distinguere e annullare.
 let mgddLastInput = 0;
 function mgddScrollGuard() {
   if (mgddScrollGuard._on) return;
   mgddScrollGuard._on = true;
-  const scrolled = () => {
-    mgddLastScroll = Date.now();
-  };
   const input = () => {
     mgddLastInput = Date.now();
-    mgddLastScroll = mgddLastInput;
   };
-  // capture: lo scroll non fa bubbling, ma in fase di captura arriva comunque
-  // qui anche quando scorre un contenitore interno
-  window.addEventListener('scroll', scrolled, { capture: true, passive: true });
   ['touchstart', 'touchmove', 'touchend', 'wheel', 'keydown'].forEach((ev) =>
     window.addEventListener(ev, input, { capture: true, passive: true })
   );
-}
-
-// Esegue fn subito se la vista e' ferma, altrimenti appena si ferma.
-function mgddIdlePaint(el, fn, quiet) {
-  mgddScrollGuard();
-  const q = quiet || 400;
-  const wait = q - (Date.now() - mgddLastScroll);
-  if (wait <= 0) {
-    fn();
-    return;
-  }
-  if (el._mgddIdle) return;
-  el._mgddIdle = setTimeout(() => {
-    el._mgddIdle = null;
-    mgddIdlePaint(el, fn, q);
-  }, wait);
 }
 
 // Riscrivere il contenuto svuota e ricrea il sottoalbero. Se in quell'istante
@@ -1418,14 +1389,14 @@ class EnergyPowerCard extends HTMLElement {
     const now = Date.now();
     if (!gap || !this._paintedAt || now - this._paintedAt >= gap) {
       this._paintedAt = now;
-      mgddIdlePaint(this, () => this._render());
+      this._render();
       return;
     }
     if (this._paintTimer) return;
     this._paintTimer = setTimeout(() => {
       this._paintTimer = null;
       this._paintedAt = Date.now();
-      mgddIdlePaint(this, () => this._render());
+      this._render();
     }, gap - (now - this._paintedAt));
   }
 
@@ -1433,10 +1404,6 @@ class EnergyPowerCard extends HTMLElement {
     if (this._paintTimer) {
       clearTimeout(this._paintTimer);
       this._paintTimer = null;
-    }
-    if (this._mgddIdle) {
-      clearTimeout(this._mgddIdle);
-      this._mgddIdle = null;
     }
     if (this._mqNarrow && this._mqOnChange) {
       if (this._mqNarrow.removeEventListener) this._mqNarrow.removeEventListener('change', this._mqOnChange);
@@ -2565,7 +2532,7 @@ class EnergyControlsCard extends HTMLElement {
     const sig = mgddStatesSig(hass, ids);
     if (sig === this._lastSig) return;
     this._lastSig = sig;
-    mgddIdlePaint(this, () => this._render());
+    this._render();
   }
 
   getCardSize() {
@@ -2706,7 +2673,7 @@ class EnergyHistoryCard extends HTMLElement {
     const sig = mgddStatesSig(hass, [this.config.entity]);
     if (sig !== this._lastSig) {
       this._lastSig = sig;
-      mgddIdlePaint(this, () => this._render());
+      this._render();
     }
     this._maybeFetch();
   }
@@ -2965,7 +2932,7 @@ class EnergyMonthlyCard extends HTMLElement {
     const sig = mgddStatesSig(hass, [this.config.entity]);
     if (sig !== this._lastSig) {
       this._lastSig = sig;
-      mgddIdlePaint(this, () => this._render());
+      this._render();
     }
     this._maybeFetch();
   }
@@ -3652,392 +3619,4 @@ window.customCards.push({
   type: 'energy-flow-card',
   name: 'Energy Flusso',
   description: 'Flusso energia Rete/Solare/Batteria/Casa con linee neon animate. Config via YAML.',
-});
-
-// ===== casa-mgdd-probe-card.js =====
-// Card DIAGNOSTICA, temporanea. Non legge entita': sorveglia il contenitore che
-// scorre e registra due cose distinte, che hanno cause opposte:
-//   - ALTEZZA: scrollHeight che si accorcia. Il contenuto si e' ristretto e iOS
-//     e' costretto a riagganciare la posizione entro il nuovo fondo pagina.
-//   - SALTO: scrollTop che risale da solo senza che l'altezza cambi. Qui non e'
-//     un riaggancio: qualcuno sta spostando lo scroll via codice.
-// Registra anche l'altezza delle card, se qualcuna cambia.
-// Uso: type: custom:casa-mgdd-probe-card  -> leggere, poi rimuovere la card.
-class CasaMgddProbeCard extends HTMLElement {
-  setConfig(config) {
-    this.config = config || {};
-    this._ev = [];
-    this._sizes = new Map();
-    this._recent = [];
-    this._touch = 0;
-    this._t0 = Date.now();
-  }
-
-  set hass(hass) {
-    this._hass = hass;
-  }
-
-  getCardSize() {
-    return 4;
-  }
-
-  connectedCallback() {
-    if (this._on) return;
-    this._on = true;
-    this.innerHTML = '<div class="pr"></div>';
-    this._out = this.querySelector('.pr');
-    this._style();
-    this._mark = () => {
-      this._touch = Date.now();
-    };
-    ['touchstart', 'touchmove', 'touchend', 'wheel'].forEach((e) =>
-      window.addEventListener(e, this._mark, { capture: true, passive: true })
-    );
-    this._sc = this._scroller();
-    this._prev = this._read();
-    this._patch();
-    // un campione per frame: un restringimento che dura un solo frame non sfugge
-    this._frames = [];
-    const raf = () => {
-      if (!this._on) return;
-      const r = this._read();
-      this._frames.push(r);
-      if (this._frames.length > 20) this._frames.shift();
-      this._step(r);
-      requestAnimationFrame(raf);
-    };
-    requestAnimationFrame(raf);
-    this._watch = setInterval(() => this._observeCards(), 3000);
-    this._observeCards();
-    this._tick = setInterval(() => this._paint(), 700);
-    this._paint();
-  }
-
-  // Intercetta chi sposta lo scroll, per leggerne la traccia di chiamata. Sono
-  // wrapper trasparenti: passano tutto all'originale e registrano soltanto.
-  // Se il salto avviene e qui non compare nulla, non lo fa codice JavaScript:
-  // e' la webview dell'app, e va cercato fuori dalla dashboard.
-  _patch() {
-    if (CasaMgddProbeCard._orig) return;
-    const rec = (what) => {
-      const st = (new Error().stack || '').split('\n').slice(1, 9)
-        .map((l) => l.trim().replace(/https?:\/\/[^/]+\//, '').slice(0, 60))
-        .join(' <= ');
-      this._push('C', what + ' ← ' + (st || 'traccia non disponibile'));
-    };
-    const big = (el) => el === document.documentElement || el === document.body || (el.scrollHeight - el.clientHeight > 200);
-    const O = {};
-    O.sd = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
-    if (O.sd && O.sd.set) {
-      Object.defineProperty(Element.prototype, 'scrollTop', {
-        configurable: true,
-        enumerable: O.sd.enumerable,
-        get: O.sd.get,
-        set: function (v) {
-          try {
-            if (big(this)) {
-              const cur = O.sd.get.call(this);
-              if (Math.abs(v - cur) > 100) rec('scrollTop=' + Math.round(v) + ' (era ' + Math.round(cur) + ')');
-            }
-          } catch (e) {
-            /* la diagnostica non deve mai rompere lo scroll */
-          }
-          O.sd.set.call(this, v);
-        },
-      });
-    }
-    O.siv = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = function () {
-      try {
-        rec('scrollIntoView su ' + this.localName);
-      } catch (e) {}
-      return O.siv.apply(this, arguments);
-    };
-    O.wto = window.scrollTo;
-    window.scrollTo = function () {
-      try {
-        rec('window.scrollTo(' + Array.prototype.slice.call(arguments).map((a) => (a && typeof a === 'object' ? JSON.stringify(a) : a)).join(',') + ')');
-      } catch (e) {}
-      return O.wto.apply(window, arguments);
-    };
-    O.esc = Element.prototype.scroll;
-    if (O.esc) {
-      Element.prototype.scroll = function () {
-        try {
-          if (big(this)) rec('scroll su ' + this.localName);
-        } catch (e) {}
-        return O.esc.apply(this, arguments);
-      };
-    }
-    O.sivn = Element.prototype.scrollIntoViewIfNeeded;
-    if (O.sivn) {
-      Element.prototype.scrollIntoViewIfNeeded = function () {
-        try {
-          rec('scrollIntoViewIfNeeded su ' + this.localName);
-        } catch (e) {}
-        return O.sivn.apply(this, arguments);
-      };
-    }
-    O.wby = window.scrollBy;
-    window.scrollBy = function () {
-      try {
-        rec('window.scrollBy(' + Array.prototype.slice.call(arguments).map((a) => (a && typeof a === 'object' ? JSON.stringify(a) : a)).join(',') + ')');
-      } catch (e) {}
-      return O.wby.apply(window, arguments);
-    };
-    O.eby = Element.prototype.scrollBy;
-    if (O.eby) {
-      Element.prototype.scrollBy = function () {
-        try {
-          if (big(this)) rec('scrollBy su ' + this.localName);
-        } catch (e) {}
-        return O.eby.apply(this, arguments);
-      };
-    }
-    O.wsc = window.scroll;
-    window.scroll = function () {
-      try {
-        rec('window.scroll(...)');
-      } catch (e) {}
-      return O.wsc.apply(window, arguments);
-    };
-    O.foc = HTMLElement.prototype.focus;
-    HTMLElement.prototype.focus = function () {
-      try {
-        rec('focus su ' + this.localName);
-      } catch (e) {}
-      return O.foc.apply(this, arguments);
-    };
-    O.eto = Element.prototype.scrollTo;
-    if (O.eto) {
-      Element.prototype.scrollTo = function () {
-        try {
-          if (big(this)) rec('scrollTo su ' + this.localName);
-        } catch (e) {}
-        return O.eto.apply(this, arguments);
-      };
-    }
-    CasaMgddProbeCard._orig = O;
-  }
-
-  _unpatch() {
-    const O = CasaMgddProbeCard._orig;
-    if (!O) return;
-    if (O.sd) Object.defineProperty(Element.prototype, 'scrollTop', O.sd);
-    if (O.siv) Element.prototype.scrollIntoView = O.siv;
-    if (O.wto) window.scrollTo = O.wto;
-    if (O.eto) Element.prototype.scrollTo = O.eto;
-    if (O.foc) HTMLElement.prototype.focus = O.foc;
-    if (O.wby) window.scrollBy = O.wby;
-    if (O.eby) Element.prototype.scrollBy = O.eby;
-    if (O.wsc) window.scroll = O.wsc;
-    if (O.esc) Element.prototype.scroll = O.esc;
-    if (O.sivn) Element.prototype.scrollIntoViewIfNeeded = O.sivn;
-    CasaMgddProbeCard._orig = null;
-  }
-
-  disconnectedCallback() {
-    this._on = false;
-    this._unpatch();
-    [this._watch, this._tick].forEach((t) => {
-      if (t) clearInterval(t);
-    });
-    if (this._ro) this._ro.disconnect();
-    if (this._mark) {
-      ['touchstart', 'touchmove', 'touchend', 'wheel'].forEach((e) => window.removeEventListener(e, this._mark, { capture: true }));
-    }
-  }
-
-  // il contenitore che scorre: primo antenato con overflow scorrevole
-  _scroller() {
-    let n = this.parentNode;
-    for (let i = 0; i < 60 && n; i++) {
-      if (n.nodeType === 1) {
-        let ov = '';
-        try {
-          ov = getComputedStyle(n).overflowY;
-        } catch (e) {
-          ov = '';
-        }
-        if ((ov === 'auto' || ov === 'scroll' || ov === 'overlay') && n.scrollHeight - n.clientHeight > 40) return n;
-      }
-      n = n.parentNode ? n.parentNode.host || n.parentNode : null;
-    }
-    return document.scrollingElement || document.documentElement;
-  }
-
-  _read() {
-    const s = this._sc;
-    if (!s) return { top: 0, sh: 0, ch: 0 };
-    return { top: Math.round(s.scrollTop), sh: Math.round(s.scrollHeight), ch: Math.round(s.clientHeight) };
-  }
-
-  _push(kind, txt) {
-    const t = ((Date.now() - this._t0) / 1000).toFixed(1);
-    this._ev.unshift({ t: t, kind: kind, txt: txt });
-    if (this._ev.length > 12) this._ev.pop();
-  }
-
-  _step(read) {
-    const cur = read || this._read();
-    const pr = this._prev;
-    const dTop = cur.top - pr.top;
-    const dSh = cur.sh - pr.sh;
-    // dito sul vetro da meno di 300ms: lo scorrimento e' voluto
-    const manual = Date.now() - this._touch < 300;
-    if (dSh <= -8) this._push('H', dSh + 'px altezza (a top ' + cur.top + ')');
-    if (dTop <= -100 && !manual) {
-      // chi ha cambiato altezza negli ultimi 400ms, con lo scrollHeight di allora
-      const now = Date.now();
-      const near = this._recent.filter((r) => now - r.t < 900);
-      const who = near.length
-        ? near.map((r) => r.label + ' ' + (r.d > 0 ? '+' : '') + r.d + ' (sh ' + r.sh + ')').join(' / ')
-        : 'NESSUN cambio di altezza in 900ms';
-      // storia di contenuto/finestra: se sh non scende in nessun frame non e' un
-      // riaggancio; se cala ch e' la barra del browser che si apre o chiude
-      const hist = this._frames.slice(-9).map((f) => f.top).join(' ');
-      const geo = this._frames.slice(-9).every((f) => f.sh === cur.sh && f.ch === cur.ch)
-        ? 'sh/ch fermi (' + cur.sh + '/' + cur.ch + ')'
-        : 'sh/ch VARIATI: ' + this._frames.slice(-9).map((f) => f.sh + '/' + f.ch).join(' ');
-      const finger = this._touch ? ((Date.now() - this._touch) / 1000).toFixed(1) + 's dal dito' : 'mai toccato';
-      this._push('J', dTop + 'px · ' + finger + ' · ' + geo + ' · top: ' + hist + ' · ' + who);
-    }
-    this._prev = cur;
-  }
-
-  _deep(root, sel) {
-    const out = [];
-    const seen = new Set();
-    const walk = (node) => {
-      if (!node || seen.has(node)) return;
-      seen.add(node);
-      let list = [];
-      try {
-        list = node.querySelectorAll ? Array.from(node.querySelectorAll('*')) : [];
-      } catch (e) {
-        return;
-      }
-      list.forEach((el) => {
-        if (el.matches && el.matches(sel)) out.push(el);
-        if (el.shadowRoot) walk(el.shadowRoot);
-      });
-    };
-    walk(root);
-    return out;
-  }
-
-  _label(el) {
-    const cfg = el._config || el.config;
-    if (cfg && cfg.type) return String(cfg.type).replace('custom:', '');
-    // il custom element piu' vicino risalendo, anche oltre gli shadow root:
-    // e' il nome che identifica la card a cui appartiene l'elemento
-    let owner = '';
-    let n = el;
-    for (let i = 0; i < 12 && n; i++) {
-      if (n.localName && n.localName.indexOf('-') > 0) {
-        owner = n.localName.replace('hui-', '');
-        break;
-      }
-      n = n.parentNode ? n.parentNode.host || n.parentNode : null;
-    }
-    const cls = el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : '';
-    const self = el.localName + cls;
-    return owner && owner !== el.localName ? owner + '>' + self : self;
-  }
-
-  _observeCards() {
-    if (!this._ro) {
-      this._ro = new ResizeObserver((ents) => {
-        ents.forEach((en) => {
-          const rec = this._sizes.get(en.target);
-          if (!rec) return;
-          const h = Math.round(en.contentRect.height);
-          if (rec.h === null) {
-            rec.h = h;
-            return;
-          }
-          const d = h - rec.h;
-          rec.h = h;
-          if (Math.abs(d) < 2) return;
-          rec.n++;
-          rec.last = d;
-          if (Date.now() - this._touch < 500) rec.scroll++;
-          // lo scrollHeight letto QUI cattura anche i restringimenti che durano
-          // meno di un campionamento: e' il punto in cui il salto si decide
-          this._recent.push({ t: Date.now(), label: rec.label, d: d, sh: this._sc ? this._sc.scrollHeight : 0 });
-          if (this._recent.length > 120) this._recent.shift();
-        });
-      });
-    }
-    const root = this._sc && this._sc.nodeType === 1 ? this._sc : document.body;
-    // tetto agli osservati: la sonda non deve pesare piu' della dashboard
-    if (this._sizes.size > 700) return;
-    this._deep(root, '*').forEach((el) => {
-      if (this._sizes.has(el)) return;
-      // solo i blocchi abbastanza alti da poter spostare lo scroll
-      let h = 0;
-      try {
-        h = el.offsetHeight || 0;
-      } catch (e) {
-        h = 0;
-      }
-      if (h < 30) return;
-      this._sizes.set(el, { label: this._label(el), h: null, n: 0, last: 0, scroll: 0 });
-      this._ro.observe(el);
-    });
-  }
-
-  _paint() {
-    if (!this._out) return;
-    const cur = this._read();
-    const ev = this._ev
-      .map(
-        (e) =>
-          '<tr><td>' + e.t + 's</td><td class="' + (e.kind === 'J' ? 'j' : e.kind === 'C' ? 'c' : 'h') + '">' +
-          (e.kind === 'J' ? 'SALTO' : e.kind === 'C' ? 'CHIAMATA' : 'altezza') + '</td><td>' + e.txt + '</td></tr>'
-      )
-      .join('');
-    const cards = Array.from(this._sizes.values())
-      .filter((r) => r.n > 0)
-      .sort((a, b) => b.n - a.n)
-      .slice(0, 14)
-      .map((r) => '<tr><td>' + r.label + '</td><td>' + r.n + '</td><td>' + r.scroll + '</td><td>' + (r.last > 0 ? '+' : '') + r.last + '</td></tr>')
-      .join('');
-    const scName = this._sc
-      ? this._sc.localName + (this._sc.className ? '.' + String(this._sc.className).split(' ')[0] : '')
-      : '?';
-    this._out.innerHTML =
-      '<div class="pr-t">Sonda scroll</div>' +
-      '<div class="pr-n">scroller <b>' + scName + '</b> · top <b>' + cur.top + '</b> · contenuto <b>' + cur.sh +
-      '</b> · finestra <b>' + cur.ch + '</b> · card viste <b>' + this._sizes.size + '</b></div>' +
-      (ev
-        ? '<table><thead><tr><th>t</th><th>ev</th><th>cosa</th></tr></thead><tbody>' + ev + '</tbody></table>'
-        : '<div class="pr-n">Nessun evento ancora. Scorri fino in fondo e aspetta il salto.</div>') +
-      (cards
-        ? '<div class="pr-t2">Card che cambiano altezza</div><table><thead><tr><th>card</th><th>cambi</th><th>in scroll</th><th>ultimo</th></tr></thead><tbody>' + cards + '</tbody></table>'
-        : '');
-  }
-
-  _style() {
-    if (this.querySelector('style')) return;
-    const s = document.createElement('style');
-    s.textContent =
-      '.pr{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.1));' +
-      'border-radius:14px;padding:12px 14px;font-size:12px;color:var(--primary-text-color,#111);}' +
-      '.pr-t{font-weight:600;margin-bottom:6px;} .pr-t2{font-weight:600;margin:10px 0 4px;}' +
-      '.pr table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;margin-top:6px;}' +
-      '.pr th{text-align:left;font-weight:500;color:var(--secondary-text-color,#6b7280);border-bottom:1px solid var(--divider-color,rgba(0,0,0,.1));padding:3px 4px;}' +
-      '.pr td{padding:3px 4px;border-bottom:1px solid var(--divider-color,rgba(0,0,0,.06));vertical-align:top;}' +
-      '.pr td.j{color:#C2410C;font-weight:600;} .pr td.h{color:#0E7490;} .pr td.c{color:#6D28D9;font-weight:600;}' +
-      '.pr td:last-child{word-break:break-word;font-size:11px;}' +
-      '.pr-n{color:var(--secondary-text-color,#6b7280);line-height:1.45;}';
-    this.insertBefore(s, this.firstChild);
-  }
-}
-
-customElements.define('casa-mgdd-probe-card', CasaMgddProbeCard);
-window.customCards.push({
-  type: 'casa-mgdd-probe-card',
-  name: 'Sonda scroll (diagnostica)',
-  description: 'Temporanea: registra quando il contenuto si accorcia e quando lo scroll viene spostato via codice.',
 });
