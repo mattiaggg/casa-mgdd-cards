@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.41.1
+ * Version: 1.42.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2298,21 +2298,23 @@ class EnergyPowerCard extends HTMLElement {
       '.ov-hero{font-size:46px;font-weight:670;letter-spacing:-2.4px;line-height:1;color:var(--primary-text-color,#10131a);font-variant-numeric:tabular-nums;display:flex;align-items:baseline;}' +
       '.ov-u{font-size:16px;font-weight:550;letter-spacing:0;color:var(--secondary-text-color,#6b7280);margin-left:5px;}' +
       '.ov-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--divider-color,rgba(0,0,0,.08));border-radius:14px;overflow:hidden;margin-top:12px;}' +
-      '.ov-c{background:var(--ha-card-background,var(--card-background-color,#fff));padding:11px 12px 12px;}' +
-      '.ov-l{font-size:11px;color:var(--secondary-text-color,#6b7280);}' +
-      '.ov-v{font-size:21px;font-weight:660;letter-spacing:-.7px;margin-top:5px;color:var(--primary-text-color,#10131a);font-variant-numeric:tabular-nums;}' +
-      '.ov-vu{font-size:12px;font-weight:500;color:var(--secondary-text-color,#6b7280);letter-spacing:0;}' +
+      // le tre celle sono incolonnate e centrate: la pillola di confronto sta SOTTO
+      // il valore, non di fianco, cosi' "Fine mese" non ha bisogno di una riga sua
+      '.ov-c{background:var(--ha-card-background,var(--card-background-color,#fff));padding:11px 6px 12px;text-align:center;}' +
+      '.ov-l{font-size:10.5px;letter-spacing:.2px;color:var(--secondary-text-color,#6b7280);}' +
+      '.ov-v{font-size:20px;font-weight:660;letter-spacing:-.6px;margin-top:3px;color:var(--primary-text-color,#10131a);font-variant-numeric:tabular-nums;}' +
+      '.ov-vu{font-size:11px;font-weight:500;color:var(--secondary-text-color,#6b7280);letter-spacing:0;}' +
       '.ov-est,.ov-est .ov-vu{color:var(--secondary-text-color,#6b7280);}' +
-      '.ov-d{display:flex;align-items:center;flex-wrap:wrap;gap:2px 6px;min-height:20px;font-size:12px;color:var(--secondary-text-color,#6b7280);}' +
-      '.ov-cap{font-size:10px;color:var(--secondary-text-color,#6b7280);margin-top:7px;}' +
+      '.ov-d{display:block;min-height:20px;font-size:12px;color:var(--secondary-text-color,#6b7280);}' +
+      '.ov-cap{display:block;font-size:9.5px;color:var(--secondary-text-color,#6b7280);margin-top:5px;}' +
       '.ovc .hero-spark{margin-top:4px;}' +
       '.ovc .hero-spark svg{height:66px;}' +
       // sotto i 400px di CARD si stringono i caratteri e le spaziature, ma le tre
       // colonne restano: e' l'informazione che serve, spezzarla peggiora la lettura
       '@container (max-width:400px){.ovc .ov-hero{font-size:38px;letter-spacing:-1.8px;}' +
-      '.ovc .ov-c{padding:9px 8px 10px;}.ovc .ov-l{font-size:10px;}' +
-      '.ovc .ov-v{font-size:17px;letter-spacing:-.5px;}.ovc .ov-vu{font-size:10px;}' +
-      '.ovc .pill{font-size:10px;padding:2px 7px;margin-top:6px;}.ovc .ov-cap{font-size:9px;margin-top:5px;}}' +
+      '.ovc .ov-c{padding:10px 5px 11px;}.ovc .ov-l{font-size:10px;}' +
+      '.ovc .ov-v{font-size:19px;letter-spacing:-.5px;}.ovc .ov-vu{font-size:10.5px;}' +
+      '.ovc .pill{font-size:10.5px;padding:2px 7px;margin-top:7px;}.ovc .ov-cap{font-size:9.5px;margin-top:5px;}}' +
       // solo quando davvero non ci stanno (card sotto i 290px) si passa a 2 + 1
       '@container (max-width:290px){.ovc .ov-row{grid-template-columns:1fr 1fr;}.ovc .ov-c:last-child{grid-column:span 2;}}' +
       '.pill-cap{font-size:10px;color:var(--secondary-text-color,#6b6f76);margin-top:5px;}' +
