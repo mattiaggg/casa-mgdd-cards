@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.51.0
+ * Version: 1.52.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3482,10 +3482,16 @@ class EnergyFlowCard extends HTMLElement {
       const sv = el.querySelector('.ef-edge'), rc = sv && sv.querySelector('rect');
       if (rc && r.width) {
         const w = r.width + 2, h = r.height + 2;
+        // width/height espliciti: senza questi il box dell'svg (elemento rimpiazzato con
+        // aspect ratio intrinseco) non coincide col viewBox e ogni motore lo risolve a
+        // modo suo, scalando tracciato e rx. Su WebKit il bordo finiva fuori dalla card.
+        sv.setAttribute('width', w); sv.setAttribute('height', h);
         sv.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
         rc.setAttribute('x', 1.2); rc.setAttribute('y', 1.2);
         rc.setAttribute('width', w - 2.4); rc.setAttribute('height', h - 2.4);
-        rc.setAttribute('rx', this._mobile ? 13 : 16); // pari al border-radius del nodo
+        // raggio letto dal nodo invece che duplicato qui: se il tema cambia il
+        // border-radius il tracciato lo segue
+        rc.setAttribute('rx', parseFloat(getComputedStyle(el).borderTopLeftRadius) || (this._mobile ? 13 : 16));
       }
     });
     this._nrects = R;
@@ -3747,7 +3753,7 @@ class EnergyFlowCard extends HTMLElement {
       '0%{background:color-mix(in srgb,var(--ef-hit,var(--c)) 42%,transparent);}' +
       '100%{background:color-mix(in srgb,var(--c) 18%,transparent);}}' +
       // arrival: edge -> un segmento di luce percorre una volta il bordo del nodo
-      '.ef-edge{position:absolute;inset:-1px;pointer-events:none;opacity:0;}' +
+      '.ef-edge{position:absolute;left:-1px;top:-1px;pointer-events:none;opacity:0;}' +
       '.ef-edge rect{fill:none;stroke:var(--ef-hit,var(--c));stroke-width:2.4;stroke-linecap:round;' +
       'stroke-dasharray:16 84;stroke-dashoffset:0;}' +
       '.ef-nd.ef-hit-edge .ef-edge{animation:efEdgeFade .72s linear;}' +
