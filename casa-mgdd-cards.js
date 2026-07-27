@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.50.0
+ * Version: 1.51.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1535,6 +1535,36 @@ class EnergyPowerCard extends HTMLElement {
       } catch (e) {
         /* comparison optional, ignore errors */
       }
+      // Oggi e Mese dal solo contatore cumulativo, quando non sono indicate entita'
+      // dedicate: un contatore cumulativo le contiene entrambe. Qui si memorizza la
+      // parte gia' compilata dalle statistiche e il valore del contatore a quel
+      // confine; il resto lo calcola _renderOverview leggendo il valore live, cosi' i
+      // due numeri non aspettano ne' questo fetch (5 min) ne' la compilazione oraria.
+      if (statsEntity && (!this.config.energy_day_entity || !this.config.energy_month_entity)) {
+        try {
+          const mStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1);
+          const respD = await this._hass.callWS({
+            type: 'recorder/statistics_during_period',
+            start_time: mStart.toISOString(),
+            end_time: nowD.toISOString(),
+            statistic_ids: [statsEntity],
+            period: 'day',
+            types: ['change', 'state'],
+          });
+          const rows = (respD && respD[statsEntity]) || [];
+          if (rows.length) {
+            const dayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate()).getTime();
+            const todayRow = rows.find((r) => new Date(r.start).getTime() === dayStart);
+            this._mtd = {
+              month: rows.reduce((s, r) => s + (r.change || 0), 0),
+              day: todayRow ? todayRow.change || 0 : 0,
+              upTo: parseFloat(rows[rows.length - 1].state),
+            };
+          }
+        } catch (e) {
+          /* senza recorder i riquadri restano a "—": nessun valore inventato */
+        }
+      }
     }
     this._render();
   }
@@ -2189,8 +2219,17 @@ class EnergyPowerCard extends HTMLElement {
 
   _renderOverview() {
     const power = this._pw(this.config.power_entity);
-    const day = this._num(this.config.energy_day_entity);
-    const month = this._num(this.config.energy_month_entity);
+    let day = this._num(this.config.energy_day_entity);
+    let month = this._num(this.config.energy_month_entity);
+    // senza entita' dedicate: parte compilata dalle statistiche + delta live del
+    // contatore cumulativo. Lo stesso delta vale per entrambi, perche' l'ora non ancora
+    // compilata cade sia dentro oggi sia dentro il mese.
+    if (this._mtd && (!this.config.energy_day_entity || !this.config.energy_month_entity)) {
+      const cum = this._num(this.config.total_energy_entity || this.config.energy_day_entity);
+      const live = cum !== null && isFinite(this._mtd.upTo) && cum > this._mtd.upTo ? cum - this._mtd.upTo : 0;
+      if (!this.config.energy_day_entity) day = this._mtd.day + live;
+      if (!this.config.energy_month_entity) month = this._mtd.month + live;
+    }
 
     const trendHtml = this._trendArea
       ? '<div class="hero-spark">' + this._trendArea + '</div>'
