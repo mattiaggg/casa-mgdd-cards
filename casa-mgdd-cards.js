@@ -3,9 +3,9 @@
  * Libreria unica di card custom per la dashboard Home Assistant.
  * Contiene: temperature-bento-card, temperature-row-card, weather-alert-card,
  * energy-power-card, energy-controls-card, energy-history-card,
- * energy-monthly-card.
+ * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.44.0
+ * Version: 1.45.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3674,4 +3674,787 @@ window.customCards.push({
   type: 'energy-flow-card',
   name: 'Energy Flusso',
   description: 'Flusso energia Rete/Solare/Batteria/Casa con linee neon animate. Config via YAML.',
+});
+
+// ===== doors-card.js =====
+// Quadro "Porte e finestre" della vista Doors: stato di tutte le aperture a
+// colpo d'occhio con l'orario dell'ultimo evento, cronologia della porta
+// d'ingresso, tapparelle, perdite acqua, presenze e qualita' dell'aria.
+//
+// Gli orari NON vengono da `last_changed`: dopo ogni riavvio di Home Assistant
+// tutte le entita' passano per unavailable/unknown e `last_changed` diventa
+// l'ora del riavvio. Si legge quindi la cronologia dal recorder e si scartano
+// gli stati non validi, ricucendo i tratti uguali: cosi' "chiusa alle 08:27"
+// resta 08:27 anche dopo un riavvio delle 09:35.
+class DoorsCard extends HTMLElement {
+  setConfig(config) {
+    if (!config || !Array.isArray(config.openings)) {
+      throw new Error('Config "openings" mancante o non valida');
+    }
+    this.config = config;
+    this._lastSig = null;
+    this._hist = {}; // entity_id -> [{state, ts}] transizioni reali, dalla piu' vecchia
+    this._pm = {}; // entity_id -> {mean:[], max:[], min:[]}
+    this._histAt = 0;
+    this._statAt = 0;
+    if (!this._uid) {
+      DoorsCard._seq = (DoorsCard._seq || 0) + 1;
+      this._uid = DoorsCard._seq;
+    }
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const sig = mgddStatesSig(hass, this._allIds());
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
+    this._maybeFetchHistory();
+    this._maybeFetchStats();
+  }
+
+  getCardSize() {
+    return 14;
+  }
+
+  _allIds() {
+    const c = this.config || {};
+    const ids = [];
+    (c.openings || []).forEach((o) => o.entity && ids.push(o.entity));
+    (c.covers || []).forEach((o) => o.entity && ids.push(o.entity));
+    (c.water || []).forEach((o) => o.entity && ids.push(o.entity));
+    (c.presence || []).forEach((o) => o.entity && ids.push(o.entity));
+    (c.air || []).forEach((a) => {
+      if (a.entity) ids.push(a.entity);
+      if (a.pm) ids.push(a.pm);
+    });
+    if (c.entrance) {
+      if (c.entrance.lock) ids.push(c.entrance.lock);
+      if (c.entrance.battery) ids.push(c.entrance.battery);
+    }
+    return ids;
+  }
+
+  // ---------- cronologia ----------
+
+  _historyIds() {
+    const ids = (this.config.openings || []).map((o) => o.entity).filter(Boolean);
+    const en = this.config.entrance;
+    if (en && en.entity && ids.indexOf(en.entity) < 0) ids.push(en.entity);
+    return ids;
+  }
+
+  async _maybeFetchHistory() {
+    const now = Date.now();
+    if (this._histAt && now - this._histAt < 2 * 60 * 1000) return;
+    this._histAt = now;
+    if (!this._hass) return;
+    const ids = this._historyIds();
+    if (!ids.length) return;
+    const hours = this.config.history_hours || 48;
+    const start = new Date(now - hours * 3600 * 1000).toISOString();
+    try {
+      const path = 'history/period/' + start + '?filter_entity_id=' + ids.join(',') + '&minimal_response';
+      const data = await this._hass.callApi('GET', path);
+      const out = {};
+      (data || []).forEach((arr) => {
+        if (!arr || !arr.length) return;
+        const id = arr[0].entity_id;
+        if (!id) return;
+        const ev = [];
+        arr.forEach((s) => {
+          if (s.state === 'unavailable' || s.state === 'unknown' || s.state === 'None') return;
+          const ts = new Date(s.last_changed || s.last_updated).getTime();
+          if (!ts) return;
+          // Tratti uguali consecutivi vengono ricuciti: si tiene il timestamp
+          // piu' VECCHIO del tratto, cioe' il cambio di stato vero.
+          if (!ev.length || ev[ev.length - 1].state !== s.state) ev.push({ state: s.state, ts: ts });
+        });
+        out[id] = ev;
+      });
+      this._hist = out;
+      this._render();
+    } catch (e) {
+      /* recorder non disponibile: si mostra comunque lo stato corrente */
+    }
+  }
+
+  async _maybeFetchStats() {
+    const now = Date.now();
+    if (this._statAt && now - this._statAt < 5 * 60 * 1000) return;
+    this._statAt = now;
+    const ids = (this.config.air || []).map((a) => a.pm).filter(Boolean);
+    if (!ids.length || !this._hass || !this._hass.callWS) return;
+    const req = {
+      type: 'recorder/statistics_during_period',
+      start_time: new Date(now - 24 * 3600 * 1000).toISOString(),
+      statistic_ids: ids,
+      period: 'hour',
+      types: ['mean', 'max', 'min'],
+    };
+    let res = null;
+    try {
+      res = await this._hass.callWS(req);
+    } catch (e) {
+      delete req.types; // versioni piu' vecchie non accettano `types`
+      try {
+        res = await this._hass.callWS(req);
+      } catch (e2) {
+        res = null;
+      }
+    }
+    if (!res) return;
+    const out = {};
+    ids.forEach((id) => {
+      const rows = res[id];
+      if (!rows || !rows.length) return;
+      out[id] = {
+        mean: rows.map((r) => (r.mean == null ? 0 : r.mean)),
+        max: rows.map((r) => (r.max == null ? r.mean || 0 : r.max)),
+        min: rows.map((r) => (r.min == null ? r.mean || 0 : r.min)),
+      };
+    });
+    this._pm = out;
+    this._render();
+  }
+
+  // ---------- helper stato ----------
+
+  _st(entity) {
+    return (this._hass && this._hass.states[entity]) || null;
+  }
+
+  _isOpen(o) {
+    const s = this._st(o.entity);
+    if (!s) return null;
+    if (o.entity.indexOf('lock.') === 0) return s.state === 'unlocked';
+    return s.state === 'on';
+  }
+
+  _labels(o) {
+    if (o.open_label || o.closed_label) return [o.open_label || 'Aperto', o.closed_label || 'Chiuso'];
+    if (o.entity && o.entity.indexOf('lock.') === 0) return ['Sbloccato', 'Bloccato'];
+    if (o.icon === 'garage') return ['Aperto', 'Chiuso'];
+    return ['Aperta', 'Chiusa'];
+  }
+
+  // Ultimo cambio di stato reale (dal recorder). null se nella finestra
+  // osservata l'entita' non si e' mai mossa.
+  _lastEvent(entity) {
+    const ev = this._hist[entity];
+    if (!ev || ev.length < 2) return null; // il primo elemento e' solo lo stato a inizio finestra
+    return ev[ev.length - 1];
+  }
+
+  _pad(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  _hhmm(ts) {
+    const d = new Date(ts);
+    return this._pad(d.getHours()) + ':' + this._pad(d.getMinutes());
+  }
+
+  _hhmmss(ts) {
+    const d = new Date(ts);
+    return this._pad(d.getHours()) + ':' + this._pad(d.getMinutes()) + ':' + this._pad(d.getSeconds());
+  }
+
+  _sameDay(ts, offset) {
+    const a = new Date(ts);
+    const b = new Date();
+    b.setDate(b.getDate() - (offset || 0));
+    return a.getDate() === b.getDate() && a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
+  }
+
+  _when(ts) {
+    if (this._sameDay(ts, 0)) return this._hhmm(ts);
+    if (this._sameDay(ts, 1)) return 'ieri ' + this._hhmm(ts);
+    const d = new Date(ts);
+    return this._pad(d.getDate()) + '/' + this._pad(d.getMonth() + 1) + ' ' + this._hhmm(ts);
+  }
+
+  _dur(ms) {
+    if (ms < 0) ms = 0;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + ' s';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + ' m';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ' + this._pad(m % 60) + 'm';
+    return Math.floor(h / 24) + ' gg';
+  }
+
+  // Testo dell'orario mostrato nel riquadro dell'apertura.
+  _stamp(o, open) {
+    const ev = this._lastEvent(o.entity);
+    if (!ev) {
+      const hours = this.config.history_hours || 48;
+      return '> ' + (hours >= 48 ? Math.floor(hours / 24) + ' gg' : hours + ' h');
+    }
+    if (open) return this._when(ev.ts) + ' · ' + this._dur(Date.now() - ev.ts);
+    return this._when(ev.ts);
+  }
+
+  // ---------- icone ----------
+
+  _di(kind, size) {
+    const P = {
+      door: 'M3 21h18M6 21V3.6a.6.6 0 0 1 .6-.6h10.8a.6.6 0 0 1 .6.6V21M14.2 12.2h.01',
+      window: 'M4 4h16v16H4zM12 4v16M4 12h16',
+      lock: 'M5 11h14v10H5zM8.5 11V7a3.5 3.5 0 0 1 7 0v4',
+      garage: 'M3 21V9.5L12 4l9 5.5V21M7 21v-7h10v7M7 17.2h10',
+      shutter: 'M3 4h18M3 4v14.5a1.5 1.5 0 0 0 1.5 1.5h15a1.5 1.5 0 0 0 1.5-1.5V4M3 9h18M3 14h18',
+      water: 'M12 3.2s6 6.6 6 10a6 6 0 0 1-12 0c0-3.4 6-10 6-10z',
+      presence: 'M12 11.2a3.1 3.1 0 1 0 0-6.2 3.1 3.1 0 0 0 0 6.2zM5 20.5a7 7 0 0 1 14 0',
+      air: 'M3 8h11a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h9',
+      up: 'M12 19V5M5.5 11.5 12 5l6.5 6.5',
+      down: 'M12 5v14M18.5 12.5 12 19l-6.5-6.5',
+      stop: 'M7.5 7.5h9v9h-9z',
+      key: 'M20 4l-8.5 8.5M17 7l2 2M14.5 9.5 16 11M9.5 10.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z',
+      bell: 'M18 8.5a6 6 0 1 0-12 0c0 6.5-2.5 7.5-2.5 7.5h17S18 15 18 8.5M13.8 20a2 2 0 0 1-3.6 0',
+      alert: 'M12 9v4.5M12 17.2h.01M10.4 4 2.3 17.8A1.8 1.8 0 0 0 3.9 20.5h16.2a1.8 1.8 0 0 0 1.6-2.7L13.6 4a1.8 1.8 0 0 0-3.2 0z',
+      shield: 'M12 3 5 6v5.5c0 4.4 3 8.1 7 9.5 4-1.4 7-5.1 7-9.5V6l-7-3zM9 12l2 2 4-4',
+    };
+    const d = P[kind] || P.door;
+    return (
+      '<svg viewBox="0 0 24 24" width="' + size + '" height="' + size + '" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="' + d + '"/></svg>'
+    );
+  }
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  // ---------- grafici PM2.5 ----------
+
+  _band(v) {
+    if (v <= 5) return '#22B573';
+    if (v <= 15) return '#8CC63F';
+    if (v <= 35) return '#E8A33D';
+    return '#DC4B48';
+  }
+
+  _chart(id, W, H) {
+    const d = this._pm[id];
+    if (!d || !d.mean || d.mean.length < 2) {
+      return '<div class="dr-chempty" style="height:' + H + 'px">dati non ancora disponibili</div>';
+    }
+    const style = this.config.air_chart || 'bars';
+    if (style === 'strip') return this._chartStrip(d, W, 16);
+    if (style === 'band') return this._chartBand(d, W, H);
+    return this._chartBars(d, W, H);
+  }
+
+  _chartBars(d, W, H) {
+    const n = d.mean.length;
+    const step = W / n;
+    const pad = 5;
+    let top = 6;
+    d.mean.forEach((v) => {
+      if (v * 1.35 > top) top = v * 1.35;
+    });
+    let s = '';
+    d.mean.forEach((v, i) => {
+      const h = Math.max(2.5, (H - pad * 2) * (v / top));
+      const bw = step * 0.62;
+      s +=
+        '<rect x="' + (i * step + (step - bw) / 2).toFixed(1) + '" y="' + (H - pad - h).toFixed(1) +
+        '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="1.6" fill="' + this._band(v) + '"/>';
+    });
+    s +=
+      '<line x1="0" y1="' + (H - pad) + '" x2="' + W + '" y2="' + (H - pad) +
+      '" stroke="currentColor" stroke-opacity=".16" stroke-width="1"/>';
+    return '<svg class="dr-ch" viewBox="0 0 ' + W + ' ' + H + '" style="height:' + H + 'px">' + s + '</svg>';
+  }
+
+  _chartBand(d, W, H) {
+    const n = d.mean.length;
+    const step = W / (n - 1);
+    const pad = 5;
+    let top = 6;
+    d.max.forEach((v) => {
+      if (v * 1.12 > top) top = v * 1.12;
+    });
+    const y = (v) => pad + (H - pad * 2) * (1 - v / top);
+    let up = '';
+    let dn = '';
+    d.max.forEach((v, i) => {
+      up += (i ? 'L' : 'M') + (i * step).toFixed(1) + ' ' + y(v).toFixed(1) + ' ';
+    });
+    for (let i = n - 1; i >= 0; i--) dn += 'L' + (i * step).toFixed(1) + ' ' + y(d.min[i]).toFixed(1) + ' ';
+    let ln = '';
+    d.mean.forEach((v, i) => {
+      ln += (i ? 'L' : 'M') + (i * step).toFixed(1) + ' ' + y(v).toFixed(1) + ' ';
+    });
+    const c = 'var(--dr-air)';
+    return (
+      '<svg class="dr-ch" viewBox="0 0 ' + W + ' ' + H + '" style="height:' + H + 'px">' +
+      '<path d="' + up + dn + 'Z" fill="' + c + '" opacity=".17"/>' +
+      '<path d="' + up + '" fill="none" stroke="' + c + '" stroke-opacity=".45" stroke-width="1"/>' +
+      '<path d="' + ln + '" fill="none" stroke="' + c + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '<circle cx="' + ((n - 1) * step).toFixed(1) + '" cy="' + y(d.mean[n - 1]).toFixed(1) + '" r="2.9" fill="' + c + '"/>' +
+      '<line x1="0" y1="' + (H - pad) + '" x2="' + W + '" y2="' + (H - pad) + '" stroke="' + c + '" stroke-opacity=".2" stroke-width="1"/>' +
+      '</svg>'
+    );
+  }
+
+  _chartStrip(d, W, H) {
+    const n = d.mean.length;
+    const step = W / n;
+    let s = '';
+    d.mean.forEach((v, i) => {
+      s +=
+        '<rect x="' + (i * step + 0.8).toFixed(1) + '" y="0" width="' + (step - 1.6).toFixed(1) +
+        '" height="' + H + '" rx="2.5" fill="' + this._band(v) + '"/>';
+    });
+    return '<svg class="dr-ch" viewBox="0 0 ' + W + ' ' + H + '" style="height:' + H + 'px">' + s + '</svg>';
+  }
+
+  // ---------- markup ----------
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+  }
+
+  _html() {
+    const c = this.config;
+    const ops = c.openings || [];
+    const open = [];
+    const closed = [];
+    ops.forEach((o) => {
+      const isOpen = this._isOpen(o);
+      const item = { o: o, open: !!isOpen, miss: isOpen === null };
+      if (isOpen) open.push(item);
+      else closed.push(item);
+    });
+    const ordered = open.concat(closed);
+
+    // ---- intestazione
+    const total = ops.length;
+    const nClosed = total - open.length;
+    let sub;
+    if (!open.length) sub = 'Tutte le aperture risultano chiuse';
+    else {
+      const f = open[0];
+      const ev = this._lastEvent(f.o.entity);
+      sub = f.o.name + (ev ? ' aperto dalle ' + this._hhmm(ev.ts) : ' aperto');
+      if (open.length > 1) sub += ' · altre ' + (open.length - 1) + ' aperte';
+    }
+    sub += ' · aggiornato ' + this._hhmm(Date.now());
+
+    const qa = (c.actions || [])
+      .map(
+        (a) =>
+          '<button class="dr-qb' + (a.primary ? ' dr-pri' : '') + '" data-script="' + (a.script || '') +
+          '" title="' + (a.name || '') + '">' + this._di(a.icon || 'key', 18) +
+          '<span>' + (a.name || '') + '</span></button>'
+      )
+      .join('');
+
+    // ---- status board (desktop) + lista (mobile)
+    const tiles = ordered
+      .map((it) => {
+        const l = this._labels(it.o);
+        const lab = it.miss ? 'Non disp.' : it.open ? l[0] : l[1];
+        return (
+          '<div class="dr-t' + (it.open ? ' dr-op' : '') + (it.miss ? ' dr-na' : '') +
+          '" data-more="' + it.o.entity + '">' +
+          '<span class="dr-ti">' + this._di(it.o.icon || 'door', 18) + '</span>' +
+          '<span class="dr-tn">' + it.o.name + '</span>' +
+          '<span class="dr-ts">' + lab + '</span>' +
+          '<span class="dr-tm">' + (it.miss ? '—' : this._stamp(it.o, it.open)) + '</span></div>'
+        );
+      })
+      .join('');
+
+    const rowOf = (it) => {
+      const l = this._labels(it.o);
+      const ev = this._lastEvent(it.o.entity);
+      const lab = it.miss ? 'Non disponibile' : it.open ? l[0] + (ev ? ' da ' + this._dur(Date.now() - ev.ts) : '') : l[1];
+      return (
+        '<div class="dr-r' + (it.open ? ' dr-op' : '') + '" data-more="' + it.o.entity + '">' +
+        '<span class="dr-ri">' + this._di(it.o.icon || 'door', 18) + '</span>' +
+        '<span class="dr-rn"><b>' + it.o.name + '</b><i>' + lab + '</i></span>' +
+        '<span class="dr-rt">' + (it.miss ? '—' : this._stamp(it.o, false)) + '</span></div>'
+      );
+    };
+    const list =
+      open.map(rowOf).join('') +
+      (closed.length ? '<div class="dr-card dr-mt">' + closed.map(rowOf).join('') + '</div>' : '');
+
+    // ---- pannelli
+    return (
+      '<div class="dr-shell' + (this._isDark() ? ' dr-dark' : '') + '">' +
+      '<div class="dr-hd"><span class="dr-hdi">' + this._di('shield', 20) + '</span>' +
+      '<div class="dr-hdx"><div class="dr-hdt">' + nClosed + ' su ' + total + ' chiuse</div>' +
+      '<div class="dr-hds">' + sub + '</div></div>' +
+      '<div class="dr-qa">' + qa + '</div></div>' +
+      '<div class="dr-grid">' + tiles + '</div>' +
+      '<div class="dr-list">' + list + '</div>' +
+      '<div class="dr-pg">' +
+      this._panelEntrance() +
+      this._panelAir() +
+      this._panelCovers() +
+      this._panelBin(c.water, 'Perdite acqua', 'Asciutto', 'BAGNATO') +
+      this._panelBin(c.presence, 'Presenze', 'Assente', 'PRESENTE') +
+      '</div></div>'
+    );
+  }
+
+  _panelEntrance() {
+    const en = this.config.entrance;
+    if (!en || !en.entity) return '';
+    const ev = this._hist[en.entity] || [];
+    const now = Date.now();
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    let todayOpens = 0;
+    ev.forEach((e, i) => {
+      if (e.state === 'on' && e.ts >= midnight.getTime() && i > 0) todayOpens++;
+    });
+    const lock = en.lock ? this._st(en.lock) : null;
+    const batt = en.battery ? this._st(en.battery) : null;
+    const cur = this._st(en.entity);
+    const isOpen = cur && cur.state === 'on';
+    const last = this._lastEvent(en.entity);
+
+    const rows = [];
+    for (let i = ev.length - 1; i >= 1 && rows.length < 6; i--) {
+      const e = ev[i];
+      const opened = e.state === 'on';
+      const end = i + 1 < ev.length ? ev[i + 1].ts : now;
+      rows.push(
+        '<div class="dr-ln"><span class="dr-d' + (opened ? ' dr-w' : ' dr-n') + '"></span>' +
+        '<span>' + (opened ? 'Aperto · ' + this._dur(end - e.ts) : 'Chiuso') + '</span>' +
+        '<u' + (opened ? ' class="dr-w"' : '') + '>' + this._hhmmss(e.ts) + '</u></div>'
+      );
+    }
+    if (!rows.length) rows.push('<div class="dr-ln"><span class="dr-d dr-n"></span><span>Nessun movimento</span><u>—</u></div>');
+
+    const meta = [];
+    if (last) meta.push('Ultima ' + (isOpen ? 'apertura' : 'chiusura') + ' ' + this._hhmmss(last.ts) + ' · ' + this._dur(now - last.ts) + ' fa');
+    if (batt && !isNaN(parseFloat(batt.state))) meta.push('batteria ' + Math.round(parseFloat(batt.state)) + '%');
+
+    return (
+      '<div class="dr-pn dr-w2"><div class="dr-lab">' + (en.name || 'Porta ingresso') +
+      ' <b>' + todayOpens + (todayOpens === 1 ? ' APERTURA OGGI' : ' APERTURE OGGI') + '</b></div>' +
+      '<div class="dr-encols">' +
+      '<div><div class="dr-val" data-more="' + en.entity + '">' + (isOpen ? 'Aperta' : 'Chiusa') +
+      (lock ? '<small>' + (lock.state === 'locked' ? 'bloccata' : 'sbloccata') + '</small>' : '') + '</div>' +
+      '<div class="dr-enmeta">' + meta.join('<br>') + '</div></div>' +
+      '<div>' + rows.join('') + '</div></div></div>'
+    );
+  }
+
+  _panelAir() {
+    const air = this.config.air || [];
+    if (!air.length) return '';
+    const style = this.config.air_chart || 'bars';
+    let worst = 0;
+    air.forEach((a) => {
+      const v = parseFloat((this._st(a.pm) || {}).state);
+      if (!isNaN(v) && v > worst) worst = v;
+    });
+    const verdict = worst <= 5 ? 'ECCELLENTE' : worst <= 15 ? 'BUONA' : worst <= 35 ? 'MEDIA' : 'SCADENTE';
+
+    const one = (a) => {
+      const pm = this._st(a.pm);
+      const on = (this._st(a.entity) || {}).state === 'on';
+      const v = pm && !isNaN(parseFloat(pm.state)) ? Math.round(parseFloat(pm.state)) : '--';
+      const d = this._pm[a.pm];
+      let peak = '';
+      if (d && d.max && d.max.length) peak = ' · picco ' + Math.round(Math.max.apply(null, d.max));
+      if (style === 'strip') {
+        return (
+          '<div class="dr-striprow" data-more="' + a.entity + '">' +
+          '<div class="dr-stripv"><div class="dr-big">' + v + '<small>µg/m³</small></div>' +
+          '<div class="dr-stripn">' + a.name + (on ? '' : ' · spento') + '</div></div>' +
+          '<div class="dr-stripc"><div class="dr-cht"><span>ultime 24 h</span><u>' +
+          peak.replace(' · ', '') + '</u></div>' + this._chart(a.pm, 240, 16) +
+          '<div class="dr-chx"><span>-24 h</span><span>-12 h</span><span>ora</span></div></div></div>'
+        );
+      }
+      return (
+        '<div data-more="' + a.entity + '"><div class="dr-cht">' + a.name +
+        ' <u>' + v + ' µg/m³' + peak + '</u></div>' + this._chart(a.pm, 240, 62) +
+        '<div class="dr-chx"><span>-24 h</span><span>-12 h</span><span>ora</span></div></div>'
+      );
+    };
+
+    const legend =
+      style === 'band'
+        ? '<div class="dr-lgd"><span><i class="dr-lg-a"></i>escursione min–max dell\'ora</span>' +
+          '<span><i class="dr-lg-b"></i>media oraria</span></div>'
+        : '<div class="dr-lgd"><span><i style="background:#22B573"></i>0–5 ottimo</span>' +
+          '<span><i style="background:#8CC63F"></i>5–15 buono</span>' +
+          '<span><i style="background:#E8A33D"></i>15–35 medio</span>' +
+          '<span><i style="background:#DC4B48"></i>oltre 35</span></div>';
+
+    return (
+      '<div class="dr-pn dr-w2"><div class="dr-lab">Qualità dell\'aria <b>' + verdict + '</b></div>' +
+      (style === 'strip' ? air.map(one).join('') : '<div class="dr-chw">' + air.map(one).join('') + '</div>') +
+      legend + '</div>'
+    );
+  }
+
+  _panelCovers() {
+    const cv = this.config.covers || [];
+    if (!cv.length) return '';
+    let ok = 0;
+    const items = cv.map((x) => {
+      const s = this._st(x.entity);
+      const avail = !!(s && s.state !== 'unavailable' && s.state !== 'unknown');
+      if (avail) ok++;
+      const pos = avail && s.attributes && s.attributes.current_position != null ? Math.round(s.attributes.current_position) : null;
+      const btns = avail
+        ? '<button class="dr-ar" data-cover="' + x.entity + '" data-act="open" title="Alza">' + this._di('up', 13) + '</button>' +
+          '<button class="dr-ar" data-cover="' + x.entity + '" data-act="stop" title="Ferma">' + this._di('stop', 13) + '</button>' +
+          '<button class="dr-ar" data-cover="' + x.entity + '" data-act="close" title="Abbassa">' + this._di('down', 13) + '</button>'
+        : '<button class="dr-ar" data-more="' + x.entity + '" title="Non disponibile">' + this._di('alert', 13) + '</button>';
+      return (
+        '<div class="dr-sh' + (avail ? '' : ' dr-na') + '"><b data-more="' + x.entity + '">' + x.name + '</b>' +
+        '<em>' + (avail ? (pos == null ? (s.state === 'open' ? 'Aperta' : 'Chiusa') : pos + '%') : 'N/D') + '</em>' +
+        btns + '</div>'
+      );
+    });
+    const half = Math.ceil(items.length / 2);
+    const colA = items.slice(0, half);
+    const colB = items.slice(half);
+    return (
+      '<div class="dr-pn dr-w2"><div class="dr-lab">Tapparelle <span>' + ok + ' / ' + cv.length + ' operative</span></div>' +
+      '<div class="dr-2col"><div>' + colA.join('') + '</div><div>' + colB.join('') + '</div></div></div>'
+    );
+  }
+
+  _panelBin(items, title, okLabel, alarmLabel) {
+    if (!items || !items.length) return '';
+    let alarm = 0;
+    const rows = items
+      .map((x) => {
+        const s = this._st(x.entity);
+        const on = s && s.state === 'on';
+        if (on) alarm++;
+        return (
+          '<div class="dr-ln" data-more="' + x.entity + '"><span class="dr-d' + (on ? ' dr-w' : ' dr-n') + '"></span>' +
+          '<span>' + x.name + '</span><u' + (on ? ' class="dr-w"' : '') + '>' + (on ? alarmLabel : okLabel) + '</u></div>'
+        );
+      })
+      .join('');
+    const badge = alarm ? '<b class="dr-w">' + alarm + ' ATTIVI</b>' : '<b>NESSUNO</b>';
+    return '<div class="dr-pn"><div class="dr-lab">' + title + ' ' + badge + '</div><div class="dr-mt8">' + rows + '</div></div>';
+  }
+
+  // ---------- interazione ----------
+
+  _wire() {
+    this.querySelectorAll('[data-script]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const id = el.getAttribute('data-script');
+        if (id && this._hass) this._hass.callService('script', 'turn_on', { entity_id: id });
+      });
+    });
+    this.querySelectorAll('[data-cover]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const id = el.getAttribute('data-cover');
+        const act = el.getAttribute('data-act');
+        const svc = act === 'open' ? 'open_cover' : act === 'close' ? 'close_cover' : 'stop_cover';
+        if (id && this._hass) this._hass.callService('cover', svc, { entity_id: id });
+      });
+    });
+    this.querySelectorAll('[data-more]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const id = el.getAttribute('data-more');
+        if (!id) return;
+        this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+      });
+    });
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      '.dr-shell{container-type:inline-size;border-radius:16px;padding:16px;' +
+      '--dr-bg:#f3f4f7;--dr-pnl:#fff;--dr-hair:rgba(16,20,28,.09);--dr-t1:#14161a;--dr-t2:#858b95;' +
+      '--dr-t3:#525862;--dr-acc:#0E9B6C;--dr-warn:#C07405;--dr-warn2:#8A5300;--dr-air:#6A57E0;' +
+      '--dr-tile:#fff;--dr-tileb:rgba(16,20,28,.09);--dr-tileh:#fbfbfc;--dr-glow:none;' +
+      '--dr-sh:0 1px 2px rgba(16,20,28,.05),0 6px 18px rgba(16,20,28,.05);--dr-grid:rgba(16,20,28,.028);' +
+      '--dr-op:linear-gradient(150deg,#D68C0C,#A96303);--dr-opsh:0 8px 22px rgba(201,130,13,.24);' +
+      'background:var(--dr-bg);color:var(--dr-t1);border:1px solid rgba(16,20,28,.06);' +
+      'background-image:linear-gradient(var(--dr-grid) 1px,transparent 1px),' +
+      'linear-gradient(90deg,var(--dr-grid) 1px,transparent 1px);background-size:34px 34px;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
+      '.dr-shell.dr-dark{--dr-bg:#07080b;--dr-pnl:#0a0c10;--dr-hair:rgba(255,255,255,.09);' +
+      '--dr-t1:#e4e9ef;--dr-t2:#5d6774;--dr-t3:#98a2ae;--dr-acc:#35E0A1;--dr-warn:#FFB020;' +
+      '--dr-warn2:#FFD48A;--dr-air:#9083FF;--dr-tile:rgba(255,255,255,.035);' +
+      '--dr-tileb:rgba(255,255,255,.09);--dr-tileh:rgba(255,255,255,.065);' +
+      '--dr-glow:0 0 7px currentColor;--dr-sh:none;--dr-grid:rgba(255,255,255,.022);' +
+      '--dr-op:linear-gradient(150deg,#C9820D,#9A5A02);--dr-opsh:0 8px 22px rgba(201,130,13,.30);' +
+      'border-color:transparent;}' +
+      '.dr-shell *{box-sizing:border-box;}' +
+      '.dr-shell svg{display:block;}' +
+      '.dr-shell button{font:inherit;cursor:pointer;}' +
+
+      '.dr-hd{display:flex;align-items:center;gap:13px;flex-wrap:wrap;margin-bottom:14px;}' +
+      '.dr-hdi{width:44px;height:44px;border-radius:14px;flex:none;display:grid;place-items:center;' +
+      'background:color-mix(in srgb,var(--dr-acc) 14%,transparent);color:var(--dr-acc);}' +
+      '.dr-hdx{min-width:0;}' +
+      '.dr-hdt{font-size:16px;font-weight:645;letter-spacing:-.4px;}' +
+      '.dr-hds{font-size:11.5px;color:var(--dr-t2);}' +
+      '.dr-qa{display:grid;grid-template-columns:repeat(5,minmax(78px,1fr));gap:8px;margin-left:auto;}' +
+      '.dr-qb{background:var(--dr-tile);border:1px solid var(--dr-tileb);border-radius:10px;' +
+      'padding:11px 8px;color:var(--dr-t3);display:flex;flex-direction:column;align-items:center;' +
+      'gap:7px;font-size:9.5px;font-weight:650;letter-spacing:.8px;text-transform:uppercase;' +
+      'box-shadow:var(--dr-sh);transition:background .15s,border-color .15s,color .15s;line-height:1.15;' +
+      'text-align:center;}' +
+      '.dr-qb:hover{background:color-mix(in srgb,var(--dr-acc) 10%,var(--dr-tile));' +
+      'border-color:color-mix(in srgb,var(--dr-acc) 42%,transparent);color:var(--dr-acc);}' +
+      '.dr-qb.dr-pri{color:var(--dr-acc);border-color:color-mix(in srgb,var(--dr-acc) 45%,transparent);' +
+      'background:color-mix(in srgb,var(--dr-acc) 9%,var(--dr-tile));}' +
+
+      '.dr-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px;}' +
+      '.dr-t{border-radius:16px;padding:13px 12px 12px;background:var(--dr-tile);' +
+      'border:1px solid var(--dr-tileb);display:flex;flex-direction:column;gap:8px;' +
+      'box-shadow:var(--dr-sh);cursor:pointer;transition:background .15s;}' +
+      '.dr-t:hover{background:var(--dr-tileh);}' +
+      '.dr-ti{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;' +
+      'color:var(--dr-acc);background:color-mix(in srgb,var(--dr-acc) 13%,transparent);}' +
+      '.dr-tn{font-size:11.5px;font-weight:560;color:var(--dr-t1);line-height:1.25;}' +
+      '.dr-ts{font-size:9.5px;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;color:var(--dr-acc);}' +
+      '.dr-tm{font-size:14px;font-weight:620;color:var(--dr-t2);font-variant-numeric:tabular-nums;letter-spacing:-.3px;}' +
+      '.dr-t.dr-op{background:var(--dr-op);border-color:transparent;box-shadow:var(--dr-opsh);}' +
+      '.dr-t.dr-op .dr-ti{background:rgba(255,255,255,.22);color:#fff;}' +
+      '.dr-t.dr-op .dr-tn,.dr-t.dr-op .dr-ts{color:#fff;}' +
+      '.dr-t.dr-op .dr-tm{color:rgba(255,255,255,.88);}' +
+      '.dr-t.dr-na{opacity:.5;}' +
+
+      '.dr-list{display:none;}' +
+      '.dr-card{background:var(--dr-pnl);border:1px solid var(--dr-hair);border-radius:15px;' +
+      'padding:4px 13px;box-shadow:var(--dr-sh);}' +
+      '.dr-mt{margin-top:9px;}' +
+      '.dr-r{display:flex;align-items:center;gap:11px;min-height:52px;padding:7px 0;' +
+      'border-bottom:1px solid var(--dr-hair);cursor:pointer;}' +
+      '.dr-r:last-child{border-bottom:none;}' +
+      '.dr-ri{width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;' +
+      'color:var(--dr-acc);background:color-mix(in srgb,var(--dr-acc) 13%,transparent);}' +
+      '.dr-rn{flex:1;min-width:0;}' +
+      '.dr-rn b{display:block;font-size:13px;font-weight:545;color:var(--dr-t1);' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.dr-rn i{font-style:normal;font-size:10px;font-weight:700;letter-spacing:1px;' +
+      'text-transform:uppercase;color:var(--dr-acc);}' +
+      '.dr-rt{font-size:13.5px;font-weight:620;color:var(--dr-t2);font-variant-numeric:tabular-nums;' +
+      'letter-spacing:-.3px;text-align:right;white-space:nowrap;}' +
+      '.dr-r.dr-op{background:var(--dr-op);border-radius:14px;padding:8px 11px;margin:3px 0;' +
+      'border-bottom:none;box-shadow:var(--dr-opsh);}' +
+      '.dr-r.dr-op .dr-ri{background:rgba(255,255,255,.22);color:#fff;}' +
+      '.dr-r.dr-op .dr-rn b,.dr-r.dr-op .dr-rn i,.dr-r.dr-op .dr-rt{color:#fff;}' +
+
+      '.dr-pg{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin-top:12px;' +
+      'background:var(--dr-hair);border:1px solid var(--dr-hair);border-radius:11px;overflow:hidden;}' +
+      '.dr-pn{background:var(--dr-pnl);padding:14px 15px;}' +
+      '.dr-pn.dr-w2{grid-column:span 2;}' +
+      '.dr-lab{font-size:9.5px;font-weight:700;letter-spacing:1.7px;text-transform:uppercase;' +
+      'color:var(--dr-t2);display:flex;justify-content:space-between;align-items:center;gap:10px;}' +
+      '.dr-lab b{color:var(--dr-acc);font-weight:700;}' +
+      '.dr-lab b.dr-w{color:var(--dr-warn2);}' +
+      '.dr-mt8{margin-top:9px;}' +
+      '.dr-val{font-size:23px;font-weight:400;letter-spacing:-1px;margin-top:8px;color:var(--dr-t1);cursor:pointer;}' +
+      '.dr-val small{font-size:12px;color:var(--dr-t2);letter-spacing:0;margin-left:5px;}' +
+      '.dr-enmeta{font-size:11.5px;color:var(--dr-t2);margin-top:6px;line-height:1.5;}' +
+      '.dr-encols{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1fr);gap:16px;margin-top:10px;}' +
+      '.dr-ln{display:flex;align-items:center;gap:9px;padding:5px 0;font-size:11.5px;' +
+      'border-bottom:1px solid var(--dr-hair);}' +
+      '.dr-ln:last-child{border-bottom:none;}' +
+      '.dr-d{width:5px;height:5px;border-radius:99px;flex:none;background:var(--dr-acc);' +
+      'color:var(--dr-acc);box-shadow:var(--dr-glow);}' +
+      '.dr-d.dr-w{background:var(--dr-warn);color:var(--dr-warn);}' +
+      '.dr-d.dr-n{background:var(--dr-t2);box-shadow:none;opacity:.65;}' +
+      '.dr-ln span:nth-child(2){flex:1;color:var(--dr-t3);min-width:0;white-space:nowrap;' +
+      'overflow:hidden;text-overflow:ellipsis;}' +
+      '.dr-ln u{text-decoration:none;font-size:10.5px;color:var(--dr-t2);letter-spacing:.6px;' +
+      'font-variant-numeric:tabular-nums;text-transform:uppercase;}' +
+      '.dr-ln u.dr-w{color:var(--dr-warn2);}' +
+
+      '.dr-2col{display:grid;grid-template-columns:1fr 1fr;gap:0 18px;margin-top:8px;}' +
+      '.dr-sh{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:11.5px;' +
+      'border-bottom:1px solid var(--dr-hair);}' +
+      '.dr-sh:last-child{border-bottom:none;}' +
+      '.dr-sh.dr-na{opacity:.45;}' +
+      '.dr-sh b{flex:1;font-weight:520;color:var(--dr-t3);min-width:0;cursor:pointer;' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.dr-sh em{font-style:normal;color:var(--dr-acc);font-variant-numeric:tabular-nums;' +
+      'font-size:12px;min-width:36px;text-align:right;font-weight:600;}' +
+      '.dr-ar{width:26px;height:24px;border-radius:6px;border:1px solid var(--dr-tileb);' +
+      'background:none;color:var(--dr-t2);display:grid;place-items:center;flex:none;}' +
+      '.dr-ar:hover{color:var(--dr-acc);border-color:color-mix(in srgb,var(--dr-acc) 42%,transparent);}' +
+
+      '.dr-chw{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px;}' +
+      '.dr-cht{font-size:11px;font-weight:620;color:var(--dr-t3);display:flex;' +
+      'justify-content:space-between;align-items:baseline;margin-bottom:5px;gap:8px;}' +
+      '.dr-cht u{text-decoration:none;font-size:10.5px;color:var(--dr-t2);' +
+      'font-variant-numeric:tabular-nums;white-space:nowrap;}' +
+      '.dr-chx{display:flex;justify-content:space-between;font-size:9.5px;color:var(--dr-t2);' +
+      'margin-top:3px;font-variant-numeric:tabular-nums;}' +
+      '.dr-ch{width:100%;color:var(--dr-t2);}' +
+      '.dr-chempty{display:grid;place-items:center;font-size:10.5px;color:var(--dr-t2);' +
+      'border:1px dashed var(--dr-hair);border-radius:8px;}' +
+      '.dr-lgd{display:flex;gap:13px;flex-wrap:wrap;font-size:10px;color:var(--dr-t2);' +
+      'margin-top:10px;letter-spacing:.2px;}' +
+      '.dr-lgd i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;}' +
+      '.dr-lg-a{background:var(--dr-air);opacity:.35;}.dr-lg-b{background:var(--dr-air);}' +
+      '.dr-striprow{display:flex;align-items:center;gap:14px;margin-top:13px;cursor:pointer;}' +
+      '.dr-stripv{min-width:96px;}' +
+      '.dr-stripc{flex:1;min-width:0;}' +
+      '.dr-stripn{font-size:11px;color:var(--dr-t2);margin-top:3px;}' +
+      '.dr-big{font-size:27px;font-weight:670;letter-spacing:-1.2px;line-height:1;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.dr-big small{font-size:11.5px;font-weight:550;color:var(--dr-t2);letter-spacing:0;margin-left:4px;}' +
+
+      // ---- mobile: lista al posto della griglia, pannelli in colonna
+      '@container (max-width:720px){' +
+      '.dr-shell{padding:12px;}' +
+      '.dr-hd{gap:11px;}' +
+      '.dr-hdt{font-size:19px;letter-spacing:-.6px;}' +
+      '.dr-qa{order:3;width:100%;margin-left:0;display:flex;gap:8px;overflow-x:auto;' +
+      'padding-bottom:3px;scrollbar-width:none;}' +
+      '.dr-qa::-webkit-scrollbar{display:none;}' +
+      '.dr-qb{flex:none;flex-direction:row;height:46px;padding:0 15px;border-radius:99px;' +
+      'font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;gap:8px;}' +
+      '.dr-grid{display:none;}' +
+      '.dr-list{display:block;}' +
+      '.dr-pg{grid-template-columns:1fr;}' +
+      '.dr-pn.dr-w2{grid-column:auto;}' +
+      '.dr-encols{grid-template-columns:1fr;gap:10px;}' +
+      '.dr-chw{grid-template-columns:1fr;}' +
+      '.dr-2col{grid-template-columns:1fr;}' +
+      '.dr-ar{width:34px;height:32px;}' +
+      '.dr-sh{padding:8px 0;font-size:13px;}' +
+      '.dr-sh em{font-size:13px;}' +
+      '.dr-ln{padding:7px 0;font-size:12.5px;}' +
+      '}' +
+      '@container (min-width:721px) and (max-width:1000px){' +
+      '.dr-grid{grid-template-columns:repeat(3,minmax(0,1fr));}' +
+      '.dr-pg{grid-template-columns:repeat(2,minmax(0,1fr));}' +
+      '}' +
+      '</style>'
+    );
+  }
+}
+
+DoorsCard.getStubConfig = function () {
+  return { openings: [], covers: [], water: [], presence: [], air: [], actions: [] };
+};
+
+customElements.define('casa-mgdd-doors-card', DoorsCard);
+window.customCards.push({
+  type: 'casa-mgdd-doors-card',
+  name: 'Casa MGDD Porte e Finestre',
+  description: 'Quadro aperture con orari dal recorder, ingresso, tapparelle, acqua, presenze e aria. Config via YAML.',
 });
