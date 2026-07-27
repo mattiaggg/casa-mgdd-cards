@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.46.0
+ * Version: 1.47.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1475,7 +1475,9 @@ class EnergyPowerCard extends HTMLElement {
     // profilo orario del layout balance: statistiche orarie (change) dei contatori
     // cumulativi, dalla mezzanotte locale a ora. Una sola callWS per i tre sensori.
     if (this.config.layout === 'balance' && this.config.hourly !== false && this._hass) {
-      const ids = [this.config.house, this.config.grid_import, this.config.battery_discharge].filter(Boolean);
+      // la rete non serve piu': nella scomposizione e' il residuo, non un ingresso
+      const ids = [this.config.house, this.config.battery_discharge,
+        this.config.solar, this.config.grid_export, this.config.battery_charge].filter(Boolean);
       if (ids.length) {
         const nowD = new Date(now);
         const dayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate());
@@ -1551,18 +1553,19 @@ class EnergyPowerCard extends HTMLElement {
       return out;
     };
     const house = bucket(this.config.house);
-    const gimp = bucket(this.config.grid_import);
     const dis = bucket(this.config.battery_discharge);
+    const sol = bucket(this.config.solar);
+    const gexp = bucket(this.config.grid_export);
+    const chg = bucket(this.config.battery_charge);
     const rows = [];
     for (let h = 0; h <= nowD.getHours(); h++) {
-      const hh = house[h];
-      if (!(hh > 0)) {
+      if (!(house[h] > 0)) {
         rows.push({ h: h, house: 0, sun: 0, batt: 0, grid: 0 });
         continue;
       }
-      const batt = Math.min(Math.max(0, dis[h]), hh);
-      const grid = Math.min(Math.max(0, gimp[h]), hh - batt);
-      rows.push({ h: h, house: hh, sun: Math.max(0, hh - batt - grid), batt: batt, grid: grid });
+      // stessa scomposizione del riepilogo del giorno: un solo modello, due viste
+      const s = this._balanceSplit({ house: house[h], solar: sol[h], gexp: gexp[h], chg: chg[h], dis: dis[h] });
+      rows.push({ h: h, house: s.house, sun: s.sun, batt: s.batt, grid: s.grid });
     }
     return rows;
   }
@@ -1822,6 +1825,42 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   // layout balance (variante "Arc"): bilancio energetico giornaliero.
+  // Scomposizione del consumo nelle tre origini. Usata sia dal riepilogo del giorno
+  // sia dal profilo orario, cosi' i due non possono piu' raccontare cose diverse.
+  //
+  // Il solare viene LETTO dal sensore, non dedotto per differenza. Prima era il
+  // residuo casa-batteria-rete: siccome quei contatori hanno un solo decimale e non
+  // scattano nello stesso istante, ogni ora sballava di +-0.1 kWh e quel decimo
+  // finiva etichettato come solare anche con i pannelli staccati. Ora il residuo e'
+  // la RETE, che e' il numero grande: li' 0.1 kWh e' rumore invisibile.
+  //
+  // La batteria conta come autoprodotta solo per la frazione con cui e' stata
+  // caricata dal sole. Caricarla dalla rete e riscaricarla non e' autosufficienza:
+  // e' la stessa energia della rete che fa un giro, e prima veniva contata due volte.
+  //
+  // Il consumo include quanto il Powerwall ha trattenuto, cioe' la carica NETTA.
+  // Non quella lorda: prendere 0.3 kWh e restituirne 0.3 e' un giro interno, e
+  // sommarlo al consumo lo gonfierebbe due volte.
+  _balanceSplit(v) {
+    const nz = (x) => (x === null || x === undefined || !isFinite(x) ? 0 : Math.max(0, x));
+    const out = { house: v.house, sun: 0, batt: 0, grid: 0, self: null };
+    if (v.house === null || !(v.house > 0)) return out;
+    const chg = nz(v.chg);
+    const house = v.house + Math.max(0, chg - nz(v.dis));
+    // solare rimasto in casa: prodotto meno quello immesso in rete
+    const sunSite = Math.max(0, nz(v.solar) - nz(v.gexp));
+    const sunToBatt = Math.min(chg, sunSite);
+    const sunToHouse = sunSite - sunToBatt;
+    const greenFrac = chg > 0 ? sunToBatt / chg : 0;
+    const batt = Math.min(nz(v.dis) * greenFrac, house);
+    const sun = Math.min(sunToHouse, house - batt);
+    const grid = Math.max(0, house - batt - sun);
+    return {
+      house: house, sun: sun, batt: batt, grid: grid,
+      self: Math.max(0, Math.min(100, ((sun + batt) / house) * 100)),
+    };
+  }
+
   // Arco dell'autosufficienza + riga consumo casa + striscia con la scomposizione
   // (solare / batteria / rete) e legenda + 4 KPI.
   // Progettato per i sensori utility_meter *_today della Powerwall.
@@ -1838,23 +1877,19 @@ class EnergyPowerCard extends HTMLElement {
       '<svg class="epb-ic" viewBox="0 0 24 24" width="' + (s || 15) + '" height="' + (s || 15) + '" fill="none" stroke="' + color +
       '" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' + p + '</svg>';
 
-    const house = this._num(c.house);
-    const gimp = this._num(c.grid_import);
-    const dis = this._num(c.battery_discharge);
-    // Scomposizione del consumo casa nelle sue tre origini. Ordine di attribuzione:
-    // prima la batteria, poi la rete, il resto e' solare diretto. La quota di rete e'
-    // limitata al consumo residuo: cosi' la carica della batteria da rete non falsa
-    // l'autosufficienza (col vecchio 1-gimp/house andava negativa e veniva troncata a 0).
-    let battH = 0;
-    let gridH = 0;
-    let sunH = 0;
-    let selfSuff = null;
-    if (house !== null && house > 0) {
-      battH = Math.min(dis === null ? 0 : Math.max(0, dis), house);
-      gridH = Math.min(gimp === null ? 0 : Math.max(0, gimp), house - battH);
-      sunH = Math.max(0, house - battH - gridH);
-      selfSuff = Math.max(0, Math.min(100, (1 - gridH / house) * 100));
-    }
+    const house0 = this._num(c.house);
+    const split = this._balanceSplit({
+      house: house0,
+      solar: this._num(c.solar),
+      gexp: this._num(c.grid_export),
+      chg: this._num(c.battery_charge),
+      dis: this._num(c.battery_discharge),
+    });
+    const house = split.house;
+    const battH = split.batt;
+    const gridH = split.grid;
+    const sunH = split.sun;
+    const selfSuff = split.self;
     const pctTxt = selfSuff === null ? '--' : Math.round(selfSuff);
     // semicerchio r=62 -> lunghezza pi*62
     const ARC = 194.8;
