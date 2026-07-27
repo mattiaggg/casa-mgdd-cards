@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.47.0
+ * Version: 1.48.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3496,6 +3496,7 @@ class EnergyFlowCard extends HTMLElement {
     const flows = {};
     // batteria: in scarica -> Casa; in carica -> ripartita tra surplus solare e prelievo da rete
     let reteBatt = 0;
+    let reteBattVisibile = false;
     if (b !== null && b < -TB) {
       const chg = -b;
       const surplus = (s !== null) ? Math.max(0, s - (h !== null ? h : 0)) : 0; // solare oltre il consumo casa
@@ -3503,15 +3504,19 @@ class EnergyFlowCard extends HTMLElement {
       reteBatt = chg - soleBatt; // resto della carica: dalla rete
       if (soleBatt > TB) flows.sole_batt = soleBatt;
       // su mobile la linea Rete->Batteria attraverserebbe le altre: la ometto (caso raro).
-      // grid_to_battery: false la toglie anche da desktop; la quota di potenza che dalla
-      // rete carica la batteria resta comunque scorporata da Rete->Casa, quindi in quel
-      // caso non e' rappresentata da nessuna linea.
-      if (reteBatt > TB && !this._mobile && c.grid_to_battery !== false) flows.rete_batt = reteBatt;
+      // grid_to_battery: false la toglie anche da desktop.
+      if (reteBatt > TB && !this._mobile && c.grid_to_battery !== false) {
+        flows.rete_batt = reteBatt;
+        reteBattVisibile = true;
+      }
     } else if (b !== null && b > TB) {
       flows.batt_casa = b;
     }
     if (g !== null) {
-      if (g > TH) { const rc = g - reteBatt; if (rc > TH) flows.rete_casa = rc; } // Rete->Casa senza la quota che carica la batteria
+      // Scorporo della quota che carica la batteria SOLO se quel ramo e' davvero
+      // disegnato, altrimenti sarebbe potenza prelevata e non rappresentata da nessuna
+      // linea: Rete->Casa mostrerebbe meno di quanto la rete sta erogando.
+      if (g > TH) { const rc = reteBattVisibile ? g - reteBatt : g; if (rc > TH) flows.rete_casa = rc; }
       else if (g < -TH) flows.casa_rete = -g;
     }
     if (s !== null && s > TH) flows.sole_casa = s;
