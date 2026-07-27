@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.45.0
+ * Version: 1.46.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3371,6 +3371,10 @@ class EnergyFlowCard extends HTMLElement {
     const w0 = this._stage.getBoundingClientRect().width;
     const mobile = w0 > 0 && w0 < 480;
     if (mobile !== this._mobile) { this._mobile = mobile; if (this._card) this._card.classList.toggle('ef-mobile', mobile); }
+    // senza il ramo Rete->Batteria la fascia sotto i nodi resta vuota: stage piu' basso
+    // e nodi riavvicinati, cosi' lo spazio sopra e sotto torna simmetrico
+    const compact = !mobile && this.config.grid_to_battery === false;
+    if (compact !== this._compact) { this._compact = compact; if (this._card) this._card.classList.toggle('ef-compact', compact); }
     const r = this._stage.getBoundingClientRect();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     this._W = r.width;
@@ -3463,8 +3467,11 @@ class EnergyFlowCard extends HTMLElement {
       const soleBatt = Math.min(chg, surplus);
       reteBatt = chg - soleBatt; // resto della carica: dalla rete
       if (soleBatt > TB) flows.sole_batt = soleBatt;
-      // su mobile la linea Rete->Batteria attraverserebbe le altre: la ometto (caso raro)
-      if (reteBatt > TB && !this._mobile) flows.rete_batt = reteBatt;
+      // su mobile la linea Rete->Batteria attraverserebbe le altre: la ometto (caso raro).
+      // grid_to_battery: false la toglie anche da desktop; la quota di potenza che dalla
+      // rete carica la batteria resta comunque scorporata da Rete->Casa, quindi in quel
+      // caso non e' rappresentata da nessuna linea.
+      if (reteBatt > TB && !this._mobile && c.grid_to_battery !== false) flows.rete_batt = reteBatt;
     } else if (b !== null && b > TB) {
       flows.batt_casa = b;
     }
@@ -3492,6 +3499,17 @@ class EnergyFlowCard extends HTMLElement {
     const ends = { rete_casa: ['rete', 'casa'], batt_casa: ['batt', 'casa'], sole_casa: ['sole', 'casa'], sole_batt: ['sole', 'batt'], sole_rete: ['sole', 'rete'], rete_batt: ['rete', 'batt'] }[rk];
     if (ends && R[ends[0]] && poly.length > 1) poly[0] = [R[ends[0]].cx, R[ends[0]].cy];
     if (ends && R[ends[1]] && poly.length > 1) poly[poly.length - 1] = [R[ends[1]].cx, R[ends[1]].cy];
+    // percorsi a squadra: anche il gomito viene dai nodi misurati, non dalle frazioni.
+    // Il verso lo dice la definizione stessa del percorso: se il primo tratto e'
+    // orizzontale il gomito sta sopra/sotto la destinazione, altrimenti sopra la
+    // partenza. Cosi' la geometria segue il layout senza tabelle duplicate nel CSS.
+    if (poly.length === 3 && ends && R[ends[0]] && R[ends[1]]) {
+      const p = this._routes()[rk].p;
+      const orizzPrima = Math.abs(p[1][1] - p[0][1]) < Math.abs(p[1][0] - p[0][0]);
+      poly[1] = orizzPrima
+        ? [R[ends[1]].cx, R[ends[0]].cy]
+        : [R[ends[0]].cx, R[ends[1]].cy];
+    }
     return this._round(poly, 16);
   }
   // arrotonda gli angoli inserendo un arco (bezier quadratica) su ogni vertice interno
@@ -3653,6 +3671,11 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-v small{font-size:12px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
       // posizioni desktop
       '.ef-nd[data-n=sole]{left:50%;top:20%;} .ef-nd[data-n=rete]{left:13%;top:66%;} .ef-nd[data-n=batt]{left:87%;top:66%;} .ef-nd[data-n=casa]{left:50%;top:66%;}' +
+      // layout compatto (grid_to_battery: false): la fascia in basso ospitava solo il ramo
+      // Rete->Batteria, quindi lo stage si abbassa e i nodi si riavvicinano
+      '.ef-card.ef-compact .ef-stage{aspect-ratio:3.1/1;}' +
+      '.ef-compact .ef-nd[data-n=sole]{top:24%;}' +
+      '.ef-compact .ef-nd[data-n=rete],.ef-compact .ef-nd[data-n=batt],.ef-compact .ef-nd[data-n=casa]{top:76%;}' +
       // layout mobile (radiale compatto): stage quadrato, nodi compatti in colonna (icona/nome/valore)
       '.ef-mobile .ef-stage{aspect-ratio:1/1;}' +
       '.ef-mobile .ef-nd{flex-direction:column;align-items:center;gap:3px;padding:7px 10px;border-radius:13px;white-space:normal;}' +
