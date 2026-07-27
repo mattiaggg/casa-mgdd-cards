@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.49.0
+ * Version: 1.50.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3368,7 +3368,9 @@ class EnergyFlowCard extends HTMLElement {
       '<div class="ef-nd" data-n="' + id + '" style="--c:var(--ef-' + id + ')">' +
       '<span class="ef-ic" data-ic="' + id + '">' + this._icon(id) + '</span>' +
       '<span class="ef-lab"><span class="ef-k" data-k="' + id + '">' + name + '</span>' +
-      '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span></span>' +
+      '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span>' +
+      // riga secondaria: compare solo se valorizzata (potenza senza freccia propria)
+      '<span class="ef-x" data-x="' + id + '"></span></span>' +
       // bordo per arrival: edge. viewBox e rect vengono dimensionati in px da _measure():
       // con preserveAspectRatio non uniforme gli angoli arrotondati diventerebbero ellittici
       '<svg class="ef-edge"><rect pathLength="100"/></svg></div>'
@@ -3481,8 +3483,8 @@ class EnergyFlowCard extends HTMLElement {
     this._setNode('sole', s === null && P0 ? 0 : s);
     this._setNode('rete', g === null ? (P0 ? 0 : null) : Math.abs(g));
     this._setNode('batt', socDisp === null ? (P0 ? 0 : null) : socDisp, '%'); // batteria: mostra la % (SOC)
-    // il nodo Casa viene impostato dopo i flussi: gli va sommata la carica della
-    // batteria che nessun ramo rappresenta (vedi sotto)
+    // il nodo Casa viene impostato dopo i flussi, insieme alla riga della potenza
+    // batteria non rappresentata da alcuna freccia (vedi sotto)
     const bk = this.querySelector('[data-k=batt]');
     if (bk) { let t = 'Batteria'; if (b !== null) t += b > 5 ? ' · scarica' : b < -5 ? ' · carica' : ''; bk.textContent = t; }
     const rk = this.querySelector('[data-k=rete]');
@@ -3521,18 +3523,22 @@ class EnergyFlowCard extends HTMLElement {
       else if (g < -TH) flows.casa_rete = -g;
     }
     if (s !== null && s > TH) flows.sole_casa = s;
-    // Carica della batteria che nessun ramo disegna: sotto la soglia battery_min_flow
-    // (l'assorbimento di standby del Powerwall) oppure con il ramo Rete->Batteria
-    // escluso. Senza questo, Rete mostra il prelievo totale e Casa solo il consumo
-    // domestico: la differenza resta sullo schermo senza spiegazione. Sommandola a
-    // Casa il quadro torna, coerentemente con la scelta fatta sul bilancio di
-    // contare il Powerwall come un consumo. house_includes_battery: false disattiva.
-    let hDisp = h;
-    if (h !== null && b !== null && b < 0 && c.house_includes_battery !== false) {
-      const nascosta = Math.max(0, -b - ((flows.sole_batt || 0) + (flows.rete_batt || 0)));
-      hDisp = h + nascosta;
+    // Casa resta il valore puro del sensore: sommarci il Powerwall la faceva divergere
+    // dalla card "Consumo casa" e dalla card dei carichi, che leggono lo stesso sensore.
+    this._setNode('casa', h === null && P0 ? 0 : h);
+    // Potenza della batteria che NESSUNA freccia rappresenta: sotto la soglia
+    // battery_min_flow (l'assorbimento di standby del Powerwall, che resta senza ramo
+    // di proposito) oppure con il ramo Rete->Batteria escluso. Senza mostrarla, Rete
+    // include quei watt e Casa no, e la differenza resta sullo schermo inspiegata.
+    // Compare sul nodo Batteria, dove appartiene, invece di gonfiare Casa.
+    const bx = this.querySelector('[data-x=batt]');
+    if (bx) {
+      const disegnata = (flows.sole_batt || 0) + (flows.rete_batt || 0) + (flows.batt_casa || 0);
+      const nascosta = b === null ? 0 : Math.max(0, Math.abs(b) - disegnata);
+      bx.textContent = nascosta > 1
+        ? (nascosta >= 1000 ? (nascosta / 1000).toFixed(1) + ' kW' : Math.round(nascosta) + ' W')
+        : '';
     }
-    this._setNode('casa', hDisp === null && P0 ? 0 : hDisp);
     this._flows = flows;
     const keys = Object.keys(flows).sort().join(',');
     if (keys !== this._akeys) {
@@ -3722,6 +3728,8 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-k{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
       '.ef-v{font-size:19px;font-weight:700;color:var(--primary-text-color,#1c1c1e);margin-top:3px;font-variant-numeric:tabular-nums;}' +
       '.ef-v small{font-size:12px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
+      '.ef-x{font-size:11px;font-weight:600;color:var(--c);margin-top:2px;}' +
+      '.ef-x:empty{display:none;}' +
       // posizioni desktop
       '.ef-nd[data-n=sole]{left:50%;top:20%;} .ef-nd[data-n=rete]{left:13%;top:66%;} .ef-nd[data-n=batt]{left:87%;top:66%;} .ef-nd[data-n=casa]{left:50%;top:66%;}' +
       // layout compatto (grid_to_battery: false): la fascia in basso ospitava solo il ramo
@@ -3735,6 +3743,7 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-mobile .ef-ic{width:32px;height:32px;border-radius:10px;} .ef-mobile .ef-ic svg{width:20px;height:20px;}' +
       '.ef-mobile .ef-lab{align-items:center;text-align:center;}' +
       '.ef-mobile .ef-k{font-size:9.5px;} .ef-mobile .ef-v{font-size:13px;margin-top:0;} .ef-mobile .ef-v small{font-size:9px;}' +
+      '.ef-mobile .ef-x{font-size:9px;margin-top:1px;}' +
       '.ef-mobile .ef-nd[data-n=sole]{left:50%;top:14%;} .ef-mobile .ef-nd[data-n=rete]{left:14%;top:46%;} .ef-mobile .ef-nd[data-n=batt]{left:86%;top:46%;} .ef-mobile .ef-nd[data-n=casa]{left:50%;top:82%;}' +
       '</style>'
     );
