@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.43.0
+ * Version: 1.44.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3333,7 +3333,10 @@ class EnergyFlowCard extends HTMLElement {
       '<div class="ef-nd" data-n="' + id + '" style="--c:var(--ef-' + id + ')">' +
       '<span class="ef-ic" data-ic="' + id + '">' + this._icon(id) + '</span>' +
       '<span class="ef-lab"><span class="ef-k" data-k="' + id + '">' + name + '</span>' +
-      '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span></span></div>'
+      '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span></span>' +
+      // bordo per arrival: edge. viewBox e rect vengono dimensionati in px da _measure():
+      // con preserveAspectRatio non uniforme gli angoli arrotondati diventerebbero ellittici
+      '<svg class="ef-edge"><rect pathLength="100"/></svg></div>'
     );
   }
 
@@ -3395,6 +3398,15 @@ class EnergyFlowCard extends HTMLElement {
       if (!el) return;
       const r = el.getBoundingClientRect();
       R[id] = { cx: r.left - sr.left + r.width / 2, cy: r.top - sr.top + r.height / 2, hw: r.width / 2, hh: r.height / 2 };
+      // bordo di arrival: edge, in unita' px cosi' rx resta uguale sui due assi
+      const sv = el.querySelector('.ef-edge'), rc = sv && sv.querySelector('rect');
+      if (rc && r.width) {
+        const w = r.width + 2, h = r.height + 2;
+        sv.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+        rc.setAttribute('x', 1.2); rc.setAttribute('y', 1.2);
+        rc.setAttribute('width', w - 2.4); rc.setAttribute('height', h - 2.4);
+        rc.setAttribute('rx', this._mobile ? 13 : 16); // pari al border-radius del nodo
+      }
     });
     this._nrects = R;
   }
@@ -3547,15 +3559,18 @@ class EnergyFlowCard extends HTMLElement {
     if (!em) return null;
     return def[1] ? [em[1], em[0]] : em;
   }
-  // battito del bordo sul nodo di destinazione all'arrivo del fascio: il colore e' quello
-  // della SORGENTE, cosi' guardando Casa si capisce da dove e' arrivata l'energia. Il
-  // bagliore sfuma sul posto senza espandersi: e' l'anello che cresceva a dare fastidio.
+  // Effetto sul nodo di destinazione all'arrivo del fascio. In entrambi i modi il colore
+  // e' quello della SORGENTE, cosi' guardando Casa si capisce da dove e' arrivata
+  // l'energia. Nessuno dei due si espande: era l'anello che cresceva a dare fastidio.
+  //   arrival: pulse (default) -> bordo e sfondo icona lampeggiano e sfumano sul posto
+  //   arrival: edge            -> un segmento di luce fa un giro del bordo del nodo
   _hit(node, color) {
     const el = this._nds && this._nds[node]; if (!el) return;
+    const cls = this.config.arrival === 'edge' ? 'ef-hit-edge' : 'ef-hit';
     el.style.setProperty('--ef-hit', color);
-    el.classList.remove('ef-hit');
+    el.classList.remove('ef-hit', 'ef-hit-edge'); // l'opzione puo' cambiare a caldo
     void el.offsetWidth; // reflow: senza questo l'animazione non riparte da capo
-    el.classList.add('ef-hit');
+    el.classList.add(cls);
   }
 
   _start() {
@@ -3615,6 +3630,14 @@ class EnergyFlowCard extends HTMLElement {
       '@keyframes efHitIc{' +
       '0%{background:color-mix(in srgb,var(--ef-hit,var(--c)) 42%,transparent);}' +
       '100%{background:color-mix(in srgb,var(--c) 18%,transparent);}}' +
+      // arrival: edge -> un segmento di luce percorre una volta il bordo del nodo
+      '.ef-edge{position:absolute;inset:-1px;pointer-events:none;opacity:0;}' +
+      '.ef-edge rect{fill:none;stroke:var(--ef-hit,var(--c));stroke-width:2.4;stroke-linecap:round;' +
+      'stroke-dasharray:16 84;stroke-dashoffset:0;}' +
+      '.ef-nd.ef-hit-edge .ef-edge{animation:efEdgeFade .72s linear;}' +
+      '.ef-nd.ef-hit-edge .ef-edge rect{animation:efEdgeRun .72s cubic-bezier(.35,0,.3,1);}' +
+      '@keyframes efEdgeRun{from{stroke-dashoffset:0;}to{stroke-dashoffset:-100;}}' +
+      '@keyframes efEdgeFade{0%{opacity:0;}12%{opacity:1;}75%{opacity:1;}100%{opacity:0;}}' +
       // batteria in carica: il livello sale dentro la sagoma e lo sfondo dell'icona respira
       '.ef-ic .ef-fill{display:none;}' +
       '.ef-ic.ef-chg .ef-bars{display:none;}' +
