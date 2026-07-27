@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.48.0
+ * Version: 1.49.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3481,7 +3481,8 @@ class EnergyFlowCard extends HTMLElement {
     this._setNode('sole', s === null && P0 ? 0 : s);
     this._setNode('rete', g === null ? (P0 ? 0 : null) : Math.abs(g));
     this._setNode('batt', socDisp === null ? (P0 ? 0 : null) : socDisp, '%'); // batteria: mostra la % (SOC)
-    this._setNode('casa', h === null && P0 ? 0 : h);
+    // il nodo Casa viene impostato dopo i flussi: gli va sommata la carica della
+    // batteria che nessun ramo rappresenta (vedi sotto)
     const bk = this.querySelector('[data-k=batt]');
     if (bk) { let t = 'Batteria'; if (b !== null) t += b > 5 ? ' · scarica' : b < -5 ? ' · carica' : ''; bk.textContent = t; }
     const rk = this.querySelector('[data-k=rete]');
@@ -3520,6 +3521,18 @@ class EnergyFlowCard extends HTMLElement {
       else if (g < -TH) flows.casa_rete = -g;
     }
     if (s !== null && s > TH) flows.sole_casa = s;
+    // Carica della batteria che nessun ramo disegna: sotto la soglia battery_min_flow
+    // (l'assorbimento di standby del Powerwall) oppure con il ramo Rete->Batteria
+    // escluso. Senza questo, Rete mostra il prelievo totale e Casa solo il consumo
+    // domestico: la differenza resta sullo schermo senza spiegazione. Sommandola a
+    // Casa il quadro torna, coerentemente con la scelta fatta sul bilancio di
+    // contare il Powerwall come un consumo. house_includes_battery: false disattiva.
+    let hDisp = h;
+    if (h !== null && b !== null && b < 0 && c.house_includes_battery !== false) {
+      const nascosta = Math.max(0, -b - ((flows.sole_batt || 0) + (flows.rete_batt || 0)));
+      hDisp = h + nascosta;
+    }
+    this._setNode('casa', hDisp === null && P0 ? 0 : hDisp);
     this._flows = flows;
     const keys = Object.keys(flows).sort().join(',');
     if (keys !== this._akeys) {
