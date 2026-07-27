@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.52.0
+ * Version: 1.53.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2607,7 +2607,8 @@ class EnergyControlsCard extends HTMLElement {
     const c = this.config || {};
     const u = c.ups || {};
     const ids = (c.switches || []).map((s) => s.entity).concat(
-      [u.battery_entity, u.load_entity, u.status_entity, u.time_left_entity, u.power_entity, u.energy_entity]
+      [u.battery_entity, u.load_entity, u.status_entity, u.time_left_entity, u.power_entity, u.energy_entity,
+        u.voltage_entity, u.time_on_battery_entity, u.last_transfer_entity]
     ).filter(Boolean);
     const sig = mgddStatesSig(hass, ids);
     if (sig === this._lastSig) return;
@@ -2650,7 +2651,8 @@ class EnergyControlsCard extends HTMLElement {
   }
 
   _render() {
-    if (this.config.layout === 'ups') this._renderUps();
+    if (this.config.layout === 'ups-status') this._renderUpsStatus();
+    else if (this.config.layout === 'ups') this._renderUps();
     else this._renderSwitches();
   }
 
@@ -2679,6 +2681,93 @@ class EnergyControlsCard extends HTMLElement {
         if (e.target.closest('.toggle')) this._toggle(entity);
         else this._openMoreInfo(entity);
       });
+    });
+  }
+
+  // Traduce il motivo dell'ultimo trasferimento di apcupsd. Quelli non mappati
+  // restano in inglese minuscolo: meglio una parola inglese di una inventata.
+  _upsMotivo(raw) {
+    if (!raw) return '';
+    const m = {
+      'high line voltage': 'alta tensione',
+      'low line voltage': 'bassa tensione',
+      'blackout': 'blackout',
+      'line voltage notch or spike': 'picco di tensione',
+      'automatic or manual self test': 'autotest',
+      'input voltage out of range': 'tensione fuori range',
+      'no transfers since turnon': '',
+    };
+    const k = String(raw).trim().toLowerCase();
+    return Object.prototype.hasOwnProperty.call(m, k) ? m[k] : k;
+  }
+
+  // "da 45 s" sotto il minuto, poi "da 3 min": durante una commutazione i
+  // secondi contano, dopo no.
+  _upsDurata(sec) {
+    if (sec === null || !(sec > 0)) return '';
+    return sec < 60 ? 'da ' + Math.round(sec) + ' s' : 'da ' + Math.round(sec / 60) + ' min';
+  }
+
+  _renderUpsStatus() {
+    const c = this.config.ups || {};
+    const st = this._state(c.status_entity);
+    const raw = st ? String(st.state) : '';
+    const noto = !!st && raw !== 'unavailable' && raw !== 'unknown';
+    // binary_sensor: acceso = alimentato dalla rete. Sensore testuale di apcupsd:
+    // ONLINE (o OL) = rete, qualunque altro stato noto = batteria.
+    const binario = /^binary_sensor\./.test(c.status_entity || '');
+    const aRete = binario ? raw === 'on' : /^(online|ol)\b/i.test(raw.trim());
+    const suBatteria = noto && !aRete;
+
+    const batteria = this._num(c.battery_entity);
+    const autonomia = this._num(c.time_left_entity);
+    const potenza = this._num(c.power_entity);
+    const tensione = this._num(c.voltage_entity);
+    const daQuanto = this._upsDurata(this._num(c.time_on_battery_entity));
+    const motivo = suBatteria ? this._upsMotivo(this._state(c.last_transfer_entity) && this._state(c.last_transfer_entity).state) : '';
+
+    let testo;
+    let coda;
+    if (!noto) {
+      testo = 'Stato non disponibile';
+      coda = '';
+    } else if (suBatteria) {
+      testo = 'Su batteria';
+      coda = [daQuanto, motivo].filter(Boolean).join(' · ');
+    } else {
+      testo = 'Alimentato dalla rete';
+      coda = tensione !== null ? this._fmt(tensione, ' V', 0) : '';
+    }
+
+    // Il filo in basso segue il livello della batteria, non lo stato: durante uno
+    // svuotamento si accorcia e vira, dando l'andamento che i numeri non danno.
+    const soglia = c.low_battery === undefined ? 40 : c.low_battery;
+    const critica = c.critical_battery === undefined ? 20 : c.critical_battery;
+    const colore = batteria === null ? '#8a8d93' : batteria <= critica ? '#e5484d' : batteria <= soglia ? '#e08a00' : '#0fb57e';
+    const larghezza = batteria === null ? 0 : Math.max(0, Math.min(100, batteria));
+
+    const cella = (label, valore, unita, entity) =>
+      '<div' + (entity ? ' data-entity="' + entity + '"' : '') + '>' +
+      '<div class="ups-l">' + label + '</div>' +
+      '<div class="ups-v">' + valore + (unita ? '<span class="ups-u">' + unita + '</span>' : '') + '</div></div>';
+
+    const html =
+      '<div class="ups-c">' +
+      '<div class="ups-band' + (suBatteria ? ' b' : '') + '"' +
+      (c.status_entity ? ' data-entity="' + c.status_entity + '"' : '') + '>' +
+      '<i class="ups-dot"></i><span class="ups-txt">' + testo + '</span>' +
+      '<span class="ups-when">' + coda + '</span></div>' +
+      '<div class="ups-vals">' +
+      cella('Batteria', batteria === null ? '--' : this._fmt(batteria, '', 0), '%', c.battery_entity) +
+      cella('Autonomia', autonomia === null ? '--' : this._fmt(autonomia, '', 0), 'min', c.time_left_entity) +
+      cella('Carico', potenza === null ? '--' : this._fmt(potenza, '', 0), 'W', c.power_entity) +
+      '</div>' +
+      '<div class="ups-edge"><i style="width:' + larghezza + '%;background:' + colore + '"></i></div>' +
+      '</div>';
+
+    mgddPaint(this, this._styles(), html);
+    this.querySelectorAll('[data-entity]').forEach((el) => {
+      el.addEventListener('click', () => this._openMoreInfo(el.getAttribute('data-entity')));
     });
   }
 
@@ -2717,6 +2806,34 @@ class EnergyControlsCard extends HTMLElement {
       '.stat{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:16px;}' +
       '.stat-l{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
       '.stat-v{font-size:22px;font-weight:600;letter-spacing:-0.5px;margin-top:4px;color:var(--primary-text-color,#1c1c1e);}' +
+      // layout ups-status: fascia di stato, tre valori, filo della batteria a
+      // bordo carta. A rete la fascia resta neutra: colorarla di verde tutti i
+      // giorni la trasformerebbe in carta da parati e spegnerebbe il rosso.
+      '.ups-c{background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;overflow:hidden;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.ups-band{display:flex;align-items:center;gap:7px;padding:6px 13px;font-size:12.5px;font-weight:600;' +
+      'background:rgba(127,127,127,.09);color:var(--secondary-text-color,#6b6f76);cursor:pointer;}' +
+      // la coda si accorcia con l'ellissi invece di mandare a capo la banda: senza
+      // min-width:0 un flex item non scende sotto il proprio min-content e la card
+      // cambierebbe altezza proprio quando passa su batteria
+      '.ups-band .ups-txt{white-space:nowrap;flex:0 0 auto;}' +
+      '.ups-band .ups-when{margin-left:auto;padding-left:10px;font-weight:500;font-size:11.5px;opacity:.85;' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto;text-align:right;}' +
+      '.ups-band.b{background:#e5484d;color:#fff;font-weight:680;}' +
+      '.ups-band.b .ups-when{opacity:.88;font-weight:600;}' +
+      '.ups-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto;opacity:.7;}' +
+      '.ups-vals{display:flex;align-items:center;padding:8px 13px 9px;}' +
+      '.ups-vals>div{flex:1;min-width:0;cursor:pointer;}' +
+      '.ups-vals>div+div{border-left:1px solid var(--divider-color,rgba(0,0,0,.08));padding-left:13px;}' +
+      '.ups-l{font-size:9.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;' +
+      'color:var(--secondary-text-color,#9096a0);}' +
+      '.ups-v{font-size:17px;font-weight:650;letter-spacing:-.5px;line-height:1.2;' +
+      'color:var(--primary-text-color,#1c1c1e);}' +
+      '.ups-u{font-size:11px;font-weight:600;color:var(--secondary-text-color,#6b6f76);' +
+      'margin-left:2px;letter-spacing:0;}' +
+      '.ups-edge{height:3px;background:rgba(127,127,127,.18);}' +
+      '.ups-edge>i{display:block;height:100%;}' +
       '</style>'
     );
   }
