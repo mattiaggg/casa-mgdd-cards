@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card.
  *
- * Version: 1.42.0
+ * Version: 1.43.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3231,7 +3231,6 @@ class EnergyFlowCard extends HTMLElement {
     this._built = false;
     this._flows = {};
     this._pulses = [];
-    this._rings = [];
     this._akeys = '';
     this._raf = null;
     this._W = 0;
@@ -3320,7 +3319,10 @@ class EnergyFlowCard extends HTMLElement {
     const I = {
       sole: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>',
       rete: '<path d="M6 22 12 2l6 20"/><path d="M9 22 12 2l3 20"/><path d="M6.8 8h10.4M7.7 13h8.6M8.6 18h6.8"/>',
-      batt: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M6.5 10.5v3M10 10.5v3"/>',
+      // in carica le due tacche lasciano il posto al livello che sale (classe ef-chg)
+      batt: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/>' +
+        '<path class="ef-bars" d="M6.5 10.5v3M10 10.5v3"/>' +
+        '<rect class="ef-fill" x="5" y="10.2" width="10.5" height="3.6" rx="1"/>',
       casa: '<path d="M4 11 12 4l8 7"/><path d="M6 10v9h12v-9"/>',
     };
     return '<svg viewBox="0 0 24 24">' + I[k] + '</svg>';
@@ -3329,7 +3331,7 @@ class EnergyFlowCard extends HTMLElement {
     // posizioni gestite via CSS (classi desktop/mobile), qui solo il colore
     return (
       '<div class="ef-nd" data-n="' + id + '" style="--c:var(--ef-' + id + ')">' +
-      '<span class="ef-ic">' + this._icon(id) + '</span>' +
+      '<span class="ef-ic" data-ic="' + id + '">' + this._icon(id) + '</span>' +
       '<span class="ef-lab"><span class="ef-k" data-k="' + id + '">' + name + '</span>' +
       '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span></span></div>'
     );
@@ -3350,6 +3352,10 @@ class EnergyFlowCard extends HTMLElement {
     this._stage = this.querySelector('.ef-stage');
     this._cv = this.querySelector('canvas');
     this._ctx = this._cv.getContext('2d');
+    // riferimenti stabili: _build gira una volta sola, i nodi non vengono ricreati
+    this._nds = {};
+    ['sole', 'rete', 'batt', 'casa'].forEach((id) => { this._nds[id] = this.querySelector('.ef-nd[data-n=' + id + ']'); });
+    this._battIc = this.querySelector('[data-ic=batt]');
     this._ro = new ResizeObserver(() => this._resize());
     this._ro.observe(this._stage);
     this._resize();
@@ -3433,6 +3439,9 @@ class EnergyFlowCard extends HTMLElement {
     // soglia dedicata ai soli flussi batteria: nasconde il consumo parassita/standby della PW (~40-150W)
     // senza toccare gli altri rami (rete/solare/casa restano su TH)
     const TB = c.battery_min_flow || 120;
+    // icona in carica: stessa soglia che genera i flussi verso la batteria, cosi' il livello
+    // non si anima per il solo assorbimento parassita della Powerwall
+    if (this._battIc) this._battIc.classList.toggle('ef-chg', b !== null && b < -TB);
     const flows = {};
     // batteria: in scarica -> Casa; in carica -> ripartita tra surplus solare e prelievo da rete
     let reteBatt = 0;
@@ -3538,15 +3547,15 @@ class EnergyFlowCard extends HTMLElement {
     if (!em) return null;
     return def[1] ? [em[1], em[0]] : em;
   }
-  // anello di assorbimento sul nodo di destinazione all'arrivo del fascio
-  _ring(node, t, color) {
-    const rc = (this._nrects || {})[node]; if (!rc) return;
-    const ctx = this._ctx, dark = this._dark;
-    const rad = Math.max(rc.hw, rc.hh) * 0.5 + t * 26;
-    ctx.globalAlpha = (1 - t) * (dark ? 0.85 : 0.6); ctx.strokeStyle = color; ctx.shadowColor = color;
-    ctx.shadowBlur = dark ? 15 : 9; ctx.lineWidth = 2.6 * (1 - t * 0.5);
-    ctx.beginPath(); ctx.arc(rc.cx, rc.cy, rad, 0, 7); ctx.stroke();
-    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  // battito del bordo sul nodo di destinazione all'arrivo del fascio: il colore e' quello
+  // della SORGENTE, cosi' guardando Casa si capisce da dove e' arrivata l'energia. Il
+  // bagliore sfuma sul posto senza espandersi: e' l'anello che cresceva a dare fastidio.
+  _hit(node, color) {
+    const el = this._nds && this._nds[node]; if (!el) return;
+    el.style.setProperty('--ef-hit', color);
+    el.classList.remove('ef-hit');
+    void el.offsetWidth; // reflow: senza questo l'animazione non riparte da capo
+    el.classList.add('ef-hit');
   }
 
   _start() {
@@ -3568,11 +3577,9 @@ class EnergyFlowCard extends HTMLElement {
           const m = this._meta(poly), power = this._flows[pl.key] || 0;
           const sp = 0.12 + Math.min(1, power / maxP) * 0.8;
           pl.head += dt * sp;
-          if (pl.head > 1) { pl.head -= 1; const en = this._flowEnds(pl.key); if (en) this._rings.push({ node: en[1], t: 0, c: NCOL[en[1]] }); }
+          if (pl.head > 1) { pl.head -= 1; const en = this._flowEnds(pl.key); if (en) this._hit(en[1], NCOL[def[2]]); }
           this._beam(poly, m, pl.head, NCOL[def[2]]);
         });
-        this._rings.forEach((rg) => { rg.t += dt * 1.6; });
-        this._rings = this._rings.filter((rg) => { if (rg.t >= 1) return false; this._ring(rg.node, rg.t, rg.c); return true; });
         ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
       }
       this._raf = requestAnimationFrame(loop);
@@ -3598,6 +3605,25 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-ic{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;flex:0 0 auto;' +
       'background:color-mix(in srgb,var(--c) 18%,transparent);}' +
       '.ef-ic svg{width:27px;height:27px;stroke:var(--c);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}' +
+      // arrivo del fascio: bordo e sfondo icona lampeggiano nel colore della sorgente e
+      // sfumano sul posto. Nessuna espansione, quindi nessuna aureola.
+      '.ef-nd.ef-hit{animation:efHit .55s cubic-bezier(.2,.7,.3,1);}' +
+      '@keyframes efHit{' +
+      '0%{border-color:var(--ef-hit,var(--c));box-shadow:0 0 14px 0 color-mix(in srgb,var(--ef-hit,var(--c)) 50%,transparent);}' +
+      '100%{border-color:var(--divider-color,rgba(0,0,0,.1));box-shadow:0 0 0 0 transparent;}}' +
+      '.ef-nd.ef-hit .ef-ic{animation:efHitIc .55s ease-out;}' +
+      '@keyframes efHitIc{' +
+      '0%{background:color-mix(in srgb,var(--ef-hit,var(--c)) 42%,transparent);}' +
+      '100%{background:color-mix(in srgb,var(--c) 18%,transparent);}}' +
+      // batteria in carica: il livello sale dentro la sagoma e lo sfondo dell'icona respira
+      '.ef-ic .ef-fill{display:none;}' +
+      '.ef-ic.ef-chg .ef-bars{display:none;}' +
+      '.ef-ic.ef-chg .ef-fill{display:block;fill:var(--c);stroke:none;' +
+      'transform-box:fill-box;transform-origin:left center;animation:efChg 2.1s cubic-bezier(.45,0,.55,1) infinite;}' +
+      '@keyframes efChg{0%{transform:scaleX(.06);opacity:.5;}70%,88%{transform:scaleX(1);opacity:.95;}100%{transform:scaleX(1);opacity:0;}}' +
+      '.ef-ic.ef-chg{animation:efChgIc 2.1s ease-in-out infinite;}' +
+      '@keyframes efChgIc{0%,100%{background:color-mix(in srgb,var(--c) 14%,transparent);}' +
+      '60%{background:color-mix(in srgb,var(--c) 34%,transparent);}}' +
       '.ef-lab{display:flex;flex-direction:column;line-height:1.15;}' +
       '.ef-k{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
       '.ef-v{font-size:19px;font-weight:700;color:var(--primary-text-color,#1c1c1e);margin-top:3px;font-variant-numeric:tabular-nums;}' +
