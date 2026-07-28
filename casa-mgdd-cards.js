@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.54.0
+ * Version: 1.54.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3925,6 +3925,10 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-mobile .ef-lab{align-items:center;text-align:center;}' +
       '.ef-mobile .ef-k{font-size:9.5px;} .ef-mobile .ef-v{font-size:13px;margin-top:0;} .ef-mobile .ef-v small{font-size:9px;}' +
       '.ef-mobile .ef-x{font-size:9px;margin-top:1px;}' +
+      // su mobile il nodo e' una colonna e l'etichetta sta 3px sotto l'icona: la pastiglia
+      // la coprirebbe. Lo spazio lo apre un margine sull'icona, che vale per TUTTI i nodi,
+      // percio' crescono insieme e restano allineati fra loro.
+      '.ef-mobile .ef-ic{margin-bottom:8px;}' +
       '.ef-mobile .ef-soc{font-size:8.5px;padding:2px 4px;bottom:-5px;}' +
       '.ef-mobile .ef-nd[data-n=sole]{left:50%;top:14%;} .ef-mobile .ef-nd[data-n=rete]{left:14%;top:46%;} .ef-mobile .ef-nd[data-n=batt]{left:86%;top:46%;} .ef-mobile .ef-nd[data-n=casa]{left:50%;top:82%;}' +
       '</style>'
