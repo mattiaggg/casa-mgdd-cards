@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.53.0
+ * Version: 1.54.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3522,7 +3522,10 @@ class EnergyFlowCard extends HTMLElement {
     // posizioni gestite via CSS (classi desktop/mobile), qui solo il colore
     return (
       '<div class="ef-nd" data-n="' + id + '" style="--c:var(--ef-' + id + ')">' +
-      '<span class="ef-ic" data-ic="' + id + '">' + this._icon(id) + '</span>' +
+      '<span class="ef-ic" data-ic="' + id + '">' + this._icon(id) +
+      // il SOC sta in una pastiglia appoggiata all'icona: fuori dal flusso, quindi non
+      // aggiunge una terza riga e non alza il nodo rispetto agli altri tre
+      (id === 'batt' ? '<span class="ef-soc" data-soc="batt"></span>' : '') + '</span>' +
       '<span class="ef-lab"><span class="ef-k" data-k="' + id + '">' + name + '</span>' +
       '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span>' +
       // riga secondaria: compare solo se valorizzata (potenza senza freccia propria)
@@ -3644,7 +3647,25 @@ class EnergyFlowCard extends HTMLElement {
     const socDisp = (soc !== null && c.soc_scale) ? Math.max(0, Math.min(100, (soc - 5) / 0.95)) : soc;
     this._setNode('sole', s === null && P0 ? 0 : s);
     this._setNode('rete', g === null ? (P0 ? 0 : null) : Math.abs(g));
-    this._setNode('batt', socDisp === null ? (P0 ? 0 : null) : socDisp, '%'); // batteria: mostra la % (SOC)
+    // La batteria mostra la POTENZA come gli altri tre nodi, non la percentuale: era
+    // l'unico nodo con una grandezza diversa, e il residuo "non disegnato" che stava su
+    // una terza riga si azzerava proprio in scarica, quando la freccia lo assorbiva.
+    // Il verso lo dice la riga piccola (carica/scarica), il SOC la pastiglia sull'icona.
+    this._setNode('batt', b === null ? (P0 ? 0 : null) : Math.abs(b));
+    const bs = this.querySelector('[data-soc=batt]');
+    if (bs) {
+      bs.textContent = socDisp === null ? '' : Math.round(socDisp) + '%';
+      // soc_low/soc_critical non hanno default: con questo impianto (nessun backup) la
+      // batteria scende a 0% legittimamente e un colore d'allarme sarebbe un falso positivo
+      const low = c.soc_low;
+      const crit = c.soc_critical;
+      let bg = '';
+      if (socDisp !== null) {
+        if (crit !== undefined && socDisp <= crit) bg = '#e5484d';
+        else if (low !== undefined && socDisp <= low) bg = '#e08a00';
+      }
+      bs.style.background = bg;
+    }
     // il nodo Casa viene impostato dopo i flussi, insieme alla riga della potenza
     // batteria non rappresentata da alcuna freccia (vedi sotto)
     const bk = this.querySelector('[data-k=batt]');
@@ -3688,19 +3709,10 @@ class EnergyFlowCard extends HTMLElement {
     // Casa resta il valore puro del sensore: sommarci il Powerwall la faceva divergere
     // dalla card "Consumo casa" e dalla card dei carichi, che leggono lo stesso sensore.
     this._setNode('casa', h === null && P0 ? 0 : h);
-    // Potenza della batteria che NESSUNA freccia rappresenta: sotto la soglia
-    // battery_min_flow (l'assorbimento di standby del Powerwall, che resta senza ramo
-    // di proposito) oppure con il ramo Rete->Batteria escluso. Senza mostrarla, Rete
-    // include quei watt e Casa no, e la differenza resta sullo schermo inspiegata.
-    // Compare sul nodo Batteria, dove appartiene, invece di gonfiare Casa.
-    const bx = this.querySelector('[data-x=batt]');
-    if (bx) {
-      const disegnata = (flows.sole_batt || 0) + (flows.rete_batt || 0) + (flows.batt_casa || 0);
-      const nascosta = b === null ? 0 : Math.max(0, Math.abs(b) - disegnata);
-      bx.textContent = nascosta > 1
-        ? (nascosta >= 1000 ? (nascosta / 1000).toFixed(1) + ' kW' : Math.round(nascosta) + ' W')
-        : '';
-    }
+    // Il residuo "potenza della batteria che nessuna freccia rappresenta" non viene piu'
+    // scritto: serviva a spiegare perche' Rete includesse watt senza linea, e ora che il
+    // nodo mostra la potenza vera della batteria quella riconciliazione si legge da se'.
+    // La riga .ef-x resta disponibile per altri nodi, oggi nessuno la usa.
     this._flows = flows;
     const keys = Object.keys(flows).sort().join(',');
     if (keys !== this._akeys) {
@@ -3857,7 +3869,14 @@ class EnergyFlowCard extends HTMLElement {
       'padding:11px 17px;border-radius:16px;background:var(--ha-card-background,var(--card-background-color,#fff));' +
       'border:1px solid var(--divider-color,rgba(0,0,0,.1));white-space:nowrap;}' +
       '.ef-ic{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;flex:0 0 auto;' +
-      'background:color-mix(in srgb,var(--c) 18%,transparent);}' +
+      'background:color-mix(in srgb,var(--c) 18%,transparent);position:relative;}' +
+      // pastiglia del SOC: grigia, perche' una percentuale di carica non ha un verso e col
+      // colore della batteria si leggerebbe come un flusso. Assoluta, quindi non alza il nodo.
+      '.ef-soc{position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);' +
+      'background:var(--secondary-text-color,#8a8d93);color:#fff;font-size:9.5px;font-weight:700;' +
+      'line-height:1;padding:3px 5px;border-radius:999px;white-space:nowrap;font-variant-numeric:tabular-nums;' +
+      'box-shadow:0 0 0 2px var(--ha-card-background,var(--card-background-color,#fff));}' +
+      '.ef-soc:empty{display:none;}' +
       '.ef-ic svg{width:27px;height:27px;stroke:var(--c);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}' +
       // arrivo del fascio: bordo e sfondo icona lampeggiano nel colore della sorgente e
       // sfumano sul posto. Nessuna espansione, quindi nessuna aureola.
@@ -3906,6 +3925,7 @@ class EnergyFlowCard extends HTMLElement {
       '.ef-mobile .ef-lab{align-items:center;text-align:center;}' +
       '.ef-mobile .ef-k{font-size:9.5px;} .ef-mobile .ef-v{font-size:13px;margin-top:0;} .ef-mobile .ef-v small{font-size:9px;}' +
       '.ef-mobile .ef-x{font-size:9px;margin-top:1px;}' +
+      '.ef-mobile .ef-soc{font-size:8.5px;padding:2px 4px;bottom:-5px;}' +
       '.ef-mobile .ef-nd[data-n=sole]{left:50%;top:14%;} .ef-mobile .ef-nd[data-n=rete]{left:14%;top:46%;} .ef-mobile .ef-nd[data-n=batt]{left:86%;top:46%;} .ef-mobile .ef-nd[data-n=casa]{left:50%;top:82%;}' +
       '</style>'
     );
