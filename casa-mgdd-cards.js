@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.54.1
+ * Version: 1.55.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3527,7 +3527,10 @@ class EnergyFlowCard extends HTMLElement {
       // aggiunge una terza riga e non alza il nodo rispetto agli altri tre
       (id === 'batt' ? '<span class="ef-soc" data-soc="batt"></span>' : '') + '</span>' +
       '<span class="ef-lab"><span class="ef-k" data-k="' + id + '">' + name + '</span>' +
-      '<span class="ef-v"><span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span>' +
+      '<span class="ef-v">' +
+      // freccia del verso, valorizzata solo su mobile dove l'etichetta non ha spazio
+      (id === 'batt' ? '<span class="ef-ar" data-ar="batt"></span>' : '') +
+      '<span data-v="' + id + '">—</span> <small data-u="' + id + '"></small></span>' +
       // riga secondaria: compare solo se valorizzata (potenza senza freccia propria)
       '<span class="ef-x" data-x="' + id + '"></span></span>' +
       // bordo per arrival: edge. viewBox e rect vengono dimensionati in px da _measure():
@@ -3566,7 +3569,12 @@ class EnergyFlowCard extends HTMLElement {
     // decide layout in base alla larghezza della card (mobile < 480px), poi rileggi (l'aspect cambia)
     const w0 = this._stage.getBoundingClientRect().width;
     const mobile = w0 > 0 && w0 < 480;
-    if (mobile !== this._mobile) { this._mobile = mobile; if (this._card) this._card.classList.toggle('ef-mobile', mobile); }
+    // Il cambio di ramo va ricalcolato, non solo ri-stilato: etichetta della batteria,
+    // freccia del verso e ramo Rete->Batteria dipendono tutti da _mobile, e senza questo
+    // resterebbero quelli dell'altro ramo fino al successivo cambio di stato — cioe' al
+    // primo render, dove _mobile e' ancora indefinito quando gira _compute().
+    const cambioRamo = mobile !== this._mobile;
+    if (cambioRamo) { this._mobile = mobile; if (this._card) this._card.classList.toggle('ef-mobile', mobile); }
     // senza il ramo Rete->Batteria la fascia sotto i nodi resta vuota: stage piu' basso
     // e nodi riavvicinati, cosi' lo spazio sopra e sotto torna simmetrico
     const compact = !mobile && this.config.grid_to_battery === false;
@@ -3579,6 +3587,7 @@ class EnergyFlowCard extends HTMLElement {
     this._cv.height = this._H * dpr;
     this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this._measure();
+    if (cambioRamo && this._hass) this._compute(); // _compute rimisura da se', non ricorre qui
   }
 
   // rileva tema (testo chiaro => tema scuro) e misura i box dei nodi
@@ -3669,7 +3678,16 @@ class EnergyFlowCard extends HTMLElement {
     // il nodo Casa viene impostato dopo i flussi, insieme alla riga della potenza
     // batteria non rappresentata da alcuna freccia (vedi sotto)
     const bk = this.querySelector('[data-k=batt]');
-    if (bk) { let t = 'Batteria'; if (b !== null) t += b > 5 ? ' · scarica' : b < -5 ? ' · carica' : ''; bk.textContent = t; }
+    // verso: 1 scarica, -1 carica, 0 ferma o sconosciuto. Soglia ±5 W e non
+    // battery_min_flow, cosi' il verso si conosce anche quando non c'e' nessun ramo.
+    const verso = b === null ? 0 : b > 5 ? 1 : b < -5 ? -1 : 0;
+    // Su mobile il nodo e' largo ~56 px: "Batteria · scarica" andrebbe a capo su tre righe
+    // e alzerebbe il solo nodo batteria. Li' l'etichetta resta una parola e il verso passa
+    // sul valore come freccia, che funziona anche sotto battery_min_flow, dove non c'e' ne'
+    // il ramo verso Casa ne' l'icona animata.
+    if (bk) bk.textContent = 'Batteria' + (this._mobile || !verso ? '' : verso > 0 ? ' · scarica' : ' · carica');
+    const bar = this.querySelector('[data-ar=batt]');
+    if (bar) bar.textContent = this._mobile && verso ? (verso > 0 ? '↑' : '↓') : '';
     const rk = this.querySelector('[data-k=rete]');
     if (rk) rk.textContent = g !== null && g < -5 ? 'Rete · immissione' : 'Rete';
     const TH = c.threshold || 5;
@@ -3907,7 +3925,12 @@ class EnergyFlowCard extends HTMLElement {
       '60%{background:color-mix(in srgb,var(--c) 34%,transparent);}}' +
       '.ef-lab{display:flex;flex-direction:column;line-height:1.15;}' +
       '.ef-k{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);}' +
-      '.ef-v{font-size:19px;font-weight:700;color:var(--primary-text-color,#1c1c1e);margin-top:3px;font-variant-numeric:tabular-nums;}' +
+      // nowrap sul valore: su mobile il nodo e' stretto e "↓ 64 W" si spezzerebbe su due
+      // righe, rialzando il nodo. Meglio che cresca in larghezza di qualche pixel.
+      '.ef-v{font-size:19px;font-weight:700;color:var(--primary-text-color,#1c1c1e);margin-top:3px;' +
+      'font-variant-numeric:tabular-nums;white-space:nowrap;}' +
+      '.ef-ar{color:var(--c);font-weight:700;margin-right:2px;}' +
+      '.ef-ar:empty{display:none;}' +
       '.ef-v small{font-size:12px;color:var(--secondary-text-color,#6b6f76);font-weight:500;}' +
       '.ef-x{font-size:11px;font-weight:600;color:var(--c);margin-top:2px;}' +
       '.ef-x:empty{display:none;}' +
