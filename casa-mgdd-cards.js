@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.55.0
+ * Version: 1.56.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1472,27 +1472,37 @@ class EnergyPowerCard extends HTMLElement {
         /* keep loading state */
       }
     }
-    // profilo orario del layout balance: statistiche orarie (change) dei contatori
-    // cumulativi, dalla mezzanotte locale a ora. Una sola callWS per i tre sensori.
-    if (this.config.layout === 'balance' && this.config.hourly !== false && this._hass) {
-      // la rete non serve piu': nella scomposizione e' il residuo, non un ingresso
-      const ids = [this.config.house, this.config.battery_discharge,
-        this.config.solar, this.config.grid_export, this.config.battery_charge].filter(Boolean);
+    // Layout balance: statistiche orarie (change + state) dei contatori, dall'ora
+    // prima di mezzanotte a ora. Una sola callWS per tutti i sensori. Alimenta sia
+    // il riepilogo del giorno sia il profilo orario: una fonte, due viste.
+    //
+    // Le statistiche, e non lo stato live dei contatori *_today, perche' il
+    // recorder ricostruisce la crescita del contatore anche attraverso i buchi:
+    // un utility_meter che perde il collegamento alla sorgente perde per sempre
+    // l'energia accumulata mentre era irraggiungibile.
+    if (this.config.layout === 'balance' && this._hass) {
+      const cfg = this.config;
+      const ids = [cfg.house, cfg.solar, cfg.grid_import, cfg.grid_export,
+        cfg.battery_charge, cfg.battery_discharge].filter(Boolean);
       if (ids.length) {
         const nowD = new Date(now);
         const dayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate());
+        // un'ora prima di mezzanotte: la riga delle 23 porta il valore del contatore
+        // a fine ora, cioe' a mezzanotte. E' il riferimento da cui misurare la prima
+        // ora del giorno, quando di righe di oggi non ce n'e' ancora nessuna.
+        const from = new Date(dayStart.getTime() - 3600 * 1000);
         try {
           const resp = await this._hass.callWS({
             type: 'recorder/statistics_during_period',
-            start_time: dayStart.toISOString(),
+            start_time: from.toISOString(),
             end_time: nowD.toISOString(),
             statistic_ids: ids,
             period: 'hour',
-            types: ['change'],
+            types: ['change', 'state'],
           });
-          this._hourly = this._buildHourly(resp, dayStart, nowD);
+          this._balStats = this._buildBalStats(resp, ids, dayStart);
         } catch (e) {
-          /* profilo opzionale: se il recorder non risponde la card resta valida */
+          /* senza recorder la card mostra "--": nessun numero inventato */
         }
       }
     }
@@ -1569,35 +1579,28 @@ class EnergyPowerCard extends HTMLElement {
     this._render();
   }
 
-  // Da statistiche orarie a righe per ora, gia' scomposte in solare/batteria/rete
-  // con lo stesso criterio della striscia (prima la batteria, poi la rete, il resto solare).
-  _buildHourly(resp, dayStart, nowD) {
-    const bucket = (id) => {
-      const out = new Array(24).fill(0);
+  // Da risposta statistiche a, per ogni entita': i kWh per ora del giorno, il loro
+  // totale, e il valore del contatore al confine dell'ultima ora compilata. Le righe
+  // prima di mezzanotte non entrano nei bucket: servono solo a fissare il confine.
+  _buildBalStats(resp, ids, dayStart) {
+    const out = {};
+    ids.forEach((id) => {
+      const hours = new Array(24).fill(0);
+      let compiled = 0;
+      let edge = null;
       ((resp && resp[id]) || []).forEach((r) => {
+        const s = parseFloat(r.state);
+        if (!Number.isNaN(s)) edge = s;
         const d = new Date(r.start);
         if (d < dayStart) return;
         const h = d.getHours();
-        if (h >= 0 && h < 24) out[h] += Math.max(0, r.change || 0);
+        const v = Math.max(0, r.change || 0);
+        if (h >= 0 && h < 24) hours[h] += v;
+        compiled += v;
       });
-      return out;
-    };
-    const house = bucket(this.config.house);
-    const dis = bucket(this.config.battery_discharge);
-    const sol = bucket(this.config.solar);
-    const gexp = bucket(this.config.grid_export);
-    const chg = bucket(this.config.battery_charge);
-    const rows = [];
-    for (let h = 0; h <= nowD.getHours(); h++) {
-      if (!(house[h] > 0)) {
-        rows.push({ h: h, house: 0, sun: 0, batt: 0, grid: 0 });
-        continue;
-      }
-      // stessa scomposizione del riepilogo del giorno: un solo modello, due viste
-      const s = this._balanceSplit({ house: house[h], solar: sol[h], gexp: gexp[h], chg: chg[h], dis: dis[h] });
-      rows.push({ h: h, house: s.house, sun: s.sun, batt: s.batt, grid: s.grid });
-    }
-    return rows;
+      out[id] = { hours: hours, compiled: compiled, edge: edge };
+    });
+    return out;
   }
 
   _toPoints(arr) {
@@ -1854,9 +1857,30 @@ class EnergyPowerCard extends HTMLElement {
     this._wireClicks();
   }
 
+  // kWh per ora di oggi di un contatore: la parte compilata dal recorder piu' il
+  // pezzo di ora in corso, ricavato dal valore live. Senza quest'ultimo i numeri
+  // aspetterebbero la compilazione oraria del recorder, cioe' fino a un'ora.
+  //
+  // `cumulative: true` dichiara contatori che non azzerano a mezzanotte: il pezzo
+  // vivo si misura dal confine dell'ultima ora compilata. Con i contatori *_today,
+  // che azzerano, si misura invece dal totale di oggi gia' compilato.
+  _balanceHours(id) {
+    const st = this._balStats && this._balStats[id];
+    if (!st) return null;
+    const hours = st.hours.slice();
+    const live = this._num(id);
+    if (live !== null) {
+      const base = this.config.cumulative === true ? st.edge : st.compiled;
+      if (base !== null && isFinite(base) && live > base) hours[new Date().getHours()] += live - base;
+    }
+    return hours;
+  }
+
   // layout balance (variante "Arc"): bilancio energetico giornaliero.
-  // Scomposizione del consumo nelle tre origini. Usata sia dal riepilogo del giorno
-  // sia dal profilo orario, cosi' i due non possono piu' raccontare cose diverse.
+  // Scomposizione del consumo di casa nelle tre origini, ora per ora. Il riepilogo
+  // del giorno e' la somma delle ore, non un secondo calcolo sui totali: i due non
+  // possono raccontare cose diverse, e la scomposizione oraria e' molto piu' fedele
+  // (nella singola ora consumo e produzione sono davvero contemporanei).
   //
   // Il solare viene LETTO dal sensore, non dedotto per differenza. Prima era il
   // residuo casa-batteria-rete: siccome quei contatori hanno un solo decimale e non
@@ -1864,31 +1888,57 @@ class EnergyPowerCard extends HTMLElement {
   // finiva etichettato come solare anche con i pannelli staccati. Ora il residuo e'
   // la RETE, che e' il numero grande: li' 0.1 kWh e' rumore invisibile.
   //
+  // Il solare copre PRIMA la casa e poi la batteria: e' l'ordine di priorita' reale
+  // del Powerwall in autoconsumo. Il consumo di casa e' quello di casa e basta: la
+  // carica della batteria non ci viene sommata. Sommarla senza accreditare anche il
+  // solare che l'ha prodotta gonfiava la rete, che qui e' il residuo, e schiacciava
+  // l'autosufficienza (con i dati del 31/07: rete 9.3 kWh invece di 3.6, 27% invece
+  // di 52%). L'errore era invisibile finche' la batteria caricava 0.5 kWh al giorno.
+  //
   // La batteria conta come autoprodotta solo per la frazione con cui e' stata
   // caricata dal sole. Caricarla dalla rete e riscaricarla non e' autosufficienza:
-  // e' la stessa energia della rete che fa un giro, e prima veniva contata due volte.
-  //
-  // Il consumo include quanto il Powerwall ha trattenuto, cioe' la carica NETTA.
-  // Non quella lorda: prendere 0.3 kWh e restituirne 0.3 e' un giro interno, e
-  // sommarlo al consumo lo gonfierebbe due volte.
-  _balanceSplit(v) {
-    const nz = (x) => (x === null || x === undefined || !isFinite(x) ? 0 : Math.max(0, x));
-    const out = { house: v.house, sun: 0, batt: 0, grid: 0, self: null };
-    if (v.house === null || !(v.house > 0)) return out;
-    const chg = nz(v.chg);
-    const house = v.house + Math.max(0, chg - nz(v.dis));
-    // solare rimasto in casa: prodotto meno quello immesso in rete
-    const sunSite = Math.max(0, nz(v.solar) - nz(v.gexp));
-    const sunToBatt = Math.min(chg, sunSite);
-    const sunToHouse = sunSite - sunToBatt;
-    const greenFrac = chg > 0 ? sunToBatt / chg : 0;
-    const batt = Math.min(nz(v.dis) * greenFrac, house);
-    const sun = Math.min(sunToHouse, house - batt);
-    const grid = Math.max(0, house - batt - sun);
-    return {
-      house: house, sun: sun, batt: batt, grid: grid,
-      self: Math.max(0, Math.min(100, ((sun + batt) / house) * 100)),
-    };
+  // e' la stessa energia della rete che fa un giro. La frazione si calcola sul
+  // GIORNO, non sull'ora: si carica di pomeriggio e si scarica di sera, quando la
+  // carica e' zero e una frazione oraria risulterebbe nulla: tutta la scarica della
+  // sera finirebbe etichettata come rete.
+  _balanceModel() {
+    const c = this.config;
+    const house = c.house ? this._balanceHours(c.house) : null;
+    if (!house) return null;
+    const zero = () => new Array(24).fill(0);
+    const solar = this._balanceHours(c.solar) || zero();
+    const gexp = this._balanceHours(c.grid_export) || zero();
+    const chg = this._balanceHours(c.battery_charge) || zero();
+    const dis = this._balanceHours(c.battery_discharge) || zero();
+
+    const sun = zero();
+    let chgTot = 0;
+    let greenTot = 0;
+    for (let h = 0; h < 24; h++) {
+      // solare rimasto in casa: prodotto meno quello immesso in rete
+      const site = Math.max(0, solar[h] - gexp[h]);
+      sun[h] = Math.min(site, house[h]);
+      chgTot += chg[h];
+      greenTot += Math.min(chg[h], site - sun[h]);
+    }
+    const green = chgTot > 0 ? greenTot / chgTot : 0;
+
+    const rows = [];
+    const day = { house: 0, sun: 0, batt: 0, grid: 0, self: null };
+    const upTo = new Date().getHours();
+    for (let h = 0; h <= upTo; h++) {
+      const rest = Math.max(0, house[h] - sun[h]);
+      const batt = Math.min(dis[h] * green, rest);
+      rows.push({ h: h, house: house[h], sun: sun[h], batt: batt, grid: rest - batt });
+      day.house += house[h];
+      day.sun += sun[h];
+      day.batt += batt;
+      day.grid += rest - batt;
+    }
+    if (day.house > 0) {
+      day.self = Math.max(0, Math.min(100, ((day.sun + day.batt) / day.house) * 100));
+    }
+    return { rows: rows, day: day };
   }
 
   // Arco dell'autosufficienza + riga consumo casa + striscia con la scomposizione
@@ -1907,19 +1957,19 @@ class EnergyPowerCard extends HTMLElement {
       '<svg class="epb-ic" viewBox="0 0 24 24" width="' + (s || 15) + '" height="' + (s || 15) + '" fill="none" stroke="' + color +
       '" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' + p + '</svg>';
 
-    const house0 = this._num(c.house);
-    const split = this._balanceSplit({
-      house: house0,
-      solar: this._num(c.solar),
-      gexp: this._num(c.grid_export),
-      chg: this._num(c.battery_charge),
-      dis: this._num(c.battery_discharge),
-    });
-    const house = split.house;
-    const battH = split.batt;
-    const gridH = split.grid;
-    const sunH = split.sun;
-    const selfSuff = split.self;
+    const model = this._balanceModel();
+    this._hourly = model ? model.rows : null;
+    const day = model ? model.day : null;
+    const house = day ? day.house : null;
+    const battH = day ? day.batt : 0;
+    const gridH = day ? day.grid : 0;
+    const sunH = day ? day.sun : 0;
+    const selfSuff = day ? day.self : null;
+    // totale di oggi di un contatore, per i quattro riquadri in fondo
+    const dayTot = (id) => {
+      const hrs = this._balanceHours(id);
+      return hrs ? hrs.reduce((s, v) => s + v, 0) : null;
+    };
     const pctTxt = selfSuff === null ? '--' : Math.round(selfSuff);
     // semicerchio r=62 -> lunghezza pi*62
     const ARC = 194.8;
@@ -1955,7 +2005,7 @@ class EnergyPowerCard extends HTMLElement {
     const kpi = (icon, color, label, entity) =>
       '<div class="epb-k" style="--k:' + color + '" data-entity="' + (entity || '') + '">' + svg(icon, color) +
       '<div><div class="epb-kl">' + label + '</div><div class="epb-kv">' +
-      this._fmt(this._num(entity), '', 1) + '<span class="epb-u"> kWh</span></div></div></div>';
+      this._fmt(dayTot(entity), '', 1) + '<span class="epb-u"> kWh</span></div></div></div>';
 
     mgddPaint(this, this._styles(),
       '<div class="epb-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
