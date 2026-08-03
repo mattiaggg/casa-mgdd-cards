@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.58.0
+ * Version: 1.58.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2776,8 +2776,17 @@ class EnergyPowerCard extends HTMLElement {
     const absent = sn.list.filter((r) => r.v === null);
     let mx = active.length ? active[0].v : 0;
     if (sn.other !== null && sn.other > mx) mx = sn.other;
+    // In confronto le due barre della riga devono stare sulla STESSA scala, altrimenti
+    // il confronto non significa niente. Senza includere il periodo precedente nel
+    // massimo, un giorno prima piu' pesante di quello scelto disegnava la barra
+    // fantasma oltre il bordo della card, coprendo valore e differenza.
+    if (mode === 'compare') {
+      sn.list.forEach((r) => {
+        if (r.prev !== null && r.prev > mx) mx = r.prev;
+      });
+    }
     if (!mx) mx = 1;
-    const w = (v) => Math.max(0.4, (v / mx) * 100).toFixed(2);
+    const w = (v) => Math.min(100, Math.max(0.4, (v / mx) * 100)).toFixed(2);
 
     let h =
       '<div class="epd-hd"><div>' +
@@ -3225,7 +3234,9 @@ class EnergyPowerCard extends HTMLElement {
       '.epd-b{grid-template-columns:170px 1fr 86px 70px;}' +
       '.epd-c{grid-template-columns:170px 1fr 86px 124px;}' +
       '.epd-n{font-size:12.5px;color:var(--epd-tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
-      '.epd-tr{position:relative;height:15px;}' +
+      // overflow nascosto: nessuna barra puo' uscire dalla propria cella, qualunque
+      // scala venga calcolata sopra
+      '.epd-tr{position:relative;height:15px;overflow:hidden;}' +
       '.epd-tr span{position:absolute;left:0;top:0;height:100%;border-radius:0 4px 4px 0;}' +
       '.epd-g{background:var(--epd-weak);}' +
       '.epd-bar{background:var(--epd-acc);}' +
