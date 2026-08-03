@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.57.0
+ * Version: 1.58.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1486,30 +1486,7 @@ class EnergyPowerCard extends HTMLElement {
     // un utility_meter che perde il collegamento alla sorgente perde per sempre
     // l'energia accumulata mentre era irraggiungibile.
     if (this.config.layout === 'balance' && this._hass) {
-      const cfg = this.config;
-      const ids = [cfg.house, cfg.solar, cfg.grid_import, cfg.grid_export,
-        cfg.battery_charge, cfg.battery_discharge].filter(Boolean);
-      if (ids.length) {
-        const nowD = new Date(now);
-        const dayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate());
-        // un'ora prima di mezzanotte: la riga delle 23 porta il valore del contatore
-        // a fine ora, cioe' a mezzanotte. E' il riferimento da cui misurare la prima
-        // ora del giorno, quando di righe di oggi non ce n'e' ancora nessuna.
-        const from = new Date(dayStart.getTime() - 3600 * 1000);
-        try {
-          const resp = await this._hass.callWS({
-            type: 'recorder/statistics_during_period',
-            start_time: from.toISOString(),
-            end_time: nowD.toISOString(),
-            statistic_ids: ids,
-            period: 'hour',
-            types: ['change', 'state'],
-          });
-          this._balStats = this._buildBalStats(resp, ids, dayStart);
-        } catch (e) {
-          /* senza recorder la card mostra "--": nessun numero inventato */
-        }
-      }
+      await this._fetchBalance();
     }
     if (this.config.layout === 'devices' && this._hass) {
       await this._fetchDeviceStats();
@@ -1587,26 +1564,82 @@ class EnergyPowerCard extends HTMLElement {
     this._render();
   }
 
-  // Da risposta statistiche a, per ogni entita': i kWh per ora del giorno, il loro
-  // totale, e il valore del contatore al confine dell'ultima ora compilata. Le righe
-  // prima di mezzanotte non entrano nei bucket: servono solo a fissare il confine.
-  _buildBalStats(resp, ids, dayStart) {
+  // Periodo mostrato dal bilancio. `back` conta a ritroso: 0 e' il periodo in corso,
+  // il limite viene da days/months. In modalita' giorno i bucket sono le 24 ore, in
+  // modalita' mese sono i giorni del mese: la struttura e' la stessa, cambia solo la
+  // granularita', percio' modello, profilo e riquadri funzionano identici nei due casi.
+  _balSelection() {
+    const kind = this._balKind === 'month' ? 'month' : 'day';
+    const max = (kind === 'month' ? this.config.months || 6 : this.config.days || 14) - 1;
+    let back = this._balBack || 0;
+    if (back < 0) back = 0;
+    if (back > max) back = max;
+    const now = new Date();
+    let from;
+    let to;
+    let n;
+    if (kind === 'month') {
+      from = new Date(now.getFullYear(), now.getMonth() - back, 1);
+      to = new Date(now.getFullYear(), now.getMonth() - back + 1, 1);
+      n = Math.round((to - from) / 86400000);
+    } else {
+      from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back);
+      to = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back + 1);
+      n = 24;
+    }
+    return { kind: kind, back: back, max: max, from: from, to: to, n: n, current: back === 0 };
+  }
+
+  async _fetchBalance() {
+    const c = this.config;
+    const ids = [c.house, c.solar, c.grid_import, c.grid_export, c.battery_charge, c.battery_discharge].filter(Boolean);
+    if (!ids.length) return;
+    const sel = this._balSelection();
+    // un bucket prima dell'inizio: quella riga porta il valore del contatore al
+    // confine, cioe' il riferimento da cui misurare il primo bucket del periodo
+    // quando di righe dentro il periodo non ce n'e' ancora nessuna.
+    const from = sel.kind === 'month'
+      ? new Date(sel.from.getFullYear(), sel.from.getMonth(), 0)
+      : new Date(sel.from.getTime() - 3600 * 1000);
+    const to = sel.current ? new Date() : sel.to;
+    let resp = null;
+    try {
+      resp = await this._hass.callWS({
+        type: 'recorder/statistics_during_period',
+        start_time: from.toISOString(),
+        end_time: to.toISOString(),
+        statistic_ids: ids,
+        period: sel.kind === 'month' ? 'day' : 'hour',
+        types: ['change', 'state'],
+      });
+    } catch (e) {
+      resp = null; // senza recorder la card mostra "--": nessun numero inventato
+    }
+    this._balStats = resp ? this._buildBalStats(resp, ids, sel) : null;
+    this._balSel = sel;
+  }
+
+  // Da risposta statistiche a, per ogni entita': i kWh per bucket del periodo, il
+  // loro totale, e il valore del contatore al confine dell'ultimo bucket compilato.
+  // Le righe fuori dal periodo non entrano nei bucket: servono solo a fissare il
+  // confine.
+  _buildBalStats(resp, ids, sel) {
     const out = {};
     ids.forEach((id) => {
-      const hours = new Array(24).fill(0);
+      const buckets = new Array(sel.n).fill(0);
       let compiled = 0;
       let edge = null;
       ((resp && resp[id]) || []).forEach((r) => {
         const s = parseFloat(r.state);
         if (!Number.isNaN(s)) edge = s;
         const d = new Date(r.start);
-        if (d < dayStart) return;
-        const h = d.getHours();
+        if (d < sel.from || d >= sel.to) return;
+        const i = sel.kind === 'month' ? d.getDate() - 1 : d.getHours();
         const v = Math.max(0, r.change || 0);
-        if (h >= 0 && h < 24) hours[h] += v;
+        if (i >= 0 && i < sel.n) buckets[i] += v;
         compiled += v;
       });
-      out[id] = { hours: hours, compiled: compiled, edge: edge };
+      out[id] = { buckets: buckets, compiled: compiled, edge: edge };
     });
     return out;
   }
@@ -1873,16 +1906,26 @@ class EnergyPowerCard extends HTMLElement {
   // `cumulative: true` dichiara contatori che non azzerano a mezzanotte: il pezzo
   // vivo si misura dal confine dell'ultima ora compilata. Con i contatori *_today,
   // che azzerano, si misura invece dal totale di oggi gia' compilato.
-  _balanceHours(id) {
+  _balBuckets(id) {
     const st = this._balStats && this._balStats[id];
     if (!st) return null;
-    const hours = st.hours.slice();
-    const live = this._num(id);
-    if (live !== null) {
-      const base = this.config.cumulative === true ? st.edge : st.compiled;
-      if (base !== null && isFinite(base) && live > base) hours[new Date().getHours()] += live - base;
+    const b = st.buckets.slice();
+    const sel = this._balSel;
+    // Il pezzo vivo esiste solo nel periodo in corso: su un giorno passato le
+    // statistiche sono complete e sommarci lo stato attuale sarebbe un errore.
+    if (sel && sel.current) {
+      const live = this._num(id);
+      if (live !== null) {
+        const i = sel.kind === 'month' ? new Date().getDate() - 1 : new Date().getHours();
+        const base = this.config.cumulative === true
+          ? st.edge
+          : (sel.kind === 'month' ? st.buckets[i] : st.compiled);
+        if (base !== null && base !== undefined && isFinite(base) && live > base && i >= 0 && i < b.length) {
+          b[i] += live - base;
+        }
+      }
     }
-    return hours;
+    return b;
   }
 
   // layout balance (variante "Arc"): bilancio energetico giornaliero.
@@ -1912,42 +1955,49 @@ class EnergyPowerCard extends HTMLElement {
   // sera finirebbe etichettata come rete.
   _balanceModel() {
     const c = this.config;
-    const house = c.house ? this._balanceHours(c.house) : null;
+    const house = c.house ? this._balBuckets(c.house) : null;
     if (!house) return null;
-    const zero = () => new Array(24).fill(0);
-    const solar = this._balanceHours(c.solar) || zero();
-    const gexp = this._balanceHours(c.grid_export) || zero();
-    const chg = this._balanceHours(c.battery_charge) || zero();
-    const dis = this._balanceHours(c.battery_discharge) || zero();
+    const sel = this._balSel || this._balSelection();
+    const n = house.length;
+    const zero = () => new Array(n).fill(0);
+    const solar = this._balBuckets(c.solar) || zero();
+    const gexp = this._balBuckets(c.grid_export) || zero();
+    const chg = this._balBuckets(c.battery_charge) || zero();
+    const dis = this._balBuckets(c.battery_discharge) || zero();
 
     const sun = zero();
     let chgTot = 0;
     let greenTot = 0;
-    for (let h = 0; h < 24; h++) {
+    for (let i = 0; i < n; i++) {
       // solare rimasto in casa: prodotto meno quello immesso in rete
-      const site = Math.max(0, solar[h] - gexp[h]);
-      sun[h] = Math.min(site, house[h]);
-      chgTot += chg[h];
-      greenTot += Math.min(chg[h], site - sun[h]);
+      const site = Math.max(0, solar[i] - gexp[i]);
+      sun[i] = Math.min(site, house[i]);
+      chgTot += chg[i];
+      greenTot += Math.min(chg[i], site - sun[i]);
     }
     const green = chgTot > 0 ? greenTot / chgTot : 0;
 
     const rows = [];
     const day = { house: 0, sun: 0, batt: 0, grid: 0, self: null };
-    const upTo = new Date().getHours();
-    for (let h = 0; h <= upTo; h++) {
-      const rest = Math.max(0, house[h] - sun[h]);
-      const batt = Math.min(dis[h] * green, rest);
-      rows.push({ h: h, house: house[h], sun: sun[h], batt: batt, grid: rest - batt });
-      day.house += house[h];
-      day.sun += sun[h];
+    // Nel periodo in corso i bucket successivi a quello attuale restano vuoti, non a
+    // zero: un'ora non ancora trascorsa non e' un'ora a consumo nullo. Su un periodo
+    // passato si percorre tutto.
+    const upTo = sel.current
+      ? (sel.kind === 'month' ? new Date().getDate() - 1 : new Date().getHours())
+      : n - 1;
+    for (let i = 0; i <= upTo && i < n; i++) {
+      const rest = Math.max(0, house[i] - sun[i]);
+      const batt = Math.min(dis[i] * green, rest);
+      rows.push({ h: i, house: house[i], sun: sun[i], batt: batt, grid: rest - batt });
+      day.house += house[i];
+      day.sun += sun[i];
       day.batt += batt;
       day.grid += rest - batt;
     }
     if (day.house > 0) {
       day.self = Math.max(0, Math.min(100, ((day.sun + day.batt) / day.house) * 100));
     }
-    return { rows: rows, day: day };
+    return { rows: rows, day: day, n: n, kind: sel.kind };
   }
 
   // Arco dell'autosufficienza + riga consumo casa + striscia con la scomposizione
@@ -1974,9 +2024,9 @@ class EnergyPowerCard extends HTMLElement {
     const gridH = day ? day.grid : 0;
     const sunH = day ? day.sun : 0;
     const selfSuff = day ? day.self : null;
-    // totale di oggi di un contatore, per i quattro riquadri in fondo
+    // totale del periodo scelto di un contatore, per i quattro riquadri in fondo
     const dayTot = (id) => {
-      const hrs = this._balanceHours(id);
+      const hrs = this._balBuckets(id);
       return hrs ? hrs.reduce((s, v) => s + v, 0) : null;
     };
     const pctTxt = selfSuff === null ? '--' : Math.round(selfSuff);
@@ -2019,7 +2069,8 @@ class EnergyPowerCard extends HTMLElement {
     mgddPaint(this, this._styles(),
       '<div class="epb-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
       '<div class="epb-hd"><span class="epb-t">' + (c.title || 'Bilancio energetico') + '</span>' +
-      '<span class="epb-pill">' + (c.period_label || 'oggi') + '</span></div>' +
+      '<span class="epb-pill">' + this._balPill() + '</span></div>' +
+      this._balNav() +
       gauge +
       '<div class="epb-sub" data-entity="' + (c.house || '') + '">' + svg(ic.home, 'var(--epb-tx2)') +
       '<span>Consumo casa</span><b>' + this._fmt(house, ' kWh', 1) + '</b></div>' +
@@ -2035,6 +2086,71 @@ class EnergyPowerCard extends HTMLElement {
       '</div>');
     this._wireClicks();
     this._wireBalanceTip();
+    this._wireBalanceNav();
+  }
+
+  // Etichetta del periodo scelto. `history: false` riporta la card al solo "oggi".
+  _balLabel(sel) {
+    const MESI = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
+    const GG = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+    const d = sel.from;
+    if (sel.kind === 'month') return MESI[d.getMonth()] + ' ' + d.getFullYear();
+    if (sel.back === 0) return 'oggi';
+    if (sel.back === 1) return 'ieri';
+    return GG[d.getDay()] + ' ' + d.getDate() + ' ' + MESI[d.getMonth()];
+  }
+
+  _balPill() {
+    if (this.config.history === false) return this.config.period_label || 'oggi';
+    const sel = this._balSelection();
+    return sel.current ? (sel.kind === 'month' ? 'mese in corso' : 'oggi') : 'storico';
+  }
+
+  // Navigatore: giorno/mese e frecce. Nessuna striscia di salto come nel layout
+  // devices, perche' qui ogni periodo e' una query a se': la striscia richiederebbe
+  // di scaricare tutta la finestra per disegnare le altezze.
+  _balNav() {
+    if (this.config.history === false) return '';
+    const sel = this._balSelection();
+    const seg = (v, label) =>
+      '<button data-balk="' + v + '" aria-pressed="' + (sel.kind === v) + '">' + label + '</button>';
+    return (
+      '<div class="epb-nv">' +
+      '<div class="epb-sg">' + seg('day', 'Giorno') + seg('month', 'Mese') + '</div>' +
+      '<div class="epb-ar">' +
+      '<button data-balstep="-1" title="Periodo precedente"' + (sel.back >= sel.max ? ' disabled' : '') + '>‹</button>' +
+      '<span class="epb-nl">' + this._balLabel(sel) + '</span>' +
+      '<button data-balstep="1" title="Periodo successivo"' + (sel.back <= 0 ? ' disabled' : '') + '>›</button>' +
+      '</div></div>'
+    );
+  }
+
+  // La navigazione non passa dal throttle dei 5 minuti: il periodo nuovo va letto
+  // subito, altrimenti le frecce sembrerebbero non funzionare.
+  _wireBalanceNav() {
+    const go = async () => {
+      this._balStats = null;
+      this._render();
+      await this._fetchBalance();
+      this._render();
+    };
+    this.querySelectorAll('[data-balk]').forEach((el) => {
+      el.addEventListener('click', () => {
+        this._balKind = el.getAttribute('data-balk');
+        this._balBack = 0;
+        go();
+      });
+    });
+    this.querySelectorAll('[data-balstep]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const sel = this._balSelection();
+        // ‹ va indietro nel tempo, cioe' aumenta l'arretramento
+        const next = sel.back - parseInt(el.getAttribute('data-balstep'), 10);
+        if (next < 0 || next > sel.max) return;
+        this._balBack = next;
+        go();
+      });
+    });
   }
 
   // Profilo orario: barre impilate con la stessa scomposizione della striscia.
@@ -2044,14 +2160,18 @@ class EnergyPowerCard extends HTMLElement {
     if (this.config.hourly === false) return '';
     const rows = this._hourly;
     if (!rows || !rows.length) return '';
+    const sel = this._balSel || this._balSelection();
+    const n = sel.kind === 'month' ? Math.round((sel.to - sel.from) / 86400000) : 24;
+    const monthly = sel.kind === 'month';
     let max = 0;
     rows.forEach((r) => {
       if (r.house > max) max = r.house;
     });
     if (!(max > 0)) return '';
+    const pad = (v) => (v < 10 ? '0' + v : '' + v);
     let bars = '';
-    for (let h = 0; h < 24; h++) {
-      const r = rows[h];
+    for (let i = 0; i < n; i++) {
+      const r = rows[i];
       if (!r) {
         bars += '<div class="epb-hb epb-hb-void"></div>';
         continue;
@@ -2061,17 +2181,22 @@ class EnergyPowerCard extends HTMLElement {
         if (p[0] > max / 250) inner += '<i class="epb-c-' + p[1] + '" style="flex:' + p[0].toFixed(4) + '"></i>';
       });
       const hh = ((r.house / max) * 100).toFixed(1);
+      const lab = monthly ? 'giorno ' + (i + 1) : pad(i) + ':00 – ' + pad(i + 1) + ':00';
       // i valori restano sull'elemento: il tooltip li legge senza rigenerare l'HTML
       bars +=
-        '<div class="epb-hb" data-h="' + r.h + '" data-tot="' + r.house.toFixed(3) + '"' +
+        '<div class="epb-hb" data-h="' + r.h + '" data-lab="' + lab + '" data-tot="' + r.house.toFixed(3) + '"' +
         ' data-sun="' + r.sun.toFixed(3) + '" data-bat="' + r.batt.toFixed(3) + '" data-grid="' + r.grid.toFixed(3) + '">' +
         '<div class="epb-hb-in" style="height:' + hh + '%">' + inner + '</div></div>';
     }
+    const ax = monthly
+      ? [1, 5, 10, 15, 20, 25, n].map((d) => '<span>' + d + '</span>').join('')
+      : ['00', '06', '12', '18', '23'].map((h) => '<span>' + h + '</span>').join('');
     return (
       '<div class="epb-hr">' +
-      '<div class="epb-hr-hd"><span>Profilo orario</span><b>max ' + max.toFixed(2) + ' kWh/h</b></div>' +
+      '<div class="epb-hr-hd"><span>' + (monthly ? 'Profilo giornaliero' : 'Profilo orario') + '</span>' +
+      '<b>max ' + max.toFixed(2) + (monthly ? ' kWh/g' : ' kWh/h') + '</b></div>' +
       '<div class="epb-hr-plot">' + bars + '<div class="epb-tip" hidden></div></div>' +
-      '<div class="epb-hr-ax"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>' +
+      '<div class="epb-hr-ax">' + ax + '</div>' +
       '</div>'
     );
   }
@@ -2090,9 +2215,9 @@ class EnergyPowerCard extends HTMLElement {
       const sun = parseFloat(bar.getAttribute('data-sun'));
       const bat = parseFloat(bar.getAttribute('data-bat'));
       const grid = parseFloat(bar.getAttribute('data-grid'));
-      const h = parseInt(bar.getAttribute('data-h'), 10);
+      const lab = bar.getAttribute('data-lab') || '';
       tip.innerHTML =
-        '<div class="epb-tt">' + (h < 10 ? '0' : '') + h + ':00 – ' + (h < 9 ? '0' : '') + (h + 1) + ':00' +
+        '<div class="epb-tt">' + lab +
         '<b>' + tot.toFixed(2) + ' kWh</b></div>' +
         row('Solare', 'sun', sun, tot) + row('Batteria', 'bat', bat, tot) + row('Rete', 'grid', grid, tot);
       tip.hidden = false;
@@ -3041,7 +3166,21 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-kl{font-size:11px;color:var(--epb-tx2);line-height:1.2;}' +
       '.epb-kv{font-size:16px;font-weight:650;letter-spacing:-.3px;margin-top:3px;font-variant-numeric:tabular-nums;}' +
       '.epb-u{font-size:11px;font-weight:500;color:var(--epb-tx2);}' +
-      '@media (max-width:359px){.epb-grid{grid-template-columns:1fr;}}' +
+      // navigatore del periodo: stesso linguaggio del layout devices
+      '.epb-nv{display:flex;align-items:center;justify-content:space-between;gap:8px;' +
+      'flex-wrap:wrap;margin:12px 0 2px;}' +
+      '.epb-sg,.epb-ar{display:flex;gap:2px;padding:3px;border-radius:11px;' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.10));}' +
+      '.epb-sg button,.epb-ar button{font:inherit;font-size:12px;font-weight:600;' +
+      'color:var(--epb-tx2);background:none;border:0;padding:5px 10px;border-radius:8px;cursor:pointer;}' +
+      '.epb-ar button{font-size:15px;line-height:1;padding:4px 10px;}' +
+      '.epb-sg button[aria-pressed="true"]{background:color-mix(in srgb,var(--epb-tx) 10%,transparent);' +
+      'color:var(--epb-tx);}' +
+      '.epb-ar button:disabled{opacity:.35;cursor:default;}' +
+      '.epb-ar button:hover:not(:disabled),.epb-sg button:hover{color:var(--epb-tx);}' +
+      '.epb-nl{min-width:132px;text-align:center;font-size:12.5px;font-weight:700;padding:0 6px;' +
+      'text-transform:capitalize;color:var(--epb-tx);}' +
+      '@media (max-width:359px){.epb-grid{grid-template-columns:1fr;}.epb-nl{min-width:96px;}}' +
       // layout devices: un solo colore per tutte le barre. Il nome del dispositivo e'
       // gia' sulla riga, quindi tinte diverse per riga brucerebbero l'unico canale
       // libero; il colore torna a significare qualcosa (viola = consumo casa, grigio =
