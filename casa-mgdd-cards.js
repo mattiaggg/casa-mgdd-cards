@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.56.0
+ * Version: 1.57.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1369,10 +1369,15 @@ class EnergyPowerCard extends HTMLElement {
     ['grid_import', 'grid_export', 'house', 'solar', 'battery_charge', 'battery_discharge'].forEach((k) => {
       if (cfg[k]) ids.push(cfg[k]);
     });
-    (cfg.circuits || []).forEach((c) => {
-      if (c.entity) ids.push(c.entity);
-      if (c.switch) ids.push(c.switch);
-    });
+    // layout devices: vive di statistiche a lungo termine, non di stati live. Tenere
+    // fuori i sensori di potenza evita un ridisegno ogni 2 s, che azzererebbe il fuoco
+    // sui comandi di navigazione mentre l'utente scorre i giorni.
+    if (cfg.layout !== 'devices') {
+      (cfg.circuits || []).forEach((c) => {
+        if (c.entity) ids.push(c.entity);
+        if (c.switch) ids.push(c.switch);
+      });
+    }
     const sig = mgddStatesSig(hass, ids);
     if (sig !== this._lastSig) {
       this._lastSig = sig;
@@ -1413,7 +1418,7 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 5;
+    return this.config && this.config.layout === 'devices' ? 14 : 5;
   }
 
   _num(entity) {
@@ -1505,6 +1510,9 @@ class EnergyPowerCard extends HTMLElement {
           /* senza recorder la card mostra "--": nessun numero inventato */
         }
       }
+    }
+    if (this.config.layout === 'devices' && this._hass) {
+      await this._fetchDeviceStats();
     }
     const statsEntity = this.config.total_energy_entity || this.config.energy_day_entity;
     if (this.config.layout === 'overview' && statsEntity && this._hass) {
@@ -1724,6 +1732,7 @@ class EnergyPowerCard extends HTMLElement {
     else if (this.config.layout === 'controls') this._renderControlTiles();
     else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
     else if (this.config.layout === 'balance') this._renderBalance();
+    else if (this.config.layout === 'devices') this._renderDevices();
     else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
@@ -2382,6 +2391,418 @@ class EnergyPowerCard extends HTMLElement {
     this._wireClicks();
   }
 
+  // ===========================================================================
+  // layout: devices - totali per dispositivo, con navigazione fra giorni e mesi.
+  //
+  // La fonte sono le statistiche a lungo termine (period day/month) dei contatori
+  // kWh: la history grezza dura ~10 giorni e non risponde su base mensile. Ogni
+  // circuito porta `energy` (sensore kWh cumulativo); `house_energy` e' il
+  // contatore di tutta la casa e serve solo a ricavare la quota e il residuo non
+  // attribuito. Config: title, circuits[{name,energy}], house_energy, days (15),
+  // months (9), mode (plain|compare|trend).
+  // ===========================================================================
+  _dp2(n) {
+    return n < 10 ? '0' + n : '' + n;
+  }
+
+  _dkey(ts, period) {
+    const d = new Date(ts);
+    const m = this._dp2(d.getMonth() + 1);
+    return period === 'month'
+      ? d.getFullYear() + '-' + m
+      : d.getFullYear() + '-' + m + '-' + this._dp2(d.getDate());
+  }
+
+  // L'asse dei periodi si genera qui, non dalla risposta: un buco nelle statistiche
+  // deve restare visibile come buco invece di far scomparire la colonna.
+  _daxis(period) {
+    const n = period === 'month' ? this.config.months || 9 : this.config.days || 15;
+    const now = new Date();
+    const out = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const d =
+        period === 'month'
+          ? new Date(now.getFullYear(), now.getMonth() - i, 1)
+          : new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      out.push(this._dkey(d.getTime(), period));
+    }
+    return out;
+  }
+
+  _dlist() {
+    return (this.config.circuits || []).filter((c) => c.energy);
+  }
+
+  async _fetchDeviceStats() {
+    const c = this.config;
+    const list = this._dlist();
+    if (!list.length) return;
+    const ids = list.map((d) => d.energy);
+    if (c.house_energy) ids.push(c.house_energy);
+    const now = new Date();
+    const days = c.days || 15;
+    const months = c.months || 9;
+    const spans = [
+      ['day', new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1))],
+      ['month', new Date(now.getFullYear(), now.getMonth() - (months - 1), 1)],
+    ];
+    const out = {};
+    for (let i = 0; i < spans.length; i++) {
+      const period = spans[i][0];
+      let resp = null;
+      try {
+        resp = await this._hass.callWS({
+          type: 'recorder/statistics_during_period',
+          start_time: spans[i][1].toISOString(),
+          end_time: now.toISOString(),
+          statistic_ids: ids,
+          period: period,
+          types: ['change'],
+        });
+      } catch (e) {
+        resp = null; // senza recorder la card lo dice, non inventa numeri
+      }
+      out[period] = resp ? this._dbuckets(resp, ids, period) : null;
+    }
+    this._dstats = out;
+  }
+
+  // Per ogni sensore: chiave periodo -> kWh. Nessuna riga significa "sensore non
+  // ancora esistente", che e' diverso da zero. Un calo del contatore e' un
+  // azzeramento, non un consumo negativo: si marca invalido invece di appiattirlo
+  // a zero, perche' un totale sbagliato e' peggio di un totale mancante.
+  _dbuckets(resp, ids, period) {
+    const map = {};
+    ids.forEach((id) => {
+      const rows = (resp && resp[id]) || null;
+      if (!rows || !rows.length) {
+        map[id] = null;
+        return;
+      }
+      const b = {};
+      rows.forEach((r) => {
+        const v = r.change;
+        if (v === null || v === undefined) return;
+        const k = this._dkey(r.start, period);
+        if (v < -0.05) b[k] = { bad: 'contatore azzerato' };
+        else b[k] = { v: Math.max(0, v) };
+      });
+      map[id] = b;
+    });
+    return map;
+  }
+
+  _dcell(id, period, key) {
+    const st = this._dstats && this._dstats[period];
+    if (!st) return {};
+    const b = st[id];
+    if (!b) return { absent: true };
+    const cell = b[key];
+    if (!cell) return { absent: true };
+    if (cell.bad) return { bad: cell.bad };
+    return { v: cell.v };
+  }
+
+  _dsnap() {
+    const period = this._dkind || 'day';
+    const axis = this._daxis(period);
+    let idx = this._didx;
+    if (idx === null || idx === undefined || idx > axis.length - 1 || idx < 0) idx = axis.length - 1;
+    const key = axis[idx];
+    const pkey = idx > 0 ? axis[idx - 1] : null;
+    const list = this._dlist().map((dev) => {
+      const c = this._dcell(dev.energy, period, key);
+      const p = pkey ? this._dcell(dev.energy, period, pkey) : {};
+      return {
+        name: dev.name || dev.energy,
+        dev: dev,
+        v: c.v === undefined ? null : c.v,
+        bad: c.bad,
+        prev: p.v === undefined ? null : p.v,
+      };
+    });
+    list.sort((a, b) => {
+      if (a.v === null && b.v === null) return 0;
+      if (a.v === null) return 1;
+      if (b.v === null) return -1;
+      return b.v - a.v;
+    });
+    const meas = list.reduce((s, r) => s + (r.v || 0), 0);
+    const prevMeas = pkey ? list.reduce((s, r) => s + (r.prev || 0), 0) : null;
+    let house = null;
+    if (this.config.house_energy) {
+      const hc = this._dcell(this.config.house_energy, period, key);
+      if (hc.v !== undefined && hc.v !== null) house = hc.v;
+    }
+    return {
+      period: period,
+      axis: axis,
+      idx: idx,
+      list: list,
+      meas: meas,
+      prevMeas: prevMeas,
+      house: house,
+      other: house !== null ? Math.max(0, house - meas) : null,
+      partial: idx === axis.length - 1,
+    };
+  }
+
+  _dnum(v) {
+    return (v < 10 ? v.toFixed(2) : v.toFixed(1)).replace('.', ',');
+  }
+
+  _dfmt(v) {
+    if (v === null || v === undefined) return '—';
+    if (v === 0) return '0';
+    if (v < 0.1) return Math.round(v * 1000) + ' Wh';
+    return this._dnum(v) + ' kWh';
+  }
+
+  _dlabel(period, key) {
+    const MESI = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
+    const GG = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+    const p = key.split('-');
+    if (period === 'month') return MESI[+p[1] - 1] + ' ' + p[0];
+    const d = new Date(+p[0], +p[1] - 1, +p[2]);
+    return GG[d.getDay()] + ' ' + +p[2] + ' ' + MESI[+p[1] - 1];
+  }
+
+  _dshort(period, key) {
+    const MESI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+    const p = key.split('-');
+    return period === 'month' ? MESI[+p[1] - 1] : String(+p[2]);
+  }
+
+  _dspark(dev, sn) {
+    const W = 124;
+    const H = 20;
+    const bw = W / sn.axis.length;
+    let mx = 0;
+    const cells = sn.axis.map((k) => {
+      const c = this._dcell(dev.energy, sn.period, k);
+      if (c.v !== undefined && c.v !== null && c.v > mx) mx = c.v;
+      return c;
+    });
+    if (mx <= 0) mx = 1;
+    let s = '<svg class="epd-spk" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">';
+    cells.forEach((c, i) => {
+      const x = i * bw + 1;
+      const w = Math.max(1.4, bw - 2);
+      if (c.v === undefined || c.v === null) {
+        s += '<rect x="' + x.toFixed(1) + '" y="' + (H - 2) + '" width="' + w.toFixed(1) + '" height="2" rx="1" fill="var(--epd-weak)"/>';
+        return;
+      }
+      const h = Math.max(1.2, (c.v / mx) * (H - 2));
+      s += '<rect x="' + x.toFixed(1) + '" y="' + (H - h).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="1.5" fill="' + (i === sn.idx ? 'var(--epd-acc)' : 'var(--epd-weak)') + '"/>';
+    });
+    return s + '</svg>';
+  }
+
+  _ddeltaChip(cur, prev) {
+    if (cur === null || prev === null || prev === undefined) return '<span class="epd-d epd-na">n.d.</span>';
+    const d = cur - prev;
+    if (Math.abs(d) < 0.005) return '<span class="epd-d epd-na">=</span>';
+    return '<span class="epd-d ' + (d > 0 ? 'epd-up' : 'epd-dn') + '">' + (d > 0 ? '▲' : '▼') + ' ' + this._dfmt(Math.abs(d)) + '</span>';
+  }
+
+  _ddeltaCell(cur, prev) {
+    if (cur === null || prev === null || prev === undefined) return '<div class="epd-dd epd-na">n.d.</div>';
+    const d = cur - prev;
+    if (Math.abs(d) < 0.005) return '<div class="epd-dd epd-na">=</div>';
+    const a = Math.abs(d);
+    const t = a < 0.1 ? a.toFixed(3).replace('.', ',') : this._dnum(a);
+    return '<div class="epd-dd ' + (d > 0 ? 'epd-up' : 'epd-dn') + '" title="' + (d > 0 ? '+' : '−') + this._dfmt(a) + '">' + (d > 0 ? '+' : '−') + t + '</div>';
+  }
+
+  _dstripHtml(sn) {
+    const tots = sn.axis.map((k) => {
+      if (this.config.house_energy) {
+        const h = this._dcell(this.config.house_energy, sn.period, k);
+        if (h.v !== undefined && h.v !== null) return h.v;
+      }
+      return this._dlist().reduce((s, dev) => {
+        const c = this._dcell(dev.energy, sn.period, k);
+        return s + (c.v || 0);
+      }, 0);
+    });
+    let mx = Math.max.apply(null, tots);
+    if (!mx) mx = 1;
+    return (
+      '<div class="epd-strip">' +
+      sn.axis
+        .map((k, i) => {
+          const h = Math.max(3, Math.round((tots[i] / mx) * 22));
+          return (
+            '<button class="epd-sb" data-epd-i="' + i + '" aria-pressed="' + (i === sn.idx) + '" ' +
+            'title="' + this._dlabel(sn.period, k) + ' · ' + this._dfmt(tots[i]) + '">' +
+            '<i style="height:' + h + 'px"></i><u>' + this._dshort(sn.period, k) + '</u></button>'
+          );
+        })
+        .join('') +
+      '</div>'
+    );
+  }
+
+  _dbodyHtml(sn) {
+    const mode = this._dmode || this.config.mode || 'plain';
+    const cls = mode === 'compare' ? 'epd-b' : mode === 'trend' ? 'epd-c' : 'epd-a';
+    const active = sn.list.filter((r) => r.v !== null && r.v > 0);
+    const zeros = sn.list.filter((r) => r.v === 0);
+    const absent = sn.list.filter((r) => r.v === null);
+    let mx = active.length ? active[0].v : 0;
+    if (sn.other !== null && sn.other > mx) mx = sn.other;
+    if (!mx) mx = 1;
+    const w = (v) => Math.max(0.4, (v / mx) * 100).toFixed(2);
+
+    let h =
+      '<div class="epd-hd"><div>' +
+      '<div class="epd-k">Misurato · ' + this._dlabel(sn.period, sn.axis[sn.idx]) + (sn.partial ? ' · in corso' : '') + '</div>' +
+      '<div class="epd-v">' + this._dnum(sn.meas) + '<small>kWh</small></div>' +
+      (sn.house !== null
+        ? '<div class="epd-k" style="margin-top:3px">su ' + this._dnum(sn.house) + ' kWh di casa · ' + Math.round((sn.meas / sn.house) * 100) + '% attribuito</div>'
+        : '<div class="epd-k" style="margin-top:3px">totale casa non disponibile per questo periodo</div>') +
+      '</div><div style="text-align:right">' +
+      '<div class="epd-k">vs ' + (sn.period === 'day' ? 'giorno' : 'mese') + ' precedente</div>' +
+      '<div style="margin-top:6px">' + this._ddeltaChip(sn.meas, sn.prevMeas) + '</div>' +
+      '</div></div>';
+
+    h += '<div class="epd-rows">';
+    active.forEach((r) => {
+      h +=
+        '<div class="epd-r ' + cls + '"><div class="epd-n" title="' + r.name + '">' + r.name + '</div>' +
+        '<div class="epd-tr">' +
+        (mode === 'compare' && r.prev !== null ? '<span class="epd-g" style="width:' + w(r.prev) + '%"></span>' : '') +
+        '<span class="epd-bar" style="width:' + w(r.v) + '%"></span></div>' +
+        '<div class="epd-val">' + this._dfmt(r.v) + '</div>' +
+        (mode === 'compare'
+          ? this._ddeltaCell(r.v, r.prev)
+          : mode === 'trend'
+            ? '<div>' + this._dspark(r.dev, sn) + '</div>'
+            : '<div class="epd-pc">' + (sn.house !== null ? Math.round((r.v / sn.house) * 100) + '%' : '—') + '</div>') +
+        '</div>';
+    });
+    if (sn.other !== null && sn.other > 0) {
+      h +=
+        '<div class="epd-r ' + cls + '"><div class="epd-n">Non misurato</div>' +
+        '<div class="epd-tr"><span class="epd-bar epd-oth" style="width:' + w(sn.other) + '%"></span></div>' +
+        '<div class="epd-val">' + this._dfmt(sn.other) + '</div>' +
+        (mode === 'plain'
+          ? '<div class="epd-pc">' + Math.round((sn.other / sn.house) * 100) + '%</div>'
+          : '<div class="epd-dd epd-na">—</div>') +
+        '</div>';
+    }
+    if (zeros.length) {
+      h +=
+        '<div class="epd-r epd-off ' + cls + '"><div class="epd-n">' + zeros.length +
+        (zeros.length === 1 ? ' dispositivo a zero' : ' dispositivi a zero') + '</div>' +
+        '<div class="epd-tr"><span class="epd-z"></span></div><div class="epd-val">0</div><div></div></div>';
+    }
+    if (absent.length) {
+      h +=
+        '<div class="epd-r epd-off ' + cls + '"><div class="epd-n">' + absent.length + ' senza dato</div>' +
+        '<div class="epd-tr"><span class="epd-z"></span></div><div class="epd-val">—</div><div></div></div>';
+    }
+    h += '</div>';
+
+    h += '<div class="epd-foot">';
+    if (mode === 'compare') {
+      h +=
+        '<span><span class="epd-sw" style="background:var(--epd-weak)"></span>' +
+        (sn.period === 'day' ? 'giorno' : 'mese') + ' precedente</span>' +
+        '<span>Colonna a destra: <b>differenza in kWh</b></span>';
+    }
+    if (sn.other !== null) h += '<span><span class="epd-sw" style="background:#9A9993"></span>non attribuito a nessun sensore</span>';
+    if (zeros.length) h += '<span>A zero: <b>' + zeros.map((r) => r.name).join(', ') + '</b></span>';
+    h += '</div>';
+
+    const bads = sn.list.filter((r) => r.bad);
+    if (bads.length || absent.length) {
+      h += '<div class="epd-warn">';
+      if (bads.length) h += '<b>Dato scartato:</b> ' + bads.map((r) => r.name + ' (' + r.bad + ')').join(', ') + '. ';
+      if (absent.length) h += '<b>Sensore assente in questo periodo:</b> ' + absent.map((r) => r.name).join(', ') + '.';
+      h += '</div>';
+    }
+    return h;
+  }
+
+  _renderDevices() {
+    const period = this._dkind || 'day';
+    const mode = this._dmode || this.config.mode || 'plain';
+    const axis = this._daxis(period);
+    let idx = this._didx;
+    if (idx === null || idx === undefined || idx > axis.length - 1 || idx < 0) idx = axis.length - 1;
+    const seg = (attr, opts) =>
+      '<div class="epd-seg">' +
+      opts.map((o) => '<button data-epd-' + attr + '="' + o[0] + '" aria-pressed="' + o[2] + '">' + o[1] + '</button>').join('') +
+      '</div>';
+
+    let head =
+      '<div class="epd-top">' +
+      '<div class="epd-t">' + (this.config.title || 'Totali per dispositivo') + '</div>' +
+      seg('mode', [
+        ['plain', 'Quota', mode === 'plain'],
+        ['compare', 'Confronto', mode === 'compare'],
+        ['trend', 'Andamento', mode === 'trend'],
+      ]) +
+      '</div>' +
+      '<div class="epd-nvbar">' +
+      seg('k', [
+        ['day', 'Giorno', period === 'day'],
+        ['month', 'Mese', period === 'month'],
+      ]) +
+      '<div class="epd-nav">' +
+      '<button data-epd-step="-1" title="Precedente"' + (idx <= 0 ? ' disabled' : '') + '>‹</button>' +
+      '<span class="epd-lbl">' + this._dlabel(period, axis[idx]) + '</span>' +
+      '<button data-epd-step="1" title="Successivo"' + (idx >= axis.length - 1 ? ' disabled' : '') + '>›</button>' +
+      '</div></div>';
+
+    let body;
+    if (!this._dstats) body = '<div class="epd-load">Caricamento statistiche…</div>';
+    else if (!this._dstats[period]) body = '<div class="epd-load">Statistiche non disponibili: il recorder non ha risposto.</div>';
+    else if (!this._dlist().length) body = '<div class="epd-load">Nessun circuito con la chiave <code>energy</code> in configurazione.</div>';
+    else {
+      const sn = this._dsnap();
+      body = this._dstripHtml(sn) + this._dbodyHtml(sn);
+    }
+
+    mgddPaint(this, this._styles(), '<div class="epd-wrap' + (this._isDark() ? ' epd-dark' : '') + '"><div class="epd-card">' + head + body + '</div></div>');
+    this._wireDevices();
+  }
+
+  _wireDevices() {
+    const rerender = () => this._render();
+    this.querySelectorAll('[data-epd-k]').forEach((el) => {
+      el.addEventListener('click', () => {
+        this._dkind = el.getAttribute('data-epd-k');
+        this._didx = null; // cambiando scala si torna al periodo in corso
+        rerender();
+      });
+    });
+    this.querySelectorAll('[data-epd-mode]').forEach((el) => {
+      el.addEventListener('click', () => {
+        this._dmode = el.getAttribute('data-epd-mode');
+        rerender();
+      });
+    });
+    this.querySelectorAll('[data-epd-i]').forEach((el) => {
+      el.addEventListener('click', () => {
+        this._didx = parseInt(el.getAttribute('data-epd-i'), 10);
+        rerender();
+      });
+    });
+    this.querySelectorAll('[data-epd-step]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const n = this._daxis(this._dkind || 'day').length;
+        const cur = this._didx === null || this._didx === undefined ? n - 1 : this._didx;
+        const next = Math.min(n - 1, Math.max(0, cur + parseInt(el.getAttribute('data-epd-step'), 10)));
+        if (next !== cur) {
+          this._didx = next;
+          rerender();
+        }
+      });
+    });
+  }
+
   _styles() {
     return (
       '<style>' +
@@ -2621,6 +3042,74 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-kv{font-size:16px;font-weight:650;letter-spacing:-.3px;margin-top:3px;font-variant-numeric:tabular-nums;}' +
       '.epb-u{font-size:11px;font-weight:500;color:var(--epb-tx2);}' +
       '@media (max-width:359px){.epb-grid{grid-template-columns:1fr;}}' +
+      // layout devices: un solo colore per tutte le barre. Il nome del dispositivo e'
+      // gia' sulla riga, quindi tinte diverse per riga brucerebbero l'unico canale
+      // libero; il colore torna a significare qualcosa (viola = consumo casa, grigio =
+      // non attribuito, verde/rosso = solo la differenza).
+      '.epd-wrap{--epd-acc:#6D5AE6;--epd-weak:#EDEBFB;--epd-up:#C0392B;--epd-dn:#0F8A4D;' +
+      '--epd-tx:var(--primary-text-color,#1c1c1e);--epd-tx2:var(--secondary-text-color,#6b6f76);' +
+      '--epd-bd:var(--divider-color,rgba(0,0,0,.10));}' +
+      '.epd-wrap.epd-dark{--epd-acc:#A99BFF;--epd-weak:#2A2740;--epd-up:#F07167;--epd-dn:#3BD98A;}' +
+      '.epd-card{background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--epd-bd);border-radius:18px;padding:16px 18px;}' +
+      '.epd-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}' +
+      '.epd-t{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--epd-tx2);}' +
+      '.epd-nvbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;}' +
+      '.epd-seg,.epd-nav{display:flex;gap:2px;padding:3px;border-radius:11px;border:1px solid var(--epd-bd);}' +
+      '.epd-seg button,.epd-nav button{font:inherit;font-size:12px;font-weight:600;color:var(--epd-tx2);' +
+      'background:none;border:0;padding:5px 10px;border-radius:8px;cursor:pointer;}' +
+      '.epd-nav button{font-size:15px;line-height:1;padding:4px 10px;}' +
+      '.epd-seg button[aria-pressed="true"]{background:color-mix(in srgb,var(--epd-tx) 10%,transparent);color:var(--epd-tx);}' +
+      '.epd-nav button:disabled{opacity:.35;cursor:default;}' +
+      '.epd-lbl{min-width:168px;text-align:center;font-size:12.5px;font-weight:700;padding:0 6px;' +
+      'text-transform:capitalize;color:var(--epd-tx);}' +
+      '.epd-strip{display:flex;gap:3px;align-items:flex-end;height:40px;margin-top:10px;padding:5px 7px;' +
+      'border-radius:11px;border:1px solid var(--epd-bd);}' +
+      '.epd-sb{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;' +
+      'align-items:center;gap:2px;background:none;border:0;padding:0;height:100%;cursor:pointer;}' +
+      '.epd-sb i{display:block;width:100%;border-radius:3px 3px 0 0;background:var(--epd-weak);}' +
+      '.epd-sb[aria-pressed="true"] i{background:var(--epd-acc);}' +
+      '.epd-sb u{font-size:8.5px;text-decoration:none;color:var(--epd-tx2);font-variant-numeric:tabular-nums;}' +
+      '.epd-sb[aria-pressed="true"] u{color:var(--epd-tx);font-weight:700;}' +
+      '.epd-hd{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;' +
+      'margin:14px 0 12px;}' +
+      '.epd-k{font-size:11.5px;color:var(--epd-tx2);}' +
+      '.epd-v{font-size:27px;font-weight:700;letter-spacing:-.5px;margin-top:3px;color:var(--epd-tx);}' +
+      '.epd-v small{font-size:13px;font-weight:600;color:var(--epd-tx2);margin-left:2px;}' +
+      '.epd-d{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;' +
+      'padding:3px 9px;border-radius:999px;border:1px solid var(--epd-bd);white-space:nowrap;}' +
+      '.epd-up{color:var(--epd-up);} .epd-dn{color:var(--epd-dn);} .epd-na{color:var(--epd-tx2);}' +
+      '.epd-rows{display:flex;flex-direction:column;}' +
+      '.epd-r{display:grid;align-items:center;gap:12px;padding:6px 0;border-top:1px solid var(--epd-bd);}' +
+      '.epd-r:first-child{border-top:0;}' +
+      '.epd-a{grid-template-columns:170px 1fr 86px 40px;}' +
+      '.epd-b{grid-template-columns:170px 1fr 86px 70px;}' +
+      '.epd-c{grid-template-columns:170px 1fr 86px 124px;}' +
+      '.epd-n{font-size:12.5px;color:var(--epd-tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.epd-tr{position:relative;height:15px;}' +
+      '.epd-tr span{position:absolute;left:0;top:0;height:100%;border-radius:0 4px 4px 0;}' +
+      '.epd-g{background:var(--epd-weak);}' +
+      '.epd-bar{background:var(--epd-acc);}' +
+      '.epd-bar.epd-oth{background:#9A9993;}' +
+      '.epd-z{width:2px;background:var(--epd-bd);border-radius:0;}' +
+      '.epd-val{font-size:12.5px;font-weight:600;text-align:right;color:var(--epd-tx);' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.epd-pc{font-size:11px;text-align:right;color:var(--epd-tx2);font-variant-numeric:tabular-nums;}' +
+      '.epd-dd{font-size:11.5px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums;}' +
+      '.epd-off .epd-n,.epd-off .epd-val{color:var(--epd-tx2);}' +
+      '.epd-spk{display:block;}' +
+      '.epd-foot{margin-top:12px;padding-top:11px;border-top:1px solid var(--epd-bd);display:flex;' +
+      'flex-wrap:wrap;gap:5px 16px;font-size:11.5px;color:var(--epd-tx2);}' +
+      '.epd-foot b{color:var(--epd-tx);}' +
+      '.epd-sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;' +
+      'vertical-align:-1px;}' +
+      '.epd-warn{font-size:11.5px;margin-top:9px;padding:8px 10px;border-radius:10px;color:var(--epd-tx2);' +
+      'background:rgba(192,57,43,.09);border:1px solid rgba(192,57,43,.26);}' +
+      '.epd-warn b{color:var(--epd-tx);}' +
+      '.epd-load{font-size:12.5px;color:var(--epd-tx2);padding:26px 0;text-align:center;}' +
+      '@media (max-width:560px){.epd-a,.epd-b,.epd-c{grid-template-columns:104px 1fr 72px;}' +
+      '.epd-a .epd-pc,.epd-b .epd-dd,.epd-c .epd-spk{display:none;}' +
+      '.epd-lbl{min-width:118px;font-size:12px;}.epd-sb u{display:none;}}' +
       '</style>'
     );
   }
