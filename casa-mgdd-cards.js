@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.58.2
+ * Version: 1.59.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1632,6 +1632,10 @@ class EnergyPowerCard extends HTMLElement {
     const out = {};
     ids.forEach((id) => {
       const buckets = new Array(sel.hours).fill(0);
+      // `seen` distingue "riga a zero" da "nessuna riga": senza, un'ora in cui il
+      // sensore era irraggiungibile diventa indistinguibile da un'ora a consumo
+      // nullo, e il grafico afferma una cosa che non sa.
+      const seen = new Array(sel.hours).fill(false);
       let edge = null;
       ((resp && resp[id]) || []).forEach((r) => {
         const s = parseFloat(r.state);
@@ -1640,9 +1644,12 @@ class EnergyPowerCard extends HTMLElement {
         if (d < sel.from || d >= sel.to) return;
         const i = Math.floor((d - sel.from) / 3600000);
         const v = Math.max(0, r.change || 0);
-        if (i >= 0 && i < sel.hours) buckets[i] += v;
+        if (i >= 0 && i < sel.hours) {
+          buckets[i] += v;
+          seen[i] = true;
+        }
       });
-      out[id] = { buckets: buckets, edge: edge };
+      out[id] = { buckets: buckets, seen: seen, edge: edge };
     });
     return out;
   }
@@ -2015,6 +2022,16 @@ class EnergyPowerCard extends HTMLElement {
     // zero: un'ora non ancora trascorsa non e' un'ora a consumo nullo. Su un periodo
     // passato si percorre tutto.
     const upTo = sel.current ? Math.floor((new Date() - sel.from) / 3600000) : n - 1;
+    // Ore senza dato e ore di accumulo. Un'ora priva di righe non e' un'ora a consumo
+    // zero, e l'ora subito dopo un buco porta l'energia di tutto il buco: va guardata
+    // con sospetto invece di dettare la scala del grafico. L'ora in corso non ha
+    // ancora una riga compilata dal recorder: e' parziale, non assente.
+    const hst = this._balStats && this._balStats[c.house];
+    const nowIdx = sel.current ? upTo : -1;
+    const voidH = [];
+    for (let i = 0; i < n; i++) {
+      voidH.push(hst && hst.seen ? !hst.seen[i] && i !== nowIdx : false);
+    }
     for (let i = 0; i <= upTo && i < n; i++) {
       const g = dayOf[i];
       // frazione solare della carica, del giorno a cui l'ora appartiene
@@ -2024,7 +2041,9 @@ class EnergyPowerCard extends HTMLElement {
       const grid = rest - batt;
       const k = slotOf[i];
       if (k < 0 || k >= slots) continue;
-      if (!rows[k]) rows[k] = { h: k, house: 0, sun: 0, batt: 0, grid: 0 };
+      if (!rows[k]) rows[k] = { h: k, house: 0, sun: 0, batt: 0, grid: 0, gap: true, susp: false };
+      if (!voidH[i]) rows[k].gap = false;
+      if (i > 0 && voidH[i - 1] && !voidH[i]) rows[k].susp = true;
       rows[k].house += house[i];
       rows[k].sun += sun[i];
       rows[k].batt += batt;
@@ -2070,18 +2089,18 @@ class EnergyPowerCard extends HTMLElement {
       return hrs ? hrs.reduce((s, v) => s + v, 0) : null;
     };
     const pctTxt = selfSuff === null ? '--' : Math.round(selfSuff);
-    // semicerchio r=62 -> lunghezza pi*62
-    const ARC = 194.8;
-    const arcFill = selfSuff === null ? 0 : (ARC * selfSuff) / 100;
-    const gauge =
-      '<div class="epb-arc">' +
-      '<svg viewBox="0 0 150 84" width="150" height="84" aria-hidden="true">' +
-      '<path d="M13 75a62 62 0 0 1 124 0" fill="none" stroke="var(--epb-track)" stroke-width="11" stroke-linecap="round"/>' +
-      '<path d="M13 75a62 62 0 0 1 124 0" fill="none" stroke="var(--epb-good)" stroke-width="11" stroke-linecap="round" stroke-dasharray="' +
-      arcFill.toFixed(1) + ' ' + ARC + '"/>' +
-      '</svg>' +
-      '<div class="epb-arc-c"><div class="epb-arc-p">' + pctTxt + '<span class="epb-arc-pp">%</span></div>' +
-      '<div class="epb-arc-l">autosufficienza</div></div>' +
+    // L'arco da 84px e' stato tolto: diceva la somma di due numeri che stanno nella
+    // legenda dieci pixel sotto, e occupava un quarto dell'altezza della card. Lo
+    // spazio va al profilo orario. Il numero resta in colore di TESTO e non in
+    // accento: il viola non identificava nessuna serie, e il colore qui dentro serve
+    // ai tre segmenti.
+    const hero =
+      '<div class="epb-hero">' +
+      '<div><div class="epb-hero-n">' + pctTxt + '<span class="epb-hero-pp">%</span></div>' +
+      '<div class="epb-hero-l">autosufficienza</div></div>' +
+      '<div class="epb-hero-r" data-entity="' + (c.house || '') + '">' +
+      '<div class="epb-hero-v">' + this._fmt(house, '', 1) + '<span class="epb-u"> kWh</span></div>' +
+      '<div class="epb-hero-l">consumo casa</div></div>' +
       '</div>';
 
     const parts = [
@@ -2111,9 +2130,7 @@ class EnergyPowerCard extends HTMLElement {
       '<div class="epb-hd"><span class="epb-t">' + (c.title || 'Bilancio energetico') + '</span>' +
       '<span class="epb-pill">' + this._balPill() + '</span></div>' +
       this._balNav() +
-      gauge +
-      '<div class="epb-sub" data-entity="' + (c.house || '') + '">' + svg(ic.home, 'var(--epb-tx2)') +
-      '<span>Consumo casa</span><b>' + this._fmt(house, ' kWh', 1) + '</b></div>' +
+      hero +
       '<div class="epb-mx">' + segs + '</div>' +
       '<div class="epb-leg">' + leg + '</div>' +
       this._balanceHourly() +
@@ -2203,41 +2220,106 @@ class EnergyPowerCard extends HTMLElement {
     const sel = this._balSel || this._balSelection();
     const n = sel.n;
     const monthly = sel.kind === 'month';
-    let max = 0;
+    // La scala viene dalle barre ATTENDIBILI: con dato, non vuote e non di accumulo.
+    // Prima la dettava il massimo assoluto, e una sola ora di recupero dopo un buco
+    // schiacciava tutte le altre: il 4/8/2026 l'ora 04 valeva 1.30 kWh contro un
+    // massimo vero di 0.50, e le undici ore reali stavano sotto il 40% dell'altezza.
+    let scale = 0;
+    let anyMax = 0;
+    let sum = 0;
+    let cnt = 0;
     rows.forEach((r) => {
-      // le barre non ancora raggiunte sono null, non zero
-      if (r && r.house > max) max = r.house;
+      if (!r || r.gap) return;
+      if (r.house > anyMax) anyMax = r.house;
+      sum += r.house;
+      cnt += 1;
+      if (!r.susp && r.house > scale) scale = r.house;
     });
-    if (!(max > 0)) return '';
+    // se ogni barra e' sospetta non resta che il massimo assoluto
+    if (!(scale > 0)) scale = anyMax;
+    if (!(scale > 0)) return '';
+    const avg = cnt ? sum / cnt : 0;
     const pad = (v) => (v < 10 ? '0' + v : '' + v);
+    let clipped = 0;
+    let gaps = 0;
     let bars = '';
+    if (avg > 0 && avg <= scale) {
+      bars += '<div class="epb-avg" style="bottom:' + ((avg / scale) * 100).toFixed(2) + '%">' +
+        '<span>media ' + avg.toFixed(2) + '</span></div>';
+    }
     for (let i = 0; i < n; i++) {
       const r = rows[i];
+      const lab = monthly ? 'giorno ' + (i + 1) : pad(i) + ':00 – ' + pad(i + 1) + ':00';
       if (!r) {
-        bars += '<div class="epb-hb epb-hb-void"></div>';
+        // periodo in corso: ore non ancora trascorse, filo sulla linea di base
+        bars += '<div class="epb-hb"><span class="epb-fut"></span></div>';
         continue;
       }
+      if (r.gap) {
+        gaps += 1;
+        bars += '<div class="epb-hb" title="' + lab + ' — nessun dato">' +
+          '<span class="epb-gap"></span></div>';
+        continue;
+      }
+      const over = r.susp && r.house > scale;
+      if (over) clipped += 1;
+      const shown = over ? scale : r.house;
+      // Segmenti visibili, con le quote NORMALIZZATE a somma 1. Prima erano i kWh
+      // grezzi passati a flex-grow: su ogni barra sotto 1 kWh la somma dei flex-grow
+      // stava sotto 1, e il flexbox riempie solo quella frazione dello spazio
+      // lasciando il resto della barra al grigio del contenitore. Una barra da
+      // 0.5 kWh si disegnava mezza vuota, e la frazione grigia non significava nulla.
+      const segs = [[r.grid, 'grid'], [r.batt, 'bat'], [r.sun, 'sun']]
+        .filter((p) => p[0] > scale / 250);
+      const segTot = segs.reduce((s, p) => s + p[0], 0);
       let inner = '';
-      [[r.grid, 'grid'], [r.batt, 'bat'], [r.sun, 'sun']].forEach((p) => {
-        if (p[0] > max / 250) inner += '<i class="epb-c-' + p[1] + '" style="flex:' + p[0].toFixed(4) + '"></i>';
-      });
-      const hh = ((r.house / max) * 100).toFixed(1);
-      const lab = monthly ? 'giorno ' + (i + 1) : pad(i) + ':00 – ' + pad(i + 1) + ':00';
+      if (segTot > 0) {
+        segs.forEach((p) => {
+          inner += '<i class="epb-c-' + p[1] + '" style="flex:' + (p[0] / segTot).toFixed(4) + '"></i>';
+        });
+      }
+      const hh = Math.max(1.5, (shown / scale) * 100);
+      // Sotto gli ~8px lo stacco fra i segmenti vale piu' della barra stessa:
+      // su un'ora da poche decine di Wh i 2px di gap si mangerebbero metà colonna.
+      const tight = hh < 7;
       // i valori restano sull'elemento: il tooltip li legge senza rigenerare l'HTML
       bars +=
         '<div class="epb-hb" data-h="' + r.h + '" data-lab="' + lab + '" data-tot="' + r.house.toFixed(3) + '"' +
         ' data-sun="' + r.sun.toFixed(3) + '" data-bat="' + r.batt.toFixed(3) + '" data-grid="' + r.grid.toFixed(3) + '">' +
-        '<div class="epb-hb-in" style="height:' + hh + '%">' + inner + '</div></div>';
+        (over ? '<b class="epb-fl">!</b>' : '') +
+        '<div class="epb-hb-in' + (tight ? ' epb-tight' : '') + (over ? ' epb-clip' : '') +
+        '" style="height:' + hh.toFixed(1) + '%">' + inner + '</div></div>';
     }
     const ax = monthly
       ? [1, 5, 10, 15, 20, 25, n].map((d) => '<span>' + d + '</span>').join('')
       : ['00', '06', '12', '18', '23'].map((h) => '<span>' + h + '</span>').join('');
+    const unit = monthly ? ' kWh/g' : ' kWh/h';
+    const w1 = monthly ? 'giorno' : 'ora';
+    const wN = monthly ? 'giorni' : 'ore';
+    const head = clipped
+      ? 'scala ' + scale.toFixed(2) + unit + ' · ' + clipped + ' ' +
+        (clipped === 1 ? w1 + (monthly ? ' tagliato' : ' tagliata') : wN + (monthly ? ' tagliati' : ' tagliate'))
+      : 'max ' + scale.toFixed(2) + unit;
+    // "ora" da sola significa anche "adesso": senza l'articolo la nota si legge male
+    const art1 = monthly ? 'Un giorno' : 'Un’ora';
+    let note = '';
+    if (clipped) {
+      note += '<b>!</b> ' + (clipped === 1 ? art1 : clipped + ' ' + wN) + ' fuori scala: ' +
+        (clipped === 1 ? 'porta' : 'portano') + ' anche l’energia del periodo senza dato. ';
+    }
+    if (gaps) {
+      note += (gaps === 1 ? art1 : gaps + ' ' + wN) + ' a trattino: dato assente, non consumo zero.';
+    }
     return (
       '<div class="epb-hr">' +
       '<div class="epb-hr-hd"><span>' + (monthly ? 'Profilo giornaliero' : 'Profilo orario') + '</span>' +
-      '<b>max ' + max.toFixed(2) + (monthly ? ' kWh/g' : ' kWh/h') + '</b></div>' +
+      '<b>' + head + '</b></div>' +
+      '<div class="epb-hr-wrap">' +
+      '<div class="epb-hr-y"><span>' + scale.toFixed(2) + '</span><span>0</span></div>' +
       '<div class="epb-hr-plot">' + bars + '<div class="epb-tip" hidden></div></div>' +
-      '<div class="epb-hr-ax">' + ax + '</div>' +
+      '</div>' +
+      '<div class="epb-hr-axw"><div class="epb-hr-ax">' + ax + '</div></div>' +
+      (note ? '<div class="epb-note">' + note + '</div>' : '') +
       '</div>'
     );
   }
@@ -3153,25 +3235,29 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-wrap{--epb-sun:#E08A00;--epb-bat:#0FB57E;--epb-grid:#0EA5E9;--epb-good:#6D5AE6;' +
       '--epb-tx:var(--primary-text-color,#10131a);--epb-tx2:var(--secondary-text-color,#6b7280);' +
       '--epb-bd:var(--divider-color,rgba(15,23,42,.09));--epb-fill:rgba(127,127,127,.09);' +
-      '--epb-track:rgba(127,127,127,.18);' +
+      '--epb-track:rgba(127,127,127,.18);--epb-hatch:rgba(15,23,42,.22);' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));' +
       'border:1px solid var(--epb-bd);border-radius:20px;padding:17px 17px 18px;color:var(--epb-tx);}' +
-      '.epb-wrap.epb-dark{--epb-sun:#F5B301;--epb-bat:#22E39A;--epb-grid:#38BDF8;--epb-good:#8B7BFF;' +
-      '--epb-fill:rgba(255,255,255,.055);--epb-track:rgba(255,255,255,.12);}' +
+      // Passi scuri SCELTI, non schiariti: i precedenti (#F5B301 #22E39A #38BDF8)
+      // stavano a luminosita' OKLCH 0.81/0.81/0.75 contro la banda ammessa 0.48-0.67.
+      // Questi tengono le stesse tinte (scarto <=4 gradi) e passano i controlli:
+      // dE CVD adiacente 9.5-10.7 (soglia 8), visione normale 20.2 (soglia 15),
+      // contrasto 5.3-5.9:1 sul fondo scuro.
+      '.epb-wrap.epb-dark{--epb-sun:#D27B00;--epb-bat:#00AE6F;--epb-grid:#0099E4;--epb-good:#8B7BFF;' +
+      '--epb-fill:rgba(255,255,255,.055);--epb-track:rgba(255,255,255,.12);' +
+      '--epb-hatch:rgba(255,255,255,.26);}' +
       '.epb-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}' +
       '.epb-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--epb-tx2);}' +
       '.epb-pill{font-size:10.5px;font-weight:600;letter-spacing:.4px;color:var(--epb-tx2);background:var(--epb-fill);padding:3px 9px;border-radius:20px;}' +
       '.epb-ic{flex:0 0 auto;display:block;}' +
-      '.epb-arc{position:relative;display:flex;justify-content:center;}' +
-      '.epb-arc svg{display:block;}' +
-      '.epb-arc-c{position:absolute;left:0;right:0;bottom:2px;text-align:center;}' +
-      '.epb-arc-p{font-size:34px;font-weight:670;letter-spacing:-1.6px;line-height:1;font-variant-numeric:tabular-nums;}' +
-      '.epb-arc-pp{font-size:16px;font-weight:600;letter-spacing:-.3px;color:var(--epb-tx2);margin-left:1px;}' +
-      '.epb-arc-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);margin-top:4px;}' +
-      '.epb-sub{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--epb-tx2);margin:14px 0 9px;cursor:pointer;}' +
-      '.epb-sub b{margin-left:auto;color:var(--epb-tx);font-weight:650;font-size:14.5px;font-variant-numeric:tabular-nums;}' +
+      '.epb-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin:16px 0 12px;}' +
+      '.epb-hero-n{font-size:42px;font-weight:670;letter-spacing:-2.1px;line-height:.95;font-variant-numeric:tabular-nums;}' +
+      '.epb-hero-pp{font-size:17px;font-weight:600;letter-spacing:0;color:var(--epb-tx2);margin-left:2px;}' +
+      '.epb-hero-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);margin-top:6px;}' +
+      '.epb-hero-r{text-align:right;cursor:pointer;}' +
+      '.epb-hero-v{font-size:23px;font-weight:650;letter-spacing:-.7px;line-height:1;font-variant-numeric:tabular-nums;}' +
       // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo
-      '.epb-mx{display:flex;height:9px;border-radius:5px;overflow:hidden;gap:2px;background:var(--epb-track);}' +
+      '.epb-mx{display:flex;height:11px;border-radius:6px;overflow:hidden;gap:2px;background:var(--epb-track);}' +
       '.epb-seg{height:100%;}' +
       '.epb-seg-empty{background:var(--epb-track);}' +
       '.epb-c-sun{background:var(--epb-sun);}' +
@@ -3185,8 +3271,15 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-hr{margin-top:15px;padding-top:13px;border-top:1px solid var(--epb-bd);}' +
       '.epb-hr-hd{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--epb-tx2);margin-bottom:8px;}' +
       '.epb-hr-hd b{font-size:11px;letter-spacing:0;text-transform:none;font-weight:550;opacity:.85;font-variant-numeric:tabular-nums;}' +
-      '.epb-hr-plot{position:relative;display:flex;align-items:flex-end;gap:2px;height:46px;}' +
-      '.epb-hb{flex:1;height:100%;display:flex;align-items:flex-end;min-width:0;}' +
+      // 116px invece di 46: e' lo spazio liberato dall'arco. Con la scala sui dati
+      // veri, un'ora da 0.2 kWh passa da 7 a 46px, cioe' da indistinguibile a leggibile.
+      '.epb-hr-wrap{display:flex;gap:7px;}' +
+      '.epb-hr-y{width:26px;flex:none;display:flex;flex-direction:column;justify-content:space-between;' +
+      'font-size:9px;color:var(--epb-tx2);opacity:.75;text-align:right;font-variant-numeric:tabular-nums;}' +
+      '.epb-hr-plot{position:relative;display:flex;align-items:flex-end;gap:2px;height:116px;flex:1;' +
+      'min-width:0;border-bottom:1px solid var(--epb-bd);}' +
+      '.epb-hr-axw{margin-left:33px;}' +
+      '.epb-hb{flex:1;height:100%;display:flex;align-items:flex-end;justify-content:center;min-width:0;position:relative;}' +
       '.epb-hb[data-tot]:hover .epb-hb-in{outline:1.5px solid var(--epb-tx2);outline-offset:1px;}' +
       // Tooltip: superficie della card, bordo e ombra. Stessa ricetta per tutti
       // (profilo orario, consumo giornaliero/mensile, grafico di zona): la pillola
@@ -3205,10 +3298,33 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-tr span{flex:1;}' +
       '.epb-tr b{font-weight:650;color:var(--epb-tx);font-variant-numeric:tabular-nums;}' +
       '.epb-tr em{font-style:normal;width:32px;text-align:right;opacity:.75;font-variant-numeric:tabular-nums;}' +
-      '.epb-hb-in{width:100%;display:flex;flex-direction:column-reverse;border-radius:2px;overflow:hidden;background:var(--epb-track);}' +
+      // Nessun fondino: le quote sono normalizzate a somma 1, quindi i segmenti
+      // riempiono sempre la barra. Il `gap` sottrae spazio prima della distribuzione,
+      // percio' i 2px fra i segmenti mostrano la superficie della card e non
+      // sfondano l'altezza. Angoli arrotondati solo in cima: la barra e' ancorata
+      // alla linea di base, e un fondo arrotondato la staccherebbe da quella linea.
+      '.epb-hb-in{width:100%;display:flex;flex-direction:column-reverse;gap:2px;' +
+      'border-radius:4px 4px 0 0;overflow:hidden;position:relative;z-index:2;}' +
       '.epb-hb-in i{display:block;width:100%;}' +
-      '.epb-hb-void{opacity:0;}' +
-      '.epb-hr-ax{display:flex;justify-content:space-between;font-size:9.5px;color:var(--epb-tx2);margin-top:5px;opacity:.8;font-variant-numeric:tabular-nums;}' +
+      // ora fuori scala: retino sopra il colore, cosi' resta leggibile di che
+      // sorgente e' fatta ma si vede che il valore e' troncato
+      '.epb-tight{gap:0;}' +
+      '.epb-clip{border-radius:0;}' +
+      '.epb-clip::after{content:"";position:absolute;inset:0;' +
+      'background:repeating-linear-gradient(135deg,transparent 0 3px,var(--epb-hatch) 3px 4.5px);}' +
+      '.epb-fl{position:absolute;top:-13px;left:50%;transform:translateX(-50%);font-size:9px;' +
+      'font-weight:700;color:var(--epb-tx2);z-index:3;}' +
+      // filo sulla linea di base per le ore non ancora trascorse, trattino piu'
+      // marcato per quelle senza dato: due assenze diverse, due segni diversi
+      '.epb-fut{width:100%;height:1px;background:var(--epb-bd);}' +
+      '.epb-gap{width:62%;height:1px;background:var(--epb-hatch);}' +
+      '.epb-avg{position:absolute;left:0;right:0;border-top:1px dashed var(--epb-tx2);opacity:.5;' +
+      'z-index:1;pointer-events:none;}' +
+      '.epb-avg span{position:absolute;right:0;top:-13px;font-size:8.5px;letter-spacing:.3px;' +
+      'text-transform:uppercase;color:var(--epb-tx2);}' +
+      '.epb-note{margin-top:10px;font-size:10.5px;line-height:1.5;color:var(--epb-tx2);}' +
+      '.epb-note b{color:var(--epb-tx);}' +
+      '.epb-hr-ax{display:flex;justify-content:space-between;font-size:9.5px;color:var(--epb-tx2);margin-top:6px;opacity:.8;font-variant-numeric:tabular-nums;}' +
       '.epb-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--epb-bd);border-radius:13px;overflow:hidden;margin-top:14px;}' +
       '.epb-k{display:flex;align-items:center;gap:9px;padding:11px 12px;cursor:pointer;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));transition:background .12s;}' +
