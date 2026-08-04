@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.60.0
+ * Version: 1.61.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1418,7 +1418,11 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   getCardSize() {
-    return this.config && this.config.layout === 'devices' ? 14 : 5;
+    const l = this.config && this.config.layout;
+    if (l === 'devices') return 14;
+    if (l === 'balance') return 10;
+    if (l === 'prodcons') return 6;
+    return 5;
   }
 
   _num(entity) {
@@ -1490,6 +1494,9 @@ class EnergyPowerCard extends HTMLElement {
     }
     if (this.config.layout === 'devices' && this._hass) {
       await this._fetchDeviceStats();
+    }
+    if (this.config.layout === 'prodcons' && this._hass) {
+      await this._fetchProdCons();
     }
     // Anche il layout balance usa questo blocco: gli servono il confronto con ieri
     // alla stessa ora e il mese in corso con la proiezione. Il contatore di
@@ -1781,6 +1788,7 @@ class EnergyPowerCard extends HTMLElement {
     else if (this.config.layout === 'headergraph') this._renderHeaderGraph();
     else if (this.config.layout === 'balance') this._renderBalance();
     else if (this.config.layout === 'devices') this._renderDevices();
+    else if (this.config.layout === 'prodcons') this._renderProdCons();
     else if (this.config.layout === 'tiles') this._renderTiles();
     else if (this.config.layout === 'circuits') this._renderCircuits();
     else this._renderOverview();
@@ -2168,7 +2176,7 @@ class EnergyPowerCard extends HTMLElement {
     mgddPaint(this, this._styles(),
       '<div class="epb-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
       '<div class="epb-hd"><span class="epb-t">' + (c.title || 'Bilancio energetico') + '</span>' +
-      '<span class="epb-pill">' + this._balPill() + '</span></div>' +
+      (this._balPill() ? '<span class="epb-pill">' + this._balPill() + '</span>' : '') + '</div>' +
       this._balNav() +
       hero +
       '<div class="epb-mx">' + segs + '</div>' +
@@ -2185,6 +2193,115 @@ class EnergyPowerCard extends HTMLElement {
     this._wireClicks();
     this._wireBalanceTip();
     this._wireBalanceNav();
+  }
+
+  // ===========================================================================
+  // layout: prodcons - produzione contro consumo, un giorno per coppia di barre.
+  //
+  // Risponde a una domanda che nessun'altra card della vista risponde: nei giorni
+  // l'impianto ti sta coprendo o no. Le due barre stanno sulla STESSA scala, che e'
+  // legittimo perche' l'unita' e' la stessa; sono affiancate e non impilate, perche'
+  // impilarle sommerebbe due grandezze che non si sommano.
+  // Config: production, consumption, days (10), title.
+  // ===========================================================================
+  async _fetchProdCons() {
+    const c = this.config;
+    const ids = [c.production, c.consumption].filter(Boolean);
+    if (ids.length < 2) return;
+    const days = Math.max(2, c.days || 10);
+    const now = new Date();
+    const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
+    try {
+      const resp = await this._hass.callWS({
+        type: 'recorder/statistics_during_period',
+        start_time: from.toISOString(),
+        end_time: now.toISOString(),
+        statistic_ids: ids,
+        period: 'day',
+        types: ['change'],
+      });
+      const pick = (id) => {
+        const map = {};
+        ((resp && resp[id]) || []).forEach((r) => {
+          const d = new Date(r.start);
+          const k = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+          const v = r.change;
+          // un change negativo e' un azzeramento del contatore, non produzione
+          // negativa: si scarta invece di disegnare una barra all'ingiu'
+          if (v !== null && v !== undefined && v >= -0.05) map[k] = Math.max(0, v);
+        });
+        return map;
+      };
+      const P = pick(c.production);
+      const C = pick(c.consumption);
+      const out = [];
+      for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+        const k = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+        out.push({
+          d: d,
+          prod: P[k] === undefined ? null : P[k],
+          cons: C[k] === undefined ? null : C[k],
+          today: i === 0,
+        });
+      }
+      this._pc = out;
+    } catch (e) {
+      if (!this._pc) this._pc = null; // senza recorder la card resta in caricamento
+    }
+  }
+
+  _renderProdCons() {
+    const c = this.config;
+    const rows = this._pc;
+    const MESI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+    let body;
+    if (!rows) {
+      body = '<div class="epp-load">Caricamento…</div>';
+    } else {
+      let mx = 0;
+      let tp = 0;
+      let tc = 0;
+      rows.forEach((r) => {
+        if (r.prod !== null && r.prod > mx) mx = r.prod;
+        if (r.cons !== null && r.cons > mx) mx = r.cons;
+        if (r.prod !== null) tp += r.prod;
+        if (r.cons !== null) tc += r.cons;
+      });
+      if (!mx) mx = 1;
+      let bars = '';
+      rows.forEach((r) => {
+        const bar = (v, cls, lab) => {
+          if (v === null) return '<i class="epp-na"></i>';
+          return '<i class="epp-' + cls + '" style="height:' +
+            Math.max(1.5, (v / mx) * 100).toFixed(1) + '%" data-l="' + lab + '"></i>';
+        };
+        const tip = r.d.getDate() + ' ' + MESI[r.d.getMonth()] + ' · prodotti ' +
+          (r.prod === null ? '—' : this._fmt(r.prod, ' kWh', 1)) + ' · consumati ' +
+          (r.cons === null ? '—' : this._fmt(r.cons, ' kWh', 1)) + (r.today ? ' (in corso)' : '');
+        bars += '<div class="epp-g' + (r.today ? ' epp-now' : '') + '" title="' + tip + '">' +
+          bar(r.prod, 'p', 'prod') + bar(r.cons, 'c', 'cons') + '</div>';
+      });
+      const ax = rows.map((r) => '<span>' + (r.d.getDate() === 1 || r.today
+        ? r.d.getDate() + ' ' + MESI[r.d.getMonth()] : r.d.getDate()) + '</span>').join('');
+      body =
+        '<div class="epp-hero">' +
+        '<div><div class="epp-v epp-tp">' + this._fmt(tp, '', 1) +
+        '<span class="epb-u"> kWh</span></div><div class="epp-l">prodotti</div></div>' +
+        '<div class="epp-r"><div class="epp-v epp-tc">' + this._fmt(tc, '', 1) +
+        '<span class="epb-u"> kWh</span></div><div class="epp-l">consumati</div></div>' +
+        '</div>' +
+        '<div class="epp-pw"><div class="epp-y"><span>' + this._fmt(mx, '', 1) +
+        '</span><span>0</span></div><div class="epp-plot">' + bars + '</div></div>' +
+        '<div class="epp-axw"><div class="epp-ax">' + ax + '</div></div>' +
+        '<div class="epb-leg"><span class="epb-lg"><i class="epb-dot epp-sw-p"></i>produzione</span>' +
+        '<span class="epb-lg"><i class="epb-dot epp-sw-c"></i>consumo</span></div>';
+    }
+    mgddPaint(this, this._styles(),
+      '<div class="epb-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
+      '<div class="epb-hd"><span class="epb-t">' + (c.title || 'Produzione e consumo') +
+      '</span><span class="epb-pill">' + (c.days || 10) + ' giorni</span></div>' +
+      body + '</div>');
   }
 
   // Il mese come barra e non come numero: "~443 kWh" da solo non dice quanto sei
@@ -2237,10 +2354,11 @@ class EnergyPowerCard extends HTMLElement {
     return GG[d.getDay()] + ' ' + d.getDate() + ' ' + MESI[d.getMonth()];
   }
 
+  // Con il navigatore acceso la pillola diceva "oggi" tre pixel sopra un pulsante che
+  // dice "Oggi": serviva a distinguere oggi da storico quando il navigatore non c'era.
   _balPill() {
     if (this.config.history === false) return this.config.period_label || 'oggi';
-    const sel = this._balSelection();
-    return sel.current ? (sel.kind === 'month' ? 'mese in corso' : 'oggi') : 'storico';
+    return '';
   }
 
   // Navigatore: giorno/mese e frecce. Nessuna striscia di salto come nel layout
@@ -3348,6 +3466,38 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-mo-f{display:flex;justify-content:space-between;align-items:baseline;gap:10px;' +
       'font-size:9.5px;color:var(--epb-tx2);margin-top:7px;letter-spacing:.3px;}' +
       '.epb-mo-p{color:var(--epb-tx2);font-weight:650;text-transform:uppercase;letter-spacing:.5px;opacity:.9;}' +
+      // layout prodcons. Arancio = solare e viola = consumo casa sono gli stessi colori
+      // delle altre card, e la coppia e' molto piu' solida della terna a tre: dE 33.8
+      // in daltonismo contro 10.2, tritanopia 28.1 contro 3.3. Nel tema scuro il viola
+      // e' #8B7BFF perche' #A99BFF stava fuori dalla banda di luminosita'.
+      '.epb-wrap{--epp-cons:#6D5AE6;}' +
+      '.epb-dark{--epp-cons:#8B7BFF;}' +
+      '.epp-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin:15px 0 13px;}' +
+      '.epp-r{text-align:right;}' +
+      '.epp-v{font-size:24px;font-weight:660;letter-spacing:-.9px;line-height:1;font-variant-numeric:tabular-nums;}' +
+      '.epp-tp{color:var(--epb-sun);}' +
+      '.epp-tc{color:var(--epp-cons);}' +
+      '.epp-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);margin-top:6px;}' +
+      '.epp-pw{display:flex;gap:7px;}' +
+      '.epp-y{width:26px;flex:none;display:flex;flex-direction:column;justify-content:space-between;' +
+      'font-size:9px;color:var(--epb-tx2);opacity:.75;text-align:right;font-variant-numeric:tabular-nums;}' +
+      '.epp-plot{position:relative;display:flex;align-items:flex-end;gap:5px;flex:1;min-width:0;' +
+      'height:104px;border-bottom:1px solid var(--epb-bd);}' +
+      '.epp-axw{margin-left:33px;}' +
+      '.epp-ax{display:flex;font-size:9px;color:var(--epb-tx2);margin-top:6px;opacity:.8;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.epp-ax span{flex:1;text-align:center;min-width:0;}' +
+      '.epp-g{flex:1;display:flex;align-items:flex-end;justify-content:center;gap:2px;' +
+      'min-width:0;height:100%;}' +
+      '.epp-g i{display:block;flex:1;min-width:0;border-radius:3px 3px 0 0;}' +
+      '.epp-p{background:var(--epb-sun);}' +
+      '.epp-c{background:var(--epp-cons);}' +
+      // giorno senza dato: un filo sulla linea di base, non una barra a zero
+      '.epp-na{height:1px;background:var(--epb-bd);align-self:flex-end;}' +
+      '.epp-now i{opacity:.6;}' +
+      '.epp-sw-p{background:var(--epb-sun);}' +
+      '.epp-sw-c{background:var(--epp-cons);}' +
+      '.epp-load{font-size:12px;color:var(--epb-tx2);padding:34px 0;text-align:center;}' +
       // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo
       '.epb-mx{display:flex;height:11px;border-radius:6px;overflow:hidden;gap:2px;background:var(--epb-track);}' +
       '.epb-seg{height:100%;}' +
@@ -4038,11 +4188,19 @@ customElements.define('energy-history-card', EnergyHistoryCard);
 // Card standalone: type: custom:energy-monthly-card
 class EnergyMonthlyCard extends HTMLElement {
   setConfig(config) {
-    const period = config && config.period === 'day' ? 'day' : 'month';
+    const p = config && config.period;
+    const period = p === 'day' || p === 'hour' ? p : 'month';
+    // `period: hour` + `metric: mean` serve alle MISURE (la carica della batteria),
+    // non ai contatori: legge la media oraria invece della differenza, non completa
+    // il periodo col delta di un cumulativo, e usa una scala fissa 0-100.
     const defaults =
-      period === 'day'
-        ? { entity: 'sensor.energy_totale_sonoff_casa', period: 'day', days: 14, title: 'Consumo giornaliero', color: '#EF9F27' }
-        : { entity: 'sensor.energy_totale_sonoff_casa', period: 'month', months: 12, title: 'Consumo mensile', color: '#7C6CF0' };
+      period === 'hour'
+        // la riga della media resta accesa come nelle altre due card a linea: qui si
+        // vede benissimo, ed e' anche l'unico riferimento di scala su un asse fisso
+        ? { entity: 'sensor.powerwall3_charge', period: 'hour', metric: 'mean', y_max: 100, decimals: 0, title: 'Batteria', color: '#0FB57E' }
+        : period === 'day'
+          ? { entity: 'sensor.energy_totale_sonoff_casa', period: 'day', days: 14, title: 'Consumo giornaliero', color: '#EF9F27' }
+          : { entity: 'sensor.energy_totale_sonoff_casa', period: 'month', months: 12, title: 'Consumo mensile', color: '#7C6CF0' };
     this.config = Object.assign(defaults, config || {});
     this._data = null;
     this._error = null;
@@ -4074,9 +4232,15 @@ class EnergyMonthlyCard extends HTMLElement {
     const now = Date.now();
     if (this._fetchedAt && now - this._fetchedAt < 10 * 60 * 1000) return;
     this._fetchedAt = now;
-    const period = this.config.period === 'day' ? 'day' : 'month';
+    const period = this.config.period === 'day' || this.config.period === 'hour'
+      ? this.config.period : 'month';
+    const isMean = this.config.metric === 'mean';
     let start;
-    if (period === 'day') {
+    if (period === 'hour') {
+      // dalla mezzanotte locale: l'asse e' l'orologio del giorno, non "le ultime 24h"
+      const d = new Date(now);
+      start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    } else if (period === 'day') {
       const days = Math.max(2, this.config.days || 14);
       start = new Date(now - days * 24 * 3600 * 1000);
     } else {
@@ -4095,8 +4259,9 @@ class EnergyMonthlyCard extends HTMLElement {
         statistic_ids: [this.config.entity],
         period: period,
         // `state` serve a completare il periodo in corso: e' il valore del
-        // contatore a fine ultima ora compilata (vedi _render)
-        types: ['change', 'state'],
+        // contatore a fine ultima ora compilata (vedi _render). Per una misura
+        // non esiste un contatore da completare: serve solo la media.
+        types: isMean ? ['mean'] : ['change', 'state'],
       });
       let arr = (resp && resp[this.config.entity]) || [];
       arr = arr.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
@@ -4141,7 +4306,7 @@ class EnergyMonthlyCard extends HTMLElement {
     const isDay = cfg.period === 'day';
     const st = this._hass.states[cfg.entity];
     const uom = (st && st.attributes.unit_of_measurement) || 'kWh';
-    const fmt = (v) => v.toFixed(v >= 100 ? 0 : 1);
+    const fmt = (v) => v.toFixed(cfg.decimals !== undefined ? cfg.decimals : (v >= 100 ? 0 : 1));
     this._hover = null;
     let body = '';
     let bigVal = '--';
@@ -4168,38 +4333,80 @@ class EnergyMonthlyCard extends HTMLElement {
         if (isDay) return dayLabels[dt.getDay()] + ' ' + dt.getDate() + ' ' + monthLabels[dt.getMonth()];
         return monthLabels[dt.getMonth()] + ' ' + dt.getFullYear();
       };
-      const curIdx = data.findIndex(isCurrent);
+      const isHour = cfg.period === 'hour';
+      const isMean = cfg.metric === 'mean';
+      const pad2 = (v) => (v < 10 ? '0' + v : '' + v);
+      const curIdx = isHour ? now.getHours() : data.findIndex(isCurrent);
       // Il periodo in corso si fermerebbe all'ultima ora compilata dal recorder
       // (le statistiche a lungo termine sono orarie): lo completiamo col delta
       // fra il valore live del contatore e quello di fine ultima ora, che la
       // statistica riporta in `state`. Cosi' il periodo in corso coincide con
       // il contatore giornaliero invece di restare fino a un'ora indietro.
       let live = 0;
-      if (curIdx >= 0 && cfg.live_current !== false && st) {
+      if (!isMean && curIdx >= 0 && data[curIdx] && cfg.live_current !== false && st) {
         const cum = parseFloat(st.state);
         const upTo = parseFloat(data[curIdx].state);
         if (isFinite(cum) && isFinite(upTo) && cum > upTo) live = cum - upTo;
       }
-      const vals = data.map((d, i) => Math.max(0, (d.change || 0) + (i === curIdx ? live : 0)));
-      const vmax = Math.max.apply(null, vals) || 1;
-      const showIdx = curIdx >= 0 ? curIdx : n - 1;
-      bigVal = fmt(vals[showIdx]) + ' ' + uom;
-      bigCap = curIdx >= 0 ? (isDay ? 'oggi' : 'mese in corso') : fullLabel(data[showIdx]);
+      // Le ore mancanti restano `null`, non zero: la linea si interrompe invece di
+      // attraversare un'ora che nessuno ha misurato. Nelle altre modalita' non ci
+      // sono null e il disegno e' identico a prima.
+      let vals;
+      let labelsFull;
+      let count;
+      if (isHour) {
+        count = 24;
+        vals = new Array(24).fill(null);
+        data.forEach((d) => {
+          const i = new Date(d.start).getHours();
+          const v = isMean ? d.mean : d.change;
+          if (i >= 0 && i < 24 && v !== null && v !== undefined) vals[i] = v;
+        });
+        // per una misura il valore vivo E' il valore dell'ora in corso
+        if (isMean && st) {
+          const now2 = parseFloat(st.state);
+          if (isFinite(now2) && curIdx >= 0 && curIdx < 24) vals[curIdx] = now2;
+        }
+        labelsFull = vals.map((v, i) => pad2(i) + ':00');
+      } else {
+        count = n;
+        vals = data.map((d, i) => Math.max(0, (d.change || 0) + (i === curIdx ? live : 0)));
+        labelsFull = data.map(fullLabel);
+      }
+      const seen = vals.filter((v) => v !== null);
+      const vmax = cfg.y_max || Math.max.apply(null, seen.length ? seen : [1]) || 1;
+      if (isMean) {
+        // il grande e' il valore di adesso, il sottotitolo il minimo della giornata
+        const lastV = curIdx >= 0 && vals[curIdx] !== null
+          ? vals[curIdx] : (seen.length ? seen[seen.length - 1] : null);
+        bigVal = lastV === null ? '--' : fmt(lastV) + ' ' + uom;
+        if (seen.length) {
+          const mn = Math.min.apply(null, seen);
+          const mh = vals.indexOf(mn);
+          bigCap = 'minimo ' + fmt(mn) + ' ' + uom + ' alle ' + pad2(mh);
+        } else {
+          bigCap = '';
+        }
+      } else {
+        const showIdx = curIdx >= 0 ? curIdx : count - 1;
+        bigVal = fmt(vals[showIdx]) + ' ' + uom;
+        bigCap = curIdx >= 0 ? (isDay ? 'oggi' : 'mese in corso') : labelsFull[showIdx];
+      }
 
-      if (n < 2) {
-        body = '<div class="emc-loading">Servono almeno 2 ' + (isDay ? 'giorni' : 'mesi') + ' di storico</div>';
+      if (seen.length < 2) {
+        body = '<div class="emc-loading">Servono almeno 2 ' +
+          (isHour ? 'ore' : isDay ? 'giorni' : 'mesi') + ' di storico</div>';
       } else {
         const W = 300,
           H = 120,
           padX = 3,
           padTop = 12;
-        const xAt = (i) => padX + (i * (W - 2 * padX)) / (n - 1);
+        const xAt = (i) => padX + (i * (W - 2 * padX)) / (count - 1);
         const yAt = (v) => H - (v / vmax) * (H - padTop);
-        const pts = vals.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
-        // linea media (esclude il periodo in corso)
+        // linea media (esclude il periodo in corso e le ore senza dato)
         let avgHtml = '';
         if (cfg.show_average !== false) {
-          const compl = vals.filter((v, i) => i !== curIdx);
+          const compl = vals.filter((v, i) => i !== curIdx && v !== null);
           const avg = compl.length ? compl.reduce((s, v) => s + v, 0) / compl.length : null;
           if (avg !== null && avg > 0) {
             const topPx = H - (avg / vmax) * (H - padTop);
@@ -4208,33 +4415,59 @@ class EnergyMonthlyCard extends HTMLElement {
               '<div class="emc-avglab" style="top:' + topPx.toFixed(1) + 'px;color:' + cfg.color + '">media ' + fmt(avg) + ' ' + uom + '</div>';
           }
         }
-        const linePath = this._smoothPath(pts);
-        const areaPath = linePath + ' L' + pts[n - 1].x.toFixed(2) + ',' + H + ' L' + pts[0].x.toFixed(2) + ',' + H + ' Z';
-        const nowLine =
-          curIdx >= 0
-            ? '<line class="emc-now" x1="' + pts[curIdx].x.toFixed(2) + '" y1="0" x2="' + pts[curIdx].x.toFixed(2) + '" y2="' + H + '"/>'
-            : '';
+        // un tratto per ogni sequenza contigua di valori: senza null e' un tratto
+        // solo, quindi il disegno di giornaliero e mensile non cambia
+        const segs = [];
+        let cur = [];
+        vals.forEach((v, i) => {
+          if (v === null) {
+            if (cur.length) segs.push(cur);
+            cur = [];
+          } else {
+            cur.push(i);
+          }
+        });
+        if (cur.length) segs.push(cur);
         const gid = 'emcgrad' + this._uid;
+        let paths = '';
+        let lines = '';
+        segs.forEach((seg) => {
+          if (seg.length < 2) return;
+          const p = seg.map((i) => ({ x: xAt(i), y: yAt(vals[i]) }));
+          const lp = this._smoothPath(p);
+          paths += '<path d="' + lp + ' L' + p[p.length - 1].x.toFixed(2) + ',' + H +
+            ' L' + p[0].x.toFixed(2) + ',' + H + ' Z" fill="url(#' + gid + ')" stroke="none"/>';
+          lines += '<path class="emc-line" d="' + lp + '" fill="none" stroke="' + cfg.color + '"/>';
+        });
+        const nowLine =
+          curIdx >= 0 && curIdx < count
+            ? '<line class="emc-now" x1="' + xAt(curIdx).toFixed(2) + '" y1="0" x2="' + xAt(curIdx).toFixed(2) + '" y2="' + H + '"/>'
+            : '';
         const svg =
           '<svg class="emc-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
           '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
           '<stop offset="0" stop-color="' + cfg.color + '" stop-opacity="0.35"/>' +
           '<stop offset="1" stop-color="' + cfg.color + '" stop-opacity="0"/>' +
           '</linearGradient></defs>' +
-          '<path d="' + areaPath + '" fill="url(#' + gid + ')" stroke="none"/>' +
-          nowLine +
-          '<path class="emc-line" d="' + linePath + '" fill="none" stroke="' + cfg.color + '"/>' +
+          paths + nowLine + lines +
           '</svg>';
-        // etichette asse X: mensile tutte; giornaliero diradate per non affollare
-        const step = isDay ? (n > 10 ? Math.ceil(n / 7) : 1) : 1;
-        const labels = data
-          .map((d, i) => {
-            const dt = new Date(d.start);
-            let txt = '';
-            if (i % step === 0) txt = isDay ? String(dt.getDate()) : monthLabels[dt.getMonth()];
-            return '<span>' + txt + '</span>';
-          })
-          .join('');
+        // etichette asse X: mensile tutte; giornaliero diradate; orario ogni 6 ore
+        let labels = '';
+        if (isHour) {
+          for (let i = 0; i < 24; i++) {
+            labels += '<span>' + (i % 6 === 0 || i === 23 ? pad2(i) : '') + '</span>';
+          }
+        } else {
+          const step = isDay ? (n > 10 ? Math.ceil(n / 7) : 1) : 1;
+          labels = data
+            .map((d, i) => {
+              const dt = new Date(d.start);
+              let txt = '';
+              if (i % step === 0) txt = isDay ? String(dt.getDate()) : monthLabels[dt.getMonth()];
+              return '<span>' + txt + '</span>';
+            })
+            .join('');
+        }
         body =
           '<div class="emc-chart">' +
           svg +
@@ -4242,7 +4475,7 @@ class EnergyMonthlyCard extends HTMLElement {
           '<div class="emc-hline"></div><div class="emc-hdot"></div><div class="emc-tip"></div>' +
           '</div><div class="emc-xlabels">' + labels + '</div>';
         // dati per l'hover
-        this._hover = { n: n, vals: vals, vmax: vmax, uom: uom, H: H, padTop: padTop, labels: data.map(fullLabel), color: cfg.color };
+        this._hover = { n: count, vals: vals, vmax: vmax, uom: uom, H: H, padTop: padTop, labels: labelsFull, color: cfg.color, dec: cfg.decimals };
       }
     }
 
@@ -4267,19 +4500,28 @@ class EnergyMonthlyCard extends HTMLElement {
     const hdot = chart.querySelector('.emc-hdot');
     const tip = chart.querySelector('.emc-tip');
     hdot.style.background = h.color;
-    const fmt = (v) => v.toFixed(v >= 100 ? 0 : 1);
+    const fmt = (v) => v.toFixed(h.dec !== undefined ? h.dec : (v >= 100 ? 0 : 1));
     const show = (idx, rectW) => {
       const leftPct = h.n === 1 ? 50 : (idx / (h.n - 1)) * 100;
-      const dotY = h.H - (h.vals[idx] / h.vmax) * (h.H - h.padTop); // px (svg alto 120px)
+      const v = h.vals[idx];
       hline.style.left = leftPct + '%';
       hline.style.opacity = '1';
+      tip.style.left = leftPct + '%';
+      tip.style.opacity = '1';
+      // ora senza dato: la riga verticale e il riquadro restano, il punto no —
+      // un pallino sulla linea affermerebbe un valore che non esiste
+      if (v === null || v === undefined) {
+        hdot.style.opacity = '0';
+        tip.textContent = h.labels[idx] + ' · nessun dato';
+        tip.style.top = '0px';
+        return;
+      }
+      const dotY = h.H - (v / h.vmax) * (h.H - h.padTop); // px (svg alto 120px)
       hdot.style.left = leftPct + '%';
       hdot.style.top = dotY + 'px';
       hdot.style.opacity = '1';
-      tip.textContent = h.labels[idx] + ' · ' + fmt(h.vals[idx]) + ' ' + h.uom;
-      tip.style.left = leftPct + '%';
+      tip.textContent = h.labels[idx] + ' · ' + fmt(v) + ' ' + h.uom;
       tip.style.top = Math.max(0, dotY - 10) + 'px';
-      tip.style.opacity = '1';
     };
     const hide = () => {
       hline.style.opacity = '0';
