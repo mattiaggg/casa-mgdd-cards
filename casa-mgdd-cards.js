@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.59.0
+ * Version: 1.60.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1491,8 +1491,13 @@ class EnergyPowerCard extends HTMLElement {
     if (this.config.layout === 'devices' && this._hass) {
       await this._fetchDeviceStats();
     }
-    const statsEntity = this.config.total_energy_entity || this.config.energy_day_entity;
-    if (this.config.layout === 'overview' && statsEntity && this._hass) {
+    // Anche il layout balance usa questo blocco: gli servono il confronto con ieri
+    // alla stessa ora e il mese in corso con la proiezione. Il contatore di
+    // riferimento e' quello di casa, che nel balance e' `house`.
+    const statsEntity = this.config.total_energy_entity || this.config.energy_day_entity ||
+      (this.config.layout === 'balance' ? this.config.house : null);
+    const wantsTrend = this.config.layout === 'overview' || this.config.layout === 'balance';
+    if (wantsTrend && statsEntity && this._hass) {
       const nowD = new Date(now);
       // confronto equo: ieri fino alla stessa ora
       try {
@@ -2089,19 +2094,54 @@ class EnergyPowerCard extends HTMLElement {
       return hrs ? hrs.reduce((s, v) => s + v, 0) : null;
     };
     const pctTxt = selfSuff === null ? '--' : Math.round(selfSuff);
+    const sel = this._balSel || this._balSelection();
     // L'arco da 84px e' stato tolto: diceva la somma di due numeri che stanno nella
     // legenda dieci pixel sotto, e occupava un quarto dell'altezza della card. Lo
-    // spazio va al profilo orario. Il numero resta in colore di TESTO e non in
-    // accento: il viola non identificava nessuna serie, e il colore qui dentro serve
-    // ai tre segmenti.
-    const hero =
-      '<div class="epb-hero">' +
-      '<div><div class="epb-hero-n">' + pctTxt + '<span class="epb-hero-pp">%</span></div>' +
-      '<div class="epb-hero-l">autosufficienza</div></div>' +
+    // spazio va al profilo orario. I numeri restano in colore di TESTO e non in
+    // accento: il colore qui dentro serve ai tre segmenti.
+    //
+    // Con `power_entity` la card assorbe anche la vecchia "Consumo casa": in testa i
+    // watt di adesso e il consumo del periodo col confronto, poi l'autosufficienza su
+    // una riga sua. Senza `power_entity` la testata resta quella di prima, con la
+    // percentuale come numero grande: le due configurazioni convivono.
+    const power = this._pw(c.power_entity);
+    // Il confronto ha senso solo sul giorno in corso: "vs ieri alla stessa ora" non
+    // significa niente su un mese o su una giornata passata.
+    const canCmp = sel.current && sel.kind === 'day' &&
+      this._yesterday !== undefined && this._yesterday !== null && this._yesterday > 0 &&
+      house !== null;
+    let chip = '';
+    if (canCmp) {
+      const diff = house - this._yesterday;
+      const up = diff > 0;
+      chip = '<span class="epb-chip ' + (up ? 'epb-up' : 'epb-dn') + '" title="ieri alla stessa ora: ' +
+        this._yesterday.toFixed(1) + ' kWh">' + (up ? '↑' : '↓') + ' ' +
+        Math.abs(diff).toFixed(1) + ' kWh</span> vs ieri';
+    }
+    const periodLab = sel.kind === 'month' ? 'consumo del mese' : 'consumo ' + this._balLabel(sel);
+    const kwhBlock =
       '<div class="epb-hero-r" data-entity="' + (c.house || '') + '">' +
       '<div class="epb-hero-v">' + this._fmt(house, '', 1) + '<span class="epb-u"> kWh</span></div>' +
-      '<div class="epb-hero-l">consumo casa</div></div>' +
-      '</div>';
+      '<div class="epb-hero-l">' + (chip || periodLab) + '</div></div>';
+    let hero;
+    if (power !== null) {
+      hero =
+        '<div class="epb-hero">' +
+        '<div data-entity="' + (c.power_entity || '') + '">' +
+        '<div class="epb-hero-n">' + this._fmt(power, '', power < 10 ? 1 : 0) +
+        '<span class="epb-hero-pp">W</span></div>' +
+        '<div class="epb-hero-l">adesso</div></div>' +
+        kwhBlock + '</div>' +
+        '<div class="epb-self"><span class="epb-self-v">' + pctTxt +
+        '<span class="epb-self-u">%</span></span>' +
+        '<span class="epb-self-l">autosufficienza</span></div>';
+    } else {
+      hero =
+        '<div class="epb-hero">' +
+        '<div><div class="epb-hero-n">' + pctTxt + '<span class="epb-hero-pp">%</span></div>' +
+        '<div class="epb-hero-l">autosufficienza</div></div>' +
+        kwhBlock + '</div>';
+    }
 
     const parts = [
       ['Solare', sunH, 'sun'],
@@ -2134,6 +2174,7 @@ class EnergyPowerCard extends HTMLElement {
       '<div class="epb-mx">' + segs + '</div>' +
       '<div class="epb-leg">' + leg + '</div>' +
       this._balanceHourly() +
+      this._balMonthBar() +
       '<div class="epb-grid">' +
       kpi(ic.sun, 'var(--epb-sun)', 'Solare prodotto', c.solar) +
       kpi(ic.down, 'var(--epb-grid)', 'Prelevata rete', c.grid_import) +
@@ -2144,6 +2185,45 @@ class EnergyPowerCard extends HTMLElement {
     this._wireClicks();
     this._wireBalanceTip();
     this._wireBalanceNav();
+  }
+
+  // Il mese come barra e non come numero: "~443 kWh" da solo non dice quanto sei
+  // avanti. Il pieno e' quello che hai consumato, il resto e' quello che la proiezione
+  // aggiunge. La proiezione e' lineare, percio' il grigio significa letteralmente
+  // "se il resto del mese va come questi primi giorni".
+  //
+  // Compare solo sul periodo in corso: navigando nello storico il mese corrente non
+  // c'entra niente con quello che si sta guardando.
+  _balMonthBar() {
+    if (this.config.month === false || !this._mtd) return '';
+    const sel = this._balSel || this._balSelection();
+    if (!sel.current) return '';
+    const cum = this._num(this.config.total_energy_entity || this.config.house);
+    const live = cum !== null && isFinite(this._mtd.upTo) && cum > this._mtd.upTo
+      ? cum - this._mtd.upTo : 0;
+    const month = this._mtd.month + live;
+    if (!(month > 0)) return '';
+    const now = new Date();
+    const mStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const mEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const frac = (now - mStart) / (mEnd - mStart);
+    // sotto il 3% del mese la proiezione e' rumore moltiplicato per trenta
+    const proj = frac > 0.03 ? Math.round(month / frac) : null;
+    const AB = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+    const ab = AB[now.getMonth()];
+    const last = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const pct = proj ? Math.max(0, Math.min(100, (month / proj) * 100)) : 0;
+    return (
+      '<div class="epb-mo">' +
+      '<div class="epb-mo-hd"><span>Mese</span><b>' + month.toFixed(0) + ' kWh finora</b></div>' +
+      '<div class="epb-mo-t"><i style="width:' + pct.toFixed(1) + '%"></i>' +
+      '<span class="epb-mo-m" style="left:' + pct.toFixed(1) + '%"></span></div>' +
+      '<div class="epb-mo-f"><span>1 ' + ab + '</span>' +
+      '<span class="epb-mo-p">' +
+      (proj ? 'proiezione ~' + proj + ' kWh' : 'proiezione non ancora attendibile') +
+      '</span><span>' + last + ' ' + ab + '</span></div>' +
+      '</div>'
+    );
   }
 
   // Etichetta del periodo scelto. `history: false` riporta la card al solo "oggi".
@@ -2226,27 +2306,17 @@ class EnergyPowerCard extends HTMLElement {
     // massimo vero di 0.50, e le undici ore reali stavano sotto il 40% dell'altezza.
     let scale = 0;
     let anyMax = 0;
-    let sum = 0;
-    let cnt = 0;
     rows.forEach((r) => {
       if (!r || r.gap) return;
       if (r.house > anyMax) anyMax = r.house;
-      sum += r.house;
-      cnt += 1;
       if (!r.susp && r.house > scale) scale = r.house;
     });
     // se ogni barra e' sospetta non resta che il massimo assoluto
     if (!(scale > 0)) scale = anyMax;
     if (!(scale > 0)) return '';
-    const avg = cnt ? sum / cnt : 0;
     const pad = (v) => (v < 10 ? '0' + v : '' + v);
     let clipped = 0;
-    let gaps = 0;
     let bars = '';
-    if (avg > 0 && avg <= scale) {
-      bars += '<div class="epb-avg" style="bottom:' + ((avg / scale) * 100).toFixed(2) + '%">' +
-        '<span>media ' + avg.toFixed(2) + '</span></div>';
-    }
     for (let i = 0; i < n; i++) {
       const r = rows[i];
       const lab = monthly ? 'giorno ' + (i + 1) : pad(i) + ':00 – ' + pad(i + 1) + ':00';
@@ -2256,7 +2326,6 @@ class EnergyPowerCard extends HTMLElement {
         continue;
       }
       if (r.gap) {
-        gaps += 1;
         bars += '<div class="epb-hb" title="' + lab + ' — nessun dato">' +
           '<span class="epb-gap"></span></div>';
         continue;
@@ -2300,16 +2369,9 @@ class EnergyPowerCard extends HTMLElement {
       ? 'scala ' + scale.toFixed(2) + unit + ' · ' + clipped + ' ' +
         (clipped === 1 ? w1 + (monthly ? ' tagliato' : ' tagliata') : wN + (monthly ? ' tagliati' : ' tagliate'))
       : 'max ' + scale.toFixed(2) + unit;
-    // "ora" da sola significa anche "adesso": senza l'articolo la nota si legge male
-    const art1 = monthly ? 'Un giorno' : 'Un’ora';
-    let note = '';
-    if (clipped) {
-      note += '<b>!</b> ' + (clipped === 1 ? art1 : clipped + ' ' + wN) + ' fuori scala: ' +
-        (clipped === 1 ? 'porta' : 'portano') + ' anche l’energia del periodo senza dato. ';
-    }
-    if (gaps) {
-      note += (gaps === 1 ? art1 : gaps + ' ' + wN) + ' a trattino: dato assente, non consumo zero.';
-    }
+    // Nessuna nota sotto il grafico: il trattino e il retino col "!" si vedono, e
+    // l'intestazione a destra dice già che la scala e' ridotta e quante barre sono
+    // tagliate. Il valore vero della barra tagliata resta nel tooltip.
     return (
       '<div class="epb-hr">' +
       '<div class="epb-hr-hd"><span>' + (monthly ? 'Profilo giornaliero' : 'Profilo orario') + '</span>' +
@@ -2319,7 +2381,6 @@ class EnergyPowerCard extends HTMLElement {
       '<div class="epb-hr-plot">' + bars + '<div class="epb-tip" hidden></div></div>' +
       '</div>' +
       '<div class="epb-hr-axw"><div class="epb-hr-ax">' + ax + '</div></div>' +
-      (note ? '<div class="epb-note">' + note + '</div>' : '') +
       '</div>'
     );
   }
@@ -3253,9 +3314,40 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin:16px 0 12px;}' +
       '.epb-hero-n{font-size:42px;font-weight:670;letter-spacing:-2.1px;line-height:.95;font-variant-numeric:tabular-nums;}' +
       '.epb-hero-pp{font-size:17px;font-weight:600;letter-spacing:0;color:var(--epb-tx2);margin-left:2px;}' +
-      '.epb-hero-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);margin-top:6px;}' +
+      '.epb-hero-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);' +
+      'margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}' +
+      '.epb-hero-r .epb-hero-l{justify-content:flex-end;}' +
       '.epb-hero-r{text-align:right;cursor:pointer;}' +
       '.epb-hero-v{font-size:23px;font-weight:650;letter-spacing:-.7px;line-height:1;font-variant-numeric:tabular-nums;}' +
+      // confronto con ieri alla stessa ora: verde se hai consumato meno, ambra se piu'.
+      // Non sono colori di stato buono/cattivo, sono direzione: per questo la freccia
+      // c'e' sempre e il colore non e' l'unico segnale.
+      '.epb-chip{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:650;' +
+      'padding:2px 7px;border-radius:20px;background:var(--epb-fill);letter-spacing:.2px;' +
+      'text-transform:none;font-variant-numeric:tabular-nums;}' +
+      '.epb-up{color:#B4571A;}' +
+      '.epb-dn{color:#0B8F5E;}' +
+      '.epb-dark .epb-up{color:#F5B301;}' +
+      '.epb-dark .epb-dn{color:#22E39A;}' +
+      // autosufficienza su una riga sua quando i watt prendono il posto del numero grande
+      '.epb-self{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;padding-top:12px;' +
+      'border-top:1px solid var(--epb-bd);}' +
+      '.epb-self-v{font-size:24px;font-weight:660;letter-spacing:-.9px;font-variant-numeric:tabular-nums;}' +
+      '.epb-self-u{font-size:13px;font-weight:600;color:var(--epb-tx2);letter-spacing:0;}' +
+      '.epb-self-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);}' +
+      // mese: barra con dentro il consumato e la tacca di dove sei oggi
+      '.epb-mo{margin-top:16px;padding-top:14px;border-top:1px solid var(--epb-bd);}' +
+      '.epb-mo-hd{display:flex;justify-content:space-between;align-items:baseline;gap:10px;' +
+      'font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--epb-tx2);margin-bottom:8px;}' +
+      '.epb-mo-hd b{font-size:13px;letter-spacing:0;text-transform:none;font-weight:650;' +
+      'color:var(--epb-tx);font-variant-numeric:tabular-nums;}' +
+      '.epb-mo-t{position:relative;height:11px;border-radius:6px;background:var(--epb-track);}' +
+      '.epb-mo-t i{display:block;height:100%;border-radius:6px;background:var(--epb-grid);}' +
+      '.epb-mo-m{position:absolute;top:-3px;width:2px;height:17px;background:var(--epb-tx2);' +
+      'border-radius:1px;opacity:.55;}' +
+      '.epb-mo-f{display:flex;justify-content:space-between;align-items:baseline;gap:10px;' +
+      'font-size:9.5px;color:var(--epb-tx2);margin-top:7px;letter-spacing:.3px;}' +
+      '.epb-mo-p{color:var(--epb-tx2);font-weight:650;text-transform:uppercase;letter-spacing:.5px;opacity:.9;}' +
       // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo
       '.epb-mx{display:flex;height:11px;border-radius:6px;overflow:hidden;gap:2px;background:var(--epb-track);}' +
       '.epb-seg{height:100%;}' +
@@ -3318,12 +3410,6 @@ class EnergyPowerCard extends HTMLElement {
       // marcato per quelle senza dato: due assenze diverse, due segni diversi
       '.epb-fut{width:100%;height:1px;background:var(--epb-bd);}' +
       '.epb-gap{width:62%;height:1px;background:var(--epb-hatch);}' +
-      '.epb-avg{position:absolute;left:0;right:0;border-top:1px dashed var(--epb-tx2);opacity:.5;' +
-      'z-index:1;pointer-events:none;}' +
-      '.epb-avg span{position:absolute;right:0;top:-13px;font-size:8.5px;letter-spacing:.3px;' +
-      'text-transform:uppercase;color:var(--epb-tx2);}' +
-      '.epb-note{margin-top:10px;font-size:10.5px;line-height:1.5;color:var(--epb-tx2);}' +
-      '.epb-note b{color:var(--epb-tx);}' +
       '.epb-hr-ax{display:flex;justify-content:space-between;font-size:9.5px;color:var(--epb-tx2);margin-top:6px;opacity:.8;font-variant-numeric:tabular-nums;}' +
       '.epb-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--epb-bd);border-radius:13px;overflow:hidden;margin-top:14px;}' +
       '.epb-k{display:flex;align-items:center;gap:9px;padding:11px 12px;cursor:pointer;' +
