@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.58.1
+ * Version: 1.58.2
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1565,9 +1565,12 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   // Periodo mostrato dal bilancio. `back` conta a ritroso: 0 e' il periodo in corso,
-  // il limite viene da days/months. In modalita' giorno i bucket sono le 24 ore, in
-  // modalita' mese sono i giorni del mese: la struttura e' la stessa, cambia solo la
-  // granularita', percio' modello, profilo e riquadri funzionano identici nei due casi.
+  // il limite viene da days/months.
+  //
+  // Due granularita', non una: `hours` sono i bucket di CALCOLO (sempre ore, anche
+  // nel mese), `n` sono le barre del profilo (24 ore o i giorni del mese). Il
+  // modello deve girare sull'ora perche' la scomposizione si regge sulla
+  // contemporaneita' di consumo e produzione: vedi il commento su _balanceModel.
   _balSelection() {
     const kind = this._balKind === 'month' ? 'month' : 'day';
     const max = (kind === 'month' ? this.config.months || 6 : this.config.days || 14) - 1;
@@ -1587,7 +1590,10 @@ class EnergyPowerCard extends HTMLElement {
       to = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back + 1);
       n = 24;
     }
-    return { kind: kind, back: back, max: max, from: from, to: to, n: n, current: back === 0 };
+    // dalla differenza in millisecondi, non da n*24: un mese con cambio d'ora
+    // legale ha 743 o 745 ore, non 744.
+    const hours = Math.round((to - from) / 3600000);
+    return { kind: kind, back: back, max: max, from: from, to: to, n: n, hours: hours, current: back === 0 };
   }
 
   async _fetchBalance() {
@@ -1595,21 +1601,21 @@ class EnergyPowerCard extends HTMLElement {
     const ids = [c.house, c.solar, c.grid_import, c.grid_export, c.battery_charge, c.battery_discharge].filter(Boolean);
     if (!ids.length) return;
     const sel = this._balSelection();
-    // un bucket prima dell'inizio: quella riga porta il valore del contatore al
+    // un'ora prima dell'inizio: quella riga porta il valore del contatore al
     // confine, cioe' il riferimento da cui misurare il primo bucket del periodo
     // quando di righe dentro il periodo non ce n'e' ancora nessuna.
-    const from = sel.kind === 'month'
-      ? new Date(sel.from.getFullYear(), sel.from.getMonth(), 0)
-      : new Date(sel.from.getTime() - 3600 * 1000);
+    const from = new Date(sel.from.getTime() - 3600 * 1000);
     const to = sel.current ? new Date() : sel.to;
     let resp = null;
     try {
+      // sempre 'hour', anche per il mese: un mese sono ~744 righe per contatore,
+      // ma e' l'unica granularita' su cui la scomposizione ha senso.
       resp = await this._hass.callWS({
         type: 'recorder/statistics_during_period',
         start_time: from.toISOString(),
         end_time: to.toISOString(),
         statistic_ids: ids,
-        period: sel.kind === 'month' ? 'day' : 'hour',
+        period: 'hour',
         types: ['change', 'state'],
       });
     } catch (e) {
@@ -1619,27 +1625,24 @@ class EnergyPowerCard extends HTMLElement {
     this._balSel = sel;
   }
 
-  // Da risposta statistiche a, per ogni entita': i kWh per bucket del periodo, il
-  // loro totale, e il valore del contatore al confine dell'ultimo bucket compilato.
-  // Le righe fuori dal periodo non entrano nei bucket: servono solo a fissare il
-  // confine.
+  // Da risposta statistiche a, per ogni entita': i kWh ORA per ORA del periodo, il
+  // e il valore del contatore al confine dell'ultima ora compilata. Le righe fuori
+  // dal periodo non entrano nei bucket: servono solo a fissare il confine.
   _buildBalStats(resp, ids, sel) {
     const out = {};
     ids.forEach((id) => {
-      const buckets = new Array(sel.n).fill(0);
-      let compiled = 0;
+      const buckets = new Array(sel.hours).fill(0);
       let edge = null;
       ((resp && resp[id]) || []).forEach((r) => {
         const s = parseFloat(r.state);
         if (!Number.isNaN(s)) edge = s;
         const d = new Date(r.start);
         if (d < sel.from || d >= sel.to) return;
-        const i = sel.kind === 'month' ? d.getDate() - 1 : d.getHours();
+        const i = Math.floor((d - sel.from) / 3600000);
         const v = Math.max(0, r.change || 0);
-        if (i >= 0 && i < sel.n) buckets[i] += v;
-        compiled += v;
+        if (i >= 0 && i < sel.hours) buckets[i] += v;
       });
-      out[id] = { buckets: buckets, compiled: compiled, edge: edge };
+      out[id] = { buckets: buckets, edge: edge };
     });
     return out;
   }
@@ -1916,10 +1919,18 @@ class EnergyPowerCard extends HTMLElement {
     if (sel && sel.current) {
       const live = this._num(id);
       if (live !== null) {
-        const i = sel.kind === 'month' ? new Date().getDate() - 1 : new Date().getHours();
-        const base = this.config.cumulative === true
-          ? st.edge
-          : (sel.kind === 'month' ? st.buckets[i] : st.compiled);
+        const now = new Date();
+        const i = Math.floor((now - sel.from) / 3600000);
+        let base;
+        if (this.config.cumulative === true) base = st.edge;
+        else {
+          // i contatori *_today azzerano a mezzanotte, quindi il valore live va
+          // confrontato con quanto e' compilato OGGI: nel mese il totale del
+          // periodo comprende i giorni precedenti e il confronto non tornerebbe.
+          const i0 = Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - sel.from) / 3600000);
+          base = 0;
+          for (let k = Math.max(0, i0); k < b.length; k++) base += b[k];
+        }
         if (base !== null && base !== undefined && isFinite(base) && live > base && i >= 0 && i < b.length) {
           b[i] += live - base;
         }
@@ -1953,51 +1964,80 @@ class EnergyPowerCard extends HTMLElement {
   // GIORNO, non sull'ora: si carica di pomeriggio e si scarica di sera, quando la
   // carica e' zero e una frazione oraria risulterebbe nulla: tutta la scarica della
   // sera finirebbe etichettata come rete.
+  //
+  // La scomposizione si calcola SEMPRE sull'ora, anche in modalita' mese, e solo
+  // dopo le ore si sommano nella barra del giorno. Calcolarla direttamente sul
+  // bucket giornaliero azzerava la batteria: nella giornata il solare prodotto
+  // supera quasi sempre il consumo di casa, quindi min(solare, casa) si mangiava
+  // tutto il consumo e non restava niente da attribuire a batteria e rete. Col
+  // 2 agosto 2026: casa 15.8 kWh, solare in sito 17.9, batteria scaricata 6.1 e
+  // il grafico dava 100% solare. Sull'ora il conto tiene, perche' e' li' che
+  // consumo e produzione sono davvero contemporanei: di notte il solare e' zero e
+  // la scarica resta scarica.
   _balanceModel() {
     const c = this.config;
     const house = c.house ? this._balBuckets(c.house) : null;
     if (!house) return null;
     const sel = this._balSel || this._balSelection();
-    const n = house.length;
+    const n = house.length; // ore del periodo
+    const slots = sel.n; // barre del profilo: 24 ore oppure i giorni del mese
     const zero = () => new Array(n).fill(0);
     const solar = this._balBuckets(c.solar) || zero();
     const gexp = this._balBuckets(c.grid_export) || zero();
     const chg = this._balBuckets(c.battery_charge) || zero();
     const dis = this._balBuckets(c.battery_discharge) || zero();
 
+    // ora -> barra e ora -> giorno, letti dalla data vera e non per divisione,
+    // cosi' il cambio d'ora legale non sfasa il mese di un'ora.
+    const slotOf = [];
+    const dayOf = [];
+    for (let i = 0; i < n; i++) {
+      const d = new Date(sel.from.getTime() + i * 3600000);
+      slotOf.push(sel.kind === 'month' ? d.getDate() - 1 : d.getHours());
+      dayOf.push(sel.kind === 'month' ? d.getDate() - 1 : 0);
+    }
+
     const sun = zero();
-    let chgTot = 0;
-    let greenTot = 0;
+    const chgTot = {};
+    const greenTot = {};
     for (let i = 0; i < n; i++) {
       // solare rimasto in casa: prodotto meno quello immesso in rete
       const site = Math.max(0, solar[i] - gexp[i]);
       sun[i] = Math.min(site, house[i]);
-      chgTot += chg[i];
-      greenTot += Math.min(chg[i], site - sun[i]);
+      const g = dayOf[i];
+      chgTot[g] = (chgTot[g] || 0) + chg[i];
+      greenTot[g] = (greenTot[g] || 0) + Math.min(chg[i], site - sun[i]);
     }
-    const green = chgTot > 0 ? greenTot / chgTot : 0;
 
-    const rows = [];
+    const rows = new Array(slots).fill(null);
     const day = { house: 0, sun: 0, batt: 0, grid: 0, self: null };
-    // Nel periodo in corso i bucket successivi a quello attuale restano vuoti, non a
+    // Nel periodo in corso le ore successive a quella attuale restano vuote, non a
     // zero: un'ora non ancora trascorsa non e' un'ora a consumo nullo. Su un periodo
     // passato si percorre tutto.
-    const upTo = sel.current
-      ? (sel.kind === 'month' ? new Date().getDate() - 1 : new Date().getHours())
-      : n - 1;
+    const upTo = sel.current ? Math.floor((new Date() - sel.from) / 3600000) : n - 1;
     for (let i = 0; i <= upTo && i < n; i++) {
+      const g = dayOf[i];
+      // frazione solare della carica, del giorno a cui l'ora appartiene
+      const green = chgTot[g] > 0 ? greenTot[g] / chgTot[g] : 0;
       const rest = Math.max(0, house[i] - sun[i]);
       const batt = Math.min(dis[i] * green, rest);
-      rows.push({ h: i, house: house[i], sun: sun[i], batt: batt, grid: rest - batt });
+      const grid = rest - batt;
+      const k = slotOf[i];
+      if (k < 0 || k >= slots) continue;
+      if (!rows[k]) rows[k] = { h: k, house: 0, sun: 0, batt: 0, grid: 0 };
+      rows[k].house += house[i];
+      rows[k].sun += sun[i];
+      rows[k].batt += batt;
+      rows[k].grid += grid;
       day.house += house[i];
       day.sun += sun[i];
       day.batt += batt;
-      day.grid += rest - batt;
+      day.grid += grid;
     }
     if (day.house > 0) {
       day.self = Math.max(0, Math.min(100, ((day.sun + day.batt) / day.house) * 100));
     }
-    return { rows: rows, day: day, n: n, kind: sel.kind };
+    return { rows: rows, day: day, n: slots, kind: sel.kind };
   }
 
   // Arco dell'autosufficienza + riga consumo casa + striscia con la scomposizione
@@ -2161,11 +2201,12 @@ class EnergyPowerCard extends HTMLElement {
     const rows = this._hourly;
     if (!rows || !rows.length) return '';
     const sel = this._balSel || this._balSelection();
-    const n = sel.kind === 'month' ? Math.round((sel.to - sel.from) / 86400000) : 24;
+    const n = sel.n;
     const monthly = sel.kind === 'month';
     let max = 0;
     rows.forEach((r) => {
-      if (r.house > max) max = r.house;
+      // le barre non ancora raggiunte sono null, non zero
+      if (r && r.house > max) max = r.house;
     });
     if (!(max > 0)) return '';
     const pad = (v) => (v < 10 ? '0' + v : '' + v);
