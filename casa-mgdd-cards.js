@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.61.0
+ * Version: 1.62.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2354,6 +2354,16 @@ class EnergyPowerCard extends HTMLElement {
     return GG[d.getDay()] + ' ' + d.getDate() + ' ' + MESI[d.getMonth()];
   }
 
+  // Nel navigatore la data va in cifre: la forma lunga ("domenica 2 agosto") e' gia'
+  // scritta nel sottotitolo del consumo, poche righe sopra. In modalita' Mese resta il
+  // nome del mese, perche' li' il sottotitolo dice solo "consumo del mese".
+  _balNavLabel(sel) {
+    if (sel.kind === 'month') return this._balLabel(sel);
+    if (sel.back === 0) return 'oggi';
+    const p2 = (v) => (v < 10 ? '0' + v : '' + v);
+    return p2(sel.from.getDate()) + '/' + p2(sel.from.getMonth() + 1);
+  }
+
   // Con il navigatore acceso la pillola diceva "oggi" tre pixel sopra un pulsante che
   // dice "Oggi": serviva a distinguere oggi da storico quando il navigatore non c'era.
   _balPill() {
@@ -2369,12 +2379,19 @@ class EnergyPowerCard extends HTMLElement {
     const sel = this._balSelection();
     const seg = (v, label) =>
       '<button data-balk="' + v + '" aria-pressed="' + (sel.kind === v) + '">' + label + '</button>';
+    // Sul periodo corrente l'etichetta resta un testo: non c'e' niente a cui tornare,
+    // e un pulsante che non fa nulla e' peggio di nessun pulsante.
+    const lab = this._balNavLabel(sel);
+    const nl = sel.back > 0
+      ? '<button class="epb-nl" data-balhome title="' +
+        (sel.kind === 'month' ? 'Torna al mese corrente' : 'Torna a oggi') + '">' + lab + '</button>'
+      : '<span class="epb-nl">' + lab + '</span>';
     return (
       '<div class="epb-nv">' +
       '<div class="epb-sg">' + seg('day', 'Giorno') + seg('month', 'Mese') + '</div>' +
       '<div class="epb-ar">' +
       '<button data-balstep="-1" title="Periodo precedente"' + (sel.back >= sel.max ? ' disabled' : '') + '>‹</button>' +
-      '<span class="epb-nl">' + this._balLabel(sel) + '</span>' +
+      nl +
       '<button data-balstep="1" title="Periodo successivo"' + (sel.back <= 0 ? ' disabled' : '') + '>›</button>' +
       '</div></div>'
     );
@@ -2396,6 +2413,13 @@ class EnergyPowerCard extends HTMLElement {
         go();
       });
     });
+    const home = this.querySelector('[data-balhome]');
+    if (home) {
+      home.addEventListener('click', () => {
+        this._balBack = 0;
+        go();
+      });
+    }
     this.querySelectorAll('[data-balstep]').forEach((el) => {
       el.addEventListener('click', () => {
         const sel = this._balSelection();
@@ -3580,9 +3604,16 @@ class EnergyPowerCard extends HTMLElement {
       'color:var(--epb-tx);}' +
       '.epb-ar button:disabled{opacity:.35;cursor:default;}' +
       '.epb-ar button:hover:not(:disabled),.epb-sg button:hover{color:var(--epb-tx);}' +
-      '.epb-nl{min-width:132px;text-align:center;font-size:12.5px;font-weight:700;padding:0 6px;' +
-      'text-transform:capitalize;color:var(--epb-tx);}' +
-      '@media (max-width:359px){.epb-grid{grid-template-columns:1fr;}.epb-nl{min-width:96px;}}' +
+      // piu' specifico di `.epb-ar button`, altrimenti l'etichetta-pulsante
+      // prenderebbe il corpo 15px delle frecce
+      '.epb-ar .epb-nl{min-width:112px;text-align:center;font-size:12.5px;font-weight:700;' +
+      'padding:0 6px;text-transform:capitalize;color:var(--epb-tx);' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.epb-ar button.epb-nl{background:none;border:0;line-height:1.35;cursor:pointer;' +
+      'text-decoration:underline;text-decoration-color:transparent;text-underline-offset:3px;}' +
+      '.epb-ar button.epb-nl:hover{text-decoration-color:var(--epb-tx2);}' +
+      '@media (max-width:359px){.epb-grid{grid-template-columns:1fr;}' +
+      '.epb-ar .epb-nl{min-width:88px;}}' +
       // layout devices: un solo colore per tutte le barre. Il nome del dispositivo e'
       // gia' sulla riga, quindi tinte diverse per riga brucerebbero l'unico canale
       // libero; il colore torna a significare qualcosa (viola = consumo casa, grigio =
