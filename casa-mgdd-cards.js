@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.65.0
+ * Version: 1.66.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2243,18 +2243,24 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   // ===========================================================================
-  // layout: prodcons - produzione contro consumo, un giorno per coppia di barre.
+  // layout: prodcons - il consumo di ogni giorno diviso per provenienza.
   //
-  // Risponde a una domanda che nessun'altra card della vista risponde: nei giorni
-  // l'impianto ti sta coprendo o no. Le due barre stanno sulla STESSA scala, che e'
-  // legittimo perche' l'unita' e' la stessa; sono affiancate e non impilate, perche'
-  // impilarle sommerebbe due grandezze che non si sommano.
-  // Config: production, consumption, days (10), title.
+  // Risponde a una domanda che nessun'altra card della vista risponde: l'impianto
+  // ti sta coprendo o no. La versione a coppie di barre confrontava produzione e
+  // consumo, che sono due grandezze che non si toccano: 22 kWh prodotti non sono
+  // 22 kWh entrati in casa, una parte va in rete o in batteria. Qui l'area e' il
+  // consumo, diviso fra quello servito dall'impianto (consumo meno prelievo) e
+  // quello comprato: due parti che sommano davvero al totale.
+  //
+  // Telaio, smussamento e tooltip sono quelli di energy-monthly-card, perche' in
+  // dashboard questa card sta nella stessa colonna delle sue tre sorelle.
+  // Config: production, consumption, grid_import, days (10), title.
   // ===========================================================================
   async _fetchProdCons() {
     const c = this.config;
     const ids = [c.production, c.consumption].filter(Boolean);
     if (ids.length < 2) return;
+    if (c.grid_import) ids.push(c.grid_import);
     const days = Math.max(2, c.days || 10);
     const now = new Date();
     const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
@@ -2281,6 +2287,7 @@ class EnergyPowerCard extends HTMLElement {
       };
       const P = pick(c.production);
       const C = pick(c.consumption);
+      const G = c.grid_import ? pick(c.grid_import) : null;
       const out = [];
       for (let i = days - 1; i >= 0; i--) {
         const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
@@ -2289,6 +2296,7 @@ class EnergyPowerCard extends HTMLElement {
           d: d,
           prod: P[k] === undefined ? null : P[k],
           cons: C[k] === undefined ? null : C[k],
+          imp: !G || G[k] === undefined ? null : G[k],
           today: i === 0,
         });
       }
@@ -2298,57 +2306,216 @@ class EnergyPowerCard extends HTMLElement {
     }
   }
 
+  // Cardinal spline con tensione 0.18: la stessa di energy-monthly-card, cosi' le
+  // curve delle quattro card della colonna hanno lo stesso carattere.
+  _smoothPath(pts) {
+    if (pts.length < 2) return '';
+    const f = (n) => n.toFixed(2);
+    let d = 'M' + f(pts[0].x) + ',' + f(pts[0].y);
+    const t = 0.18;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || p2;
+      d += 'C' + f(p1.x + (p2.x - p0.x) * t) + ',' + f(p1.y + (p2.y - p0.y) * t) + ' ' +
+        f(p2.x - (p3.x - p1.x) * t) + ',' + f(p2.y - (p3.y - p1.y) * t) + ' ' +
+        f(p2.x) + ',' + f(p2.y);
+    }
+    return d;
+  }
+
   _renderProdCons() {
     const c = this.config;
     const rows = this._pc;
     const MESI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
     let body;
+    let sub = '';
+    let big = '—';
     if (!rows) {
       body = '<div class="epp-load">Caricamento…</div>';
+      this._pcHover = null;
     } else {
-      let mx = 0;
+      const W = 300;
+      const H = 120;
+      const padX = 3;
+      const padTop = 12;
+      const n = rows.length;
+      const xAt = (i) => (n < 2 ? W / 2 : padX + (i * (W - 2 * padX)) / (n - 1));
       let tp = 0;
       let tc = 0;
+      let ti = 0;
+      let vmax = 0;
+      let hasImp = false;
       rows.forEach((r) => {
-        if (r.prod !== null && r.prod > mx) mx = r.prod;
-        if (r.cons !== null && r.cons > mx) mx = r.cons;
         if (r.prod !== null) tp += r.prod;
-        if (r.cons !== null) tc += r.cons;
+        if (r.cons !== null) {
+          tc += r.cons;
+          if (r.cons > vmax) vmax = r.cons;
+        }
+        if (r.imp !== null) {
+          ti += r.imp;
+          hasImp = true;
+        }
       });
-      if (!mx) mx = 1;
-      let bars = '';
-      rows.forEach((r) => {
-        const bar = (v, cls, lab) => {
-          if (v === null) return '<i class="epp-na"></i>';
-          return '<i class="epp-' + cls + '" style="height:' +
-            Math.max(1.5, (v / mx) * 100).toFixed(1) + '%" data-l="' + lab + '"></i>';
-        };
-        const tip = r.d.getDate() + ' ' + MESI[r.d.getMonth()] + ' · prodotti ' +
-          (r.prod === null ? '—' : this._fmt(r.prod, ' kWh', 1)) + ' · consumati ' +
-          (r.cons === null ? '—' : this._fmt(r.cons, ' kWh', 1)) + (r.today ? ' (in corso)' : '');
-        bars += '<div class="epp-g' + (r.today ? ' epp-now' : '') + '" title="' + tip + '">' +
-          bar(r.prod, 'p', 'prod') + bar(r.cons, 'c', 'cons') + '</div>';
+      if (!vmax) vmax = 1;
+      const yAt = (v) => H - (v / vmax) * (H - padTop);
+      // Coperto = consumo meno prelievo. NON la produzione: quella comprende anche
+      // quello che e' finito in rete o in batteria, e sommata al prelievo darebbe
+      // piu' del consumo reale.
+      const covOf = (r) => (r.cons === null || r.imp === null ? null : Math.max(0, r.cons - r.imp));
+      // un tratto per ogni sequenza contigua di giorni con dato: un buco nelle
+      // statistiche non deve diventare una retta che attraversa il grafico
+      const segs = [];
+      let cur = [];
+      rows.forEach((r, i) => {
+        if (r.cons === null) {
+          if (cur.length) segs.push(cur);
+          cur = [];
+        } else {
+          cur.push(i);
+        }
       });
+      if (cur.length) segs.push(cur);
+      const gid = 'eppg' + this._uid;
+      let fills = '';
+      let lines = '';
+      segs.forEach((seg) => {
+        if (seg.length < 2) return;
+        const pc = seg.map((i) => ({ x: xAt(i), y: yAt(rows[i].cons) }));
+        const dc = this._smoothPath(pc);
+        const x0 = pc[0].x.toFixed(2);
+        const xN = pc[pc.length - 1].x.toFixed(2);
+        const covOk = hasImp && seg.every((i) => covOf(rows[i]) !== null);
+        if (covOk) {
+          const pv = seg.map((i) => ({ x: xAt(i), y: yAt(covOf(rows[i])) }));
+          const dv = this._smoothPath(pv);
+          // Il ritorno e' la stessa curva percorsa all'indietro: la spline cardinale
+          // e' simmetrica, percio' il bordo inferiore della banda coincide con la
+          // linea del coperto invece di sfalsarsi di qualche pixel.
+          const back = this._smoothPath(pv.slice().reverse()).replace('M', 'L');
+          const last = pv[pv.length - 1];
+          fills += '<path d="' + dc + ' L' + last.x.toFixed(2) + ',' + last.y.toFixed(2) + ' ' +
+            back + ' Z" fill="var(--epb-grid)" fill-opacity=".3"/>';
+          fills += '<path d="' + dv + ' L' + xN + ',' + H + ' L' + x0 + ',' + H +
+            ' Z" fill="url(#' + gid + ')"/>';
+          lines += '<path class="epp-ln" d="' + dv + '" fill="none" stroke="var(--epb-sun)"/>';
+        } else {
+          fills += '<path d="' + dc + ' L' + xN + ',' + H + ' L' + x0 + ',' + H +
+            ' Z" fill="url(#' + gid + ')"/>';
+        }
+        lines += '<path class="epp-ln" d="' + dc + '" fill="none" stroke="var(--epb-grid)" stroke-opacity=".85"/>';
+      });
+      const nowX = xAt(n - 1).toFixed(2);
+      const svg =
+        '<svg class="epp-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+        '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0" stop-color="var(--epb-sun)" stop-opacity="0.42"/>' +
+        '<stop offset="1" stop-color="var(--epb-sun)" stop-opacity="0.05"/>' +
+        '</linearGradient></defs>' +
+        fills +
+        '<line class="epp-nl" x1="' + nowX + '" y1="0" x2="' + nowX + '" y2="' + H + '"/>' +
+        lines +
+        '</svg>';
       const ax = rows.map((r) => '<span>' + (r.d.getDate() === 1 || r.today
         ? r.d.getDate() + ' ' + MESI[r.d.getMonth()] : r.d.getDate()) + '</span>').join('');
+      const covTot = hasImp && tc > 0 ? Math.max(0, (tc - ti) / tc) : null;
+      big = covTot === null ? this._fmt(tc, ' kWh', 1) : Math.round(covTot * 100) + ' %';
+      sub = (c.days || 10) + ' giorni · ' + this._fmt(tp, '', 1) + ' kWh prodotti, ' +
+        this._fmt(tc, '', 1) + ' consumati';
       body =
-        '<div class="epp-hero">' +
-        '<div><div class="epp-v epp-tp">' + this._fmt(tp, '', 1) +
-        '<span class="epb-u"> kWh</span></div><div class="epp-l">prodotti</div></div>' +
-        '<div class="epp-r"><div class="epp-v epp-tc">' + this._fmt(tc, '', 1) +
-        '<span class="epb-u"> kWh</span></div><div class="epp-l">consumati</div></div>' +
-        '</div>' +
-        '<div class="epp-pw"><div class="epp-y"><span>' + this._fmt(mx, '', 1) +
-        '</span><span>0</span></div><div class="epp-plot">' + bars + '</div></div>' +
-        '<div class="epp-axw"><div class="epp-ax">' + ax + '</div></div>' +
-        '<div class="epb-leg"><span class="epb-lg"><i class="epb-dot epp-sw-p"></i>produzione</span>' +
-        '<span class="epb-lg"><i class="epb-dot epp-sw-c"></i>consumo</span></div>';
+        '<div class="epp-chart">' + svg +
+        '<div class="epp-hl"></div><div class="epp-pt"></div>' +
+        '<div class="epb-tip epp-tip" hidden></div>' +
+        '</div><div class="epp-ax">' + ax + '</div>' +
+        (hasImp
+          ? '<div class="epb-leg"><span class="epb-lg"><i class="epb-dot epp-sw-p"></i>impianto</span>' +
+            '<span class="epb-lg"><i class="epb-dot epp-sw-g"></i>rete</span></div>'
+          : '<div class="epb-leg"><span class="epb-lg"><i class="epb-dot epp-sw-p"></i>consumo</span></div>');
+      this._pcHover = { rows: rows, n: n, vmax: vmax, H: H, padTop: padTop, mesi: MESI, hasImp: hasImp };
     }
     mgddPaint(this, this._styles(),
-      '<div class="epb-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
-      '<div class="epb-hd"><span class="epb-t">' + (c.title || 'Produzione e consumo') +
-      '</span><span class="epb-pill">' + (c.days || 10) + ' giorni</span></div>' +
+      '<div class="epb-wrap epp-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
+      '<div class="epp-top"><div class="epp-titles">' +
+      '<span class="epp-title">' + (c.title || 'Copertura del consumo') + '</span>' +
+      (sub ? '<span class="epp-sub">' + sub + '</span>' : '') +
+      '</div><div class="epp-big">' + big + '</div></div>' +
       body + '</div>');
+    this._wireProdConsTip();
+  }
+
+  // Tooltip: la riga verticale, il punto sulla curva del consumo e il riquadro con
+  // la giornata in chiaro. Stesso funzionamento delle card a linea (mouse + dito),
+  // ma il riquadro ha piu' di una riga: qui le grandezze in gioco sono quattro.
+  _wireProdConsTip() {
+    const h = this._pcHover;
+    const chart = this.querySelector('.epp-chart');
+    if (!h || !chart) return;
+    const hline = chart.querySelector('.epp-hl');
+    const dot = chart.querySelector('.epp-pt');
+    const tip = chart.querySelector('.epp-tip');
+    if (!hline || !dot || !tip) return;
+    const row = (label, cls, val, tot) =>
+      '<div class="epb-tr"><i class="epb-dot epp-sw-' + cls + '"></i><span>' + label + '</span>' +
+      '<b>' + this._fmt(val, '', 1) + '</b><em>' + (tot ? Math.round((val / tot) * 100) + '%' : '') + '</em></div>';
+    const show = (idx) => {
+      const r = h.rows[idx];
+      if (!r) return;
+      const leftPct = h.n < 2 ? 50 : (idx / (h.n - 1)) * 100;
+      const rectW = chart.clientWidth;
+      const lab = r.d.getDate() + ' ' + h.mesi[r.d.getMonth()] + (r.today ? ' · in corso' : '');
+      hline.style.left = leftPct + '%';
+      hline.style.opacity = '1';
+      tip.hidden = false;
+      if (r.cons === null) {
+        dot.style.opacity = '0';
+        tip.innerHTML = '<div class="epb-tt">' + lab + '<b>nessun dato</b></div>';
+        tip.style.top = '0px';
+      } else {
+        const cov = r.imp === null ? null : Math.max(0, r.cons - r.imp);
+        const dotY = h.H - (r.cons / h.vmax) * (h.H - h.padTop); // px: l'svg e' alto 120
+        dot.style.left = leftPct + '%';
+        dot.style.top = dotY + 'px';
+        dot.style.opacity = '1';
+        tip.innerHTML =
+          '<div class="epb-tt">' + lab + '<b>' + this._fmt(r.cons, ' kWh', 1) + '</b></div>' +
+          (cov === null ? '' : row('Impianto', 'p', cov, r.cons) + row('Rete', 'g', r.imp, r.cons)) +
+          (r.prod === null ? '' : '<div class="epp-tf"><span>Prodotti</span><b>' +
+            this._fmt(r.prod, ' kWh', 1) + '</b></div>');
+        tip.style.top = Math.max(0, dotY - 10) + 'px';
+      }
+      // rientrato nei bordi: sul primo e sull'ultimo giorno un riquadro centrato
+      // sul punto usciva dalla card
+      const tw = tip.offsetWidth;
+      let left = (leftPct / 100) * rectW;
+      if (left < tw / 2) left = tw / 2;
+      if (left > rectW - tw / 2) left = rectW - tw / 2;
+      tip.style.left = left + 'px';
+    };
+    const hide = () => {
+      hline.style.opacity = '0';
+      dot.style.opacity = '0';
+      tip.hidden = true;
+    };
+    // Larghezza zero: succede se un movimento del mouse arriva mentre la card sta
+    // ancora prendendo posto nella sezione. Senza il controllo la divisione da NaN
+    // e l'indice pesca un giorno che non esiste.
+    const idxFromEvent = (e) => {
+      const rect = chart.getBoundingClientRect();
+      if (!rect.width) return -1;
+      const rel = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      return Math.min(h.n - 1, Math.max(0, Math.round(rel * (h.n - 1))));
+    };
+    chart.addEventListener('mousemove', (e) => show(idxFromEvent(e)));
+    chart.addEventListener('mouseleave', hide);
+    chart.addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length) show(idxFromEvent(e.touches[0]));
+    }, { passive: true });
+    chart.addEventListener('touchmove', (e) => {
+      if (e.touches && e.touches.length) show(idxFromEvent(e.touches[0]));
+    }, { passive: true });
+    chart.addEventListener('touchend', hide, { passive: true });
+    chart.addEventListener('touchcancel', hide, { passive: true });
   }
 
   // Il mese come barra e non come numero: "~443 kWh" da solo non dice quanto sei
@@ -3620,37 +3787,48 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-mo-f{display:flex;justify-content:space-between;align-items:baseline;gap:10px;' +
       'font-size:9.5px;color:var(--epb-tx2);margin-top:7px;letter-spacing:.3px;}' +
       '.epb-mo-p{color:var(--epb-tx2);font-weight:650;text-transform:uppercase;letter-spacing:.5px;opacity:.9;}' +
-      // layout prodcons. Arancio = solare e viola = consumo casa sono gli stessi colori
-      // delle altre card, e la coppia e' molto piu' solida della terna a tre: dE 33.8
-      // in daltonismo contro 10.2, tritanopia 28.1 contro 3.3. Nel tema scuro il viola
-      // e' #8B7BFF perche' #A99BFF stava fuori dalla banda di luminosita'.
-      '.epb-wrap{--epp-cons:#6D5AE6;}' +
-      '.epb-dark{--epp-cons:#8B7BFF;}' +
-      '.epp-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin:15px 0 13px;}' +
-      '.epp-r{text-align:right;}' +
-      '.epp-v{font-size:24px;font-weight:660;letter-spacing:-.9px;line-height:1;font-variant-numeric:tabular-nums;}' +
-      '.epp-tp{color:var(--epb-sun);}' +
-      '.epp-tc{color:var(--epp-cons);}' +
-      '.epp-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);margin-top:6px;}' +
-      '.epp-pw{display:flex;gap:7px;}' +
-      '.epp-y{width:26px;flex:none;display:flex;flex-direction:column;justify-content:space-between;' +
-      'font-size:9px;color:var(--epb-tx2);opacity:.75;text-align:right;font-variant-numeric:tabular-nums;}' +
-      '.epp-plot{position:relative;display:flex;align-items:flex-end;gap:5px;flex:1;min-width:0;' +
-      'height:104px;border-bottom:1px solid var(--epb-bd);}' +
-      '.epp-axw{margin-left:33px;}' +
-      '.epp-ax{display:flex;font-size:9px;color:var(--epb-tx2);margin-top:6px;opacity:.8;' +
-      'font-variant-numeric:tabular-nums;}' +
-      '.epp-ax span{flex:1;text-align:center;min-width:0;}' +
-      '.epp-g{flex:1;display:flex;align-items:flex-end;justify-content:center;gap:2px;' +
-      'min-width:0;height:100%;}' +
-      '.epp-g i{display:block;flex:1;min-width:0;border-radius:3px 3px 0 0;}' +
-      '.epp-p{background:var(--epb-sun);}' +
-      '.epp-c{background:var(--epp-cons);}' +
-      // giorno senza dato: un filo sulla linea di base, non una barra a zero
-      '.epp-na{height:1px;background:var(--epb-bd);align-self:flex-end;}' +
-      '.epp-now i{opacity:.6;}' +
+      // layout prodcons: arancio = impianto e azzurro = rete, le stesse due tinte che
+      // il layout balance usa per le stesse due cose. Il viola della vecchia coppia di
+      // barre non serve piu': non c'e' una seconda grandezza da distinguere, c'e' una
+      // sola grandezza (il consumo) divisa in due provenienze.
+      //
+      // Testata, altezza del grafico ed etichette sono quelle di energy-monthly-card:
+      // in dashboard questa card sta nella stessa colonna delle sue tre sorelle, e una
+      // testata diversa in mezzo alla sequenza si legge come un errore.
+      '.epp-wrap{border-radius:18px;padding:18px;}' +
+      '.epp-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px;}' +
+      '.epp-titles{display:flex;flex-direction:column;gap:2px;min-width:0;}' +
+      '.epp-title{font-size:13px;font-weight:600;color:var(--epb-tx2);}' +
+      '.epp-sub{font-size:11px;color:var(--epb-tx2);}' +
+      '.epp-big{font-size:26px;font-weight:600;letter-spacing:-.5px;color:var(--epb-tx);' +
+      'white-space:nowrap;font-variant-numeric:tabular-nums;}' +
+      '.epp-chart{width:100%;position:relative;}' +
+      // overflow:hidden e non visible come nelle card sorelle: quando una serie sta a
+      // zero per giorni e poi sale, la spline sottopassa lo zero di qualche pixel e
+      // l'area sbordava sotto la linea di base, sulle etichette dei giorni. Il taglio
+      // e' esattamente sulla linea di base, e non tocca ne' il punto ne' il riquadro
+      // del tooltip, che sono div fuori dall'svg.
+      '.epp-svg{display:block;width:100%;height:120px;overflow:hidden;}' +
+      '.epp-ln{stroke-width:2;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round;}' +
+      '.epp-nl{stroke:var(--epb-tx2);stroke-width:1;stroke-dasharray:3 3;opacity:.4;vector-effect:non-scaling-stroke;}' +
+      '.epp-hl{position:absolute;top:0;height:120px;width:1px;background:var(--epb-tx2);opacity:0;' +
+      'transform:translateX(-0.5px);pointer-events:none;transition:opacity .08s;}' +
+      '.epp-pt{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--epb-grid);' +
+      'border:2px solid var(--ha-card-background,var(--card-background-color,#fff));opacity:0;' +
+      'transform:translate(-50%,-50%);pointer-events:none;transition:opacity .08s;}' +
+      // Selettore doppio e non solo `.epp-tip`: la regola base `.epb-tip` ancora il
+      // riquadro sopra il contenitore con `bottom`, e sta piu' in basso nel foglio.
+      // A pari specificita' vincerebbe lei e il tooltip finirebbe sopra la card.
+      '.epb-tip.epp-tip{bottom:auto;transform:translate(-50%,-100%);transition:opacity .08s;}' +
+      '.epp-tf{display:flex;align-items:baseline;justify-content:space-between;gap:10px;' +
+      'font-size:11.5px;color:var(--epb-tx2);margin-top:5px;padding-top:5px;' +
+      'border-top:1px solid var(--epb-bd);}' +
+      '.epp-tf b{font-weight:650;color:var(--epb-tx);font-variant-numeric:tabular-nums;}' +
+      '.epp-ax{display:flex;margin-top:6px;}' +
+      '.epp-ax span{flex:1;font-size:10px;color:var(--epb-tx2);text-align:center;' +
+      'white-space:nowrap;font-variant-numeric:tabular-nums;}' +
       '.epp-sw-p{background:var(--epb-sun);}' +
-      '.epp-sw-c{background:var(--epp-cons);}' +
+      '.epp-sw-g{background:var(--epb-grid);}' +
       '.epp-load{font-size:12px;color:var(--epb-tx2);padding:34px 0;text-align:center;}' +
       // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo.
       // Il contenitore serve solo ad ancorare il tooltip: vedi .epb-tip-mx sopra.
@@ -4210,13 +4388,10 @@ class EnergyHistoryCard extends HTMLElement {
         );
       })
       .join('');
-    let avgLine = '';
-    if (o.avg !== null && o.avg !== undefined && o.avg > 0 && o.avg <= vmax) {
-      const topPct = (1 - o.avg / vmax) * 100;
-      avgLine = '<div class="avgline" style="top:' + topPct.toFixed(1) + '%"><span>media ' + o.avgFmt + '</span></div>';
-    }
+    // Niente riga della media dentro il grafico: attraversava le barre senza aggiungere
+    // una lettura che il numero in testata non dia già. La media resta scritta là.
     const labels = data.map((d, i) => '<span>' + (labelFn(d, i) || '') + '</span>').join('');
-    return '<div class="bars">' + avgLine + bars + '</div><div class="xlabels">' + labels + '</div>';
+    return '<div class="bars">' + bars + '</div><div class="xlabels">' + labels + '</div>';
   }
 
   _wireTooltips() {
@@ -4288,7 +4463,7 @@ class EnergyHistoryCard extends HTMLElement {
       },
       amberRamp,
       this._dailyError,
-      { avg: dailyAvg, avgFmt: dailyAvg !== null ? dailyAvg.toFixed(1) : '', isCurrent: isSameDay }
+      { isCurrent: isSameDay }
     );
     const monthlyHtml = this._bars(
       this._monthly,
@@ -4303,7 +4478,7 @@ class EnergyHistoryCard extends HTMLElement {
       },
       blueRamp,
       this._monthlyError,
-      { avg: monthlyAvg, avgFmt: monthlyAvg !== null ? monthlyAvg.toFixed(0) : '', isCurrent: isSameMonth }
+      { isCurrent: isSameMonth }
     );
 
     mgddPaint(this, this._styles(),
@@ -4342,8 +4517,6 @@ class EnergyHistoryCard extends HTMLElement {
       '.bcol{flex:1;display:flex;align-items:flex-end;height:100%;}' +
       '.bar{width:100%;border-radius:3px 3px 0 0;min-height:3px;}' +
       '.bar-partial{opacity:.45;background-image:repeating-linear-gradient(-45deg,transparent 0 3px,rgba(255,255,255,.55) 3px 5px);}' +
-      '.avgline{position:absolute;left:0;right:0;border-top:1px dashed var(--secondary-text-color,rgba(0,0,0,.3));opacity:.55;pointer-events:none;}' +
-      '.avgline span{position:absolute;right:0;top:-14px;font-size:9px;color:var(--secondary-text-color,#6b6f76);}' +
       '.xlabels{display:flex;gap:3px;margin-top:6px;height:13px;}' +
       '.xlabels span{flex:1;font-size:10px;color:var(--secondary-text-color,#6b6f76);text-align:center;white-space:nowrap;}' +
       '.loading{font-size:12px;color:var(--secondary-text-color,#6b6f76);padding:24px 0;text-align:center;}' +
@@ -4372,8 +4545,6 @@ class EnergyMonthlyCard extends HTMLElement {
     // il periodo col delta di un cumulativo, e usa una scala fissa 0-100.
     const defaults =
       period === 'hour'
-        // la riga della media resta accesa come nelle altre due card a linea: qui si
-        // vede benissimo, ed e' anche l'unico riferimento di scala su un asse fisso
         ? { entity: 'sensor.powerwall3_charge', period: 'hour', metric: 'mean', y_max: 100, decimals: 0, title: 'Batteria', color: '#0FB57E' }
         : period === 'day'
           ? { entity: 'sensor.energy_totale_sonoff_casa', period: 'day', days: 14, title: 'Consumo giornaliero', color: '#EF9F27' }
@@ -4580,18 +4751,10 @@ class EnergyMonthlyCard extends HTMLElement {
           padTop = 12;
         const xAt = (i) => padX + (i * (W - 2 * padX)) / (count - 1);
         const yAt = (v) => H - (v / vmax) * (H - padTop);
-        // linea media (esclude il periodo in corso e le ore senza dato)
-        let avgHtml = '';
-        if (cfg.show_average !== false) {
-          const compl = vals.filter((v, i) => i !== curIdx && v !== null);
-          const avg = compl.length ? compl.reduce((s, v) => s + v, 0) / compl.length : null;
-          if (avg !== null && avg > 0) {
-            const topPx = H - (avg / vmax) * (H - padTop);
-            avgHtml =
-              '<div class="emc-avg" style="top:' + topPx.toFixed(1) + 'px;border-top-color:' + cfg.color + '"></div>' +
-              '<div class="emc-avglab" style="top:' + topPx.toFixed(1) + 'px;color:' + cfg.color + '">media ' + fmt(avg) + ' ' + uom + '</div>';
-          }
-        }
+        // Niente riga della media: tagliava l'area in orizzontale con la sua etichetta
+        // addosso alla curva, e con quattro grafici in colonna erano quattro righe
+        // tratteggiate che non dicevano niente in piu' del disegno. La chiave
+        // `show_average` non e' piu' letta.
         // un tratto per ogni sequenza contigua di valori: senza null e' un tratto
         // solo, quindi il disegno di giornaliero e mensile non cambia
         const segs = [];
@@ -4648,7 +4811,6 @@ class EnergyMonthlyCard extends HTMLElement {
         body =
           '<div class="emc-chart">' +
           svg +
-          avgHtml +
           '<div class="emc-hline"></div><div class="emc-hdot"></div><div class="emc-tip"></div>' +
           '</div><div class="emc-xlabels">' + labels + '</div>';
         // dati per l'hover
@@ -4739,8 +4901,6 @@ class EnergyMonthlyCard extends HTMLElement {
       '.emc-svg{display:block;width:100%;height:120px;overflow:visible;}' +
       '.emc-line{stroke-width:2;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round;}' +
       '.emc-now{stroke:var(--secondary-text-color,#8a8d93);stroke-width:1;stroke-dasharray:3 3;opacity:.4;vector-effect:non-scaling-stroke;}' +
-      '.emc-avg{position:absolute;left:0;right:0;height:0;border-top:1.5px dashed;opacity:.8;pointer-events:none;transform:translateY(-0.75px);}' +
-      '.emc-avglab{position:absolute;left:4px;transform:translateY(-50%);font-size:10px;font-weight:600;background:var(--ha-card-background,var(--card-background-color,#fff));padding:0 5px;border-radius:8px;pointer-events:none;white-space:nowrap;}' +
       '.emc-hline{position:absolute;top:0;height:120px;width:1px;background:var(--secondary-text-color,#8a8d93);opacity:0;transform:translateX(-0.5px);pointer-events:none;transition:opacity .08s;}' +
       '.emc-hdot{position:absolute;width:8px;height:8px;border-radius:50%;border:2px solid var(--ha-card-background,#fff);opacity:0;transform:translate(-50%,-50%);pointer-events:none;transition:opacity .08s;}' +
       '.emc-tip{position:absolute;opacity:0;transform:translate(-50%,-100%);pointer-events:none;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#1c1c1e);border:1px solid var(--divider-color,rgba(0,0,0,.1));box-shadow:0 6px 18px rgba(0,0,0,.18);border-radius:10px;padding:5px 9px;font-size:11px;font-weight:600;white-space:nowrap;transition:opacity .08s;z-index:2;}' +
