@@ -1,0 +1,12 @@
+# Fine riga uniformi su ogni macchina, LF nel repo E nella copia di lavoro.
+#
+# Su questo clone `core.autocrlf` e' true: senza queste regole il prossimo
+# checkout avrebbe riscritto i file in CRLF e il commit successivo li avrebbe
+# riconvertiti in LF, con l'effetto di un diff dell'intero file senza una sola
+# modifica vera. Era l'avviso "LF will be replaced by CRLF" che git dava a ogni
+# commit. Un attributo nel repo vince sulla configurazione locale, quindi il
+# comportamento non dipende piu' da come e' configurata la singola macchina —
+# cosa che conta, perche' questo repo si sviluppa da piu' postazioni.
+#
+# `text=auto` lascia comunque in pace i binari: git li riconosce e non li tocca.
+* text=auto eol=lf
