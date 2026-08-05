@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.63.0
+ * Version: 1.64.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2127,28 +2127,35 @@ class EnergyPowerCard extends HTMLElement {
         Math.abs(diff).toFixed(1) + ' kWh</span> vs ieri';
     }
     const periodLab = sel.kind === 'month' ? 'consumo del mese' : 'consumo ' + this._balLabel(sel);
-    const kwhBlock =
-      '<div class="epb-hero-r" data-entity="' + (c.house || '') + '">' +
-      '<div class="epb-hero-v">' + this._fmt(house, '', 1) + '<span class="epb-u"> kWh</span></div>' +
-      '<div class="epb-hero-l">' + (chip || periodLab) + '</div></div>';
+    // Due celle etichettate divise da un filo, etichetta sopra e valore sotto: lo
+    // stesso schema del resto della card. Prima il consumo del periodo stava a destra
+    // in corpo piccolo e la pillola "vs ieri" gli prendeva il posto dell'etichetta,
+    // quindi di quel numero non si leggeva piu' a cosa si riferisse.
+    const cell = (entity, label, value, extra) =>
+      '<div class="epb-cell" data-entity="' + (entity || '') + '">' +
+      '<div class="epb-cl">' + label + '</div>' + value + (extra || '') + '</div>';
+    const kwhCell = cell(c.house, periodLab,
+      '<div class="epb-cv epb-cv-s">' + this._fmt(house, '', 1) +
+      '<span class="epb-cu">kWh</span></div>',
+      chip ? '<div class="epb-cc">' + chip + '</div>' : '');
     let hero;
     if (power !== null) {
       hero =
-        '<div class="epb-hero">' +
-        '<div data-entity="' + (c.power_entity || '') + '">' +
-        '<div class="epb-hero-n">' + this._fmt(power, '', power < 10 ? 1 : 0) +
-        '<span class="epb-hero-pp">W</span></div>' +
-        '<div class="epb-hero-l">adesso</div></div>' +
-        kwhBlock + '</div>' +
+        '<div class="epb-duo">' +
+        cell(c.power_entity, 'adesso',
+          '<div class="epb-cv">' + this._fmt(power, '', power < 10 ? 1 : 0) +
+          '<span class="epb-cu">W</span></div>') +
+        kwhCell + '</div>' +
         '<div class="epb-self"><span class="epb-self-v">' + pctTxt +
         '<span class="epb-self-u">%</span></span>' +
         '<span class="epb-self-l">autosufficienza</span></div>';
     } else {
+      // senza power_entity il posto dei watt lo prende la percentuale, come prima
       hero =
-        '<div class="epb-hero">' +
-        '<div><div class="epb-hero-n">' + pctTxt + '<span class="epb-hero-pp">%</span></div>' +
-        '<div class="epb-hero-l">autosufficienza</div></div>' +
-        kwhBlock + '</div>';
+        '<div class="epb-duo">' +
+        cell('', 'autosufficienza',
+          '<div class="epb-cv">' + pctTxt + '<span class="epb-cu">%</span></div>') +
+        kwhCell + '</div>';
     }
 
     const parts = [
@@ -2191,7 +2198,8 @@ class EnergyPowerCard extends HTMLElement {
     mgddPaint(this, this._styles(),
       '<div class="epb-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
       '<div class="epb-hd"><span class="epb-t">' + (c.title || 'Bilancio energetico') + '</span>' +
-      (this._balPill() ? '<span class="epb-pill">' + this._balPill() + '</span>' : '') + '</div>' +
+      (this._balPill() ? '<span class="epb-pill">' + this._balPill() + '</span>' : '') +
+      this._balSeg() + '</div>' +
       this._balNav() +
       hero +
       '<div class="epb-mxw">' +
@@ -2412,14 +2420,22 @@ class EnergyPowerCard extends HTMLElement {
     return '';
   }
 
-  // Navigatore: giorno/mese e frecce. Nessuna striscia di salto come nel layout
-  // devices, perche' qui ogni periodo e' una query a se': la striscia richiederebbe
-  // di scaricare tutta la finestra per disegnare le altezze.
-  _balNav() {
+  // Selettore giorno/mese: sta sulla riga del titolo, dove lo spazio c'e' gia'. Prima
+  // era in riga col navigatore e insieme occupavano una riga intera prima del contenuto.
+  _balSeg() {
     if (this.config.history === false) return '';
     const sel = this._balSelection();
     const seg = (v, label) =>
       '<button data-balk="' + v + '" aria-pressed="' + (sel.kind === v) + '">' + label + '</button>';
+    return '<div class="epb-sg">' + seg('day', 'Giorno') + seg('month', 'Mese') + '</div>';
+  }
+
+  // Navigatore: frecce e data. Nessuna striscia di salto come nel layout devices,
+  // perche' qui ogni periodo e' una query a se': la striscia richiederebbe di
+  // scaricare tutta la finestra per disegnare le altezze.
+  _balNav() {
+    if (this.config.history === false) return '';
+    const sel = this._balSelection();
     // Sul periodo corrente l'etichetta resta un testo: non c'e' niente a cui tornare,
     // e un pulsante che non fa nulla e' peggio di nessun pulsante.
     const lab = this._balNavLabel(sel);
@@ -2429,7 +2445,6 @@ class EnergyPowerCard extends HTMLElement {
       : '<span class="epb-nl">' + lab + '</span>';
     return (
       '<div class="epb-nv">' +
-      '<div class="epb-sg">' + seg('day', 'Giorno') + seg('month', 'Mese') + '</div>' +
       '<div class="epb-ar">' +
       '<button data-balstep="-1" title="Periodo precedente"' + (sel.back >= sel.max ? ' disabled' : '') + '>‹</button>' +
       nl +
@@ -2572,7 +2587,10 @@ class EnergyPowerCard extends HTMLElement {
   // Sostituisce il title nativo, che mostrava solo il totale.
   _wireBalanceTip() {
     const plot = this.querySelector('.epb-hr-plot');
-    const tip = this.querySelector('.epb-tip');
+    // Cercato DENTRO il grafico: da quando esiste anche il tooltip del mix, che nel
+    // DOM viene prima, un querySelector sulla card intera pescava quello sbagliato e
+    // il profilo orario si disegnava sotto la barra delle sorgenti.
+    const tip = plot ? plot.querySelector('.epb-tip') : null;
     if (!plot || !tip) return;
     const row = (label, cls, val, tot) =>
       '<div class="epb-tr"><i class="epb-dot epb-c-' + cls + '"></i><span>' + label + '</span>' +
@@ -3494,14 +3512,20 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--epb-tx2);}' +
       '.epb-pill{font-size:10.5px;font-weight:600;letter-spacing:.4px;color:var(--epb-tx2);background:var(--epb-fill);padding:3px 9px;border-radius:20px;}' +
       '.epb-ic{flex:0 0 auto;display:block;}' +
-      '.epb-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin:16px 0 12px;}' +
-      '.epb-hero-n{font-size:42px;font-weight:670;letter-spacing:-2.1px;line-height:.95;font-variant-numeric:tabular-nums;}' +
-      '.epb-hero-pp{font-size:17px;font-weight:600;letter-spacing:0;color:var(--epb-tx2);margin-left:2px;}' +
-      '.epb-hero-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);' +
-      'margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}' +
-      '.epb-hero-r .epb-hero-l{justify-content:flex-end;}' +
-      '.epb-hero-r{text-align:right;cursor:pointer;}' +
-      '.epb-hero-v{font-size:23px;font-weight:650;letter-spacing:-.7px;line-height:1;font-variant-numeric:tabular-nums;}' +
+      // Due celle divise da un filo. `align-items:stretch` e' quello che fa arrivare il
+      // filo fino in fondo alla cella piu' alta, quella con la pillola del confronto.
+      '.epb-duo{display:flex;align-items:stretch;gap:18px;margin-top:18px;}' +
+      '.epb-cell{flex:1;min-width:0;}' +
+      '.epb-cell+.epb-cell{border-left:1px solid var(--epb-bd);padding-left:18px;}' +
+      '.epb-cell[data-entity]:not([data-entity=""]){cursor:pointer;}' +
+      '.epb-cl{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;' +
+      'color:var(--epb-tx2);font-weight:600;}' +
+      '.epb-cv{font-size:42px;font-weight:670;letter-spacing:-2.1px;line-height:.95;' +
+      'margin-top:8px;font-variant-numeric:tabular-nums;}' +
+      '.epb-cv-s{font-size:34px;letter-spacing:-1.6px;}' +
+      '.epb-cu{font-size:17px;font-weight:600;letter-spacing:0;color:var(--epb-tx2);margin-left:3px;}' +
+      '.epb-cc{margin-top:10px;font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;' +
+      'color:var(--epb-tx2);display:flex;align-items:center;gap:6px;flex-wrap:wrap;}' +
       // confronto con ieri alla stessa ora: verde se hai consumato meno, ambra se piu'.
       // Non sono colori di stato buono/cattivo, sono direzione: per questo la freccia
       // c'e' sempre e il colore non e' l'unico segnale.
@@ -3513,7 +3537,7 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-dark .epb-up{color:#F5B301;}' +
       '.epb-dark .epb-dn{color:#22E39A;}' +
       // autosufficienza su una riga sua quando i watt prendono il posto del numero grande
-      '.epb-self{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;padding-top:12px;' +
+      '.epb-self{display:flex;align-items:baseline;gap:8px;margin:22px 0 10px;padding-top:16px;' +
       'border-top:1px solid var(--epb-bd);}' +
       '.epb-self-v{font-size:24px;font-weight:660;letter-spacing:-.9px;font-variant-numeric:tabular-nums;}' +
       '.epb-self-u{font-size:13px;font-weight:600;color:var(--epb-tx2);letter-spacing:0;}' +
@@ -3563,13 +3587,9 @@ class EnergyPowerCard extends HTMLElement {
       '.epp-sw-p{background:var(--epb-sun);}' +
       '.epp-sw-c{background:var(--epp-cons);}' +
       '.epp-load{font-size:12px;color:var(--epb-tx2);padding:34px 0;text-align:center;}' +
-      // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo
-      // Il tooltip del mix e' ancorato SOTTO la barra: sopra coprirebbe i watt e
-      // l'autosufficienza. Sotto copre la legenda, cioe' proprio il dato che sta
-      // ripetendo con piu' dettaglio. Offset fisso dalla barra e non dal fondo del
-      // contenitore, cosi' non si sposta quando la legenda va a due righe.
+      // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo.
+      // Il contenitore serve solo ad ancorare il tooltip: vedi .epb-tip-mx sopra.
       '.epb-mxw{position:relative;}' +
-      '.epb-tip-mx{top:19px;left:0;}' +
       '.epb-mx{display:flex;height:11px;border-radius:6px;overflow:hidden;gap:2px;background:var(--epb-track);}' +
       '.epb-seg{height:100%;}' +
       '.epb-seg-empty{background:var(--epb-track);}' +
@@ -3604,6 +3624,14 @@ class EnergyPowerCard extends HTMLElement {
       'background:var(--ha-card-background,var(--card-background-color,#fff));' +
       'border:1px solid var(--epb-bd);box-shadow:0 6px 20px rgba(0,0,0,.13);}' +
       '.epb-tip[hidden]{display:none;}' +
+      // Tooltip del mix, ancorato SOTTO la barra: sopra coprirebbe i watt e
+      // l'autosufficienza, sotto copre la legenda, cioe' proprio il dato che sta
+      // ripetendo con piu' dettaglio. Deve stare DOPO .epb-tip: `bottom:auto` serve a
+      // annullare l'ancoraggio in alto della regola base, e con top e bottom insieme un
+      // assoluto ad altezza automatica viene stirato fra i due (fondino accorciato e
+      // testo fuori). L'offset e' fisso rispetto alla barra e non al fondo del
+      // contenitore, cosi' non si sposta quando la legenda va a due righe.
+      '.epb-tip-mx{top:19px;bottom:auto;left:0;}' +
       '.epb-tt{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:11px;' +
       'color:var(--epb-tx2);padding-bottom:6px;margin-bottom:5px;border-bottom:1px solid var(--epb-bd);}' +
       '.epb-tt b{font-size:12.5px;font-weight:650;color:var(--epb-tx);font-variant-numeric:tabular-nums;}' +
@@ -3639,9 +3667,10 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-kl{font-size:11px;color:var(--epb-tx2);line-height:1.2;}' +
       '.epb-kv{font-size:16px;font-weight:650;letter-spacing:-.3px;margin-top:3px;font-variant-numeric:tabular-nums;}' +
       '.epb-u{font-size:11px;font-weight:500;color:var(--epb-tx2);}' +
-      // navigatore del periodo: stesso linguaggio del layout devices
-      '.epb-nv{display:flex;align-items:center;justify-content:space-between;gap:8px;' +
-      'flex-wrap:wrap;margin:12px 0 2px;}' +
+      // navigatore del periodo: stesso linguaggio del layout devices. Da quando il
+      // selettore giorno/mese e' sulla riga del titolo qui resta solo il gruppo delle
+      // frecce, allineato a sinistra.
+      '.epb-nv{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 4px;}' +
       '.epb-sg,.epb-ar{display:flex;gap:2px;padding:3px;border-radius:11px;' +
       'border:1px solid var(--divider-color,rgba(0,0,0,.10));}' +
       '.epb-sg button,.epb-ar button{font:inherit;font-size:12px;font-weight:600;' +
@@ -3659,8 +3688,13 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-ar button.epb-nl{background:none;border:0;line-height:1.35;cursor:pointer;' +
       'text-decoration:underline;text-decoration-color:transparent;text-underline-offset:3px;}' +
       '.epb-ar button.epb-nl:hover{text-decoration-color:var(--epb-tx2);}' +
+      // Sotto i 360px le due celle non ci stanno affiancate (i watt a 42px chiedono
+      // 115px da soli): il filo verticale diventa orizzontale e si impilano.
       '@media (max-width:359px){.epb-grid{grid-template-columns:1fr;}' +
-      '.epb-ar .epb-nl{min-width:88px;}}' +
+      '.epb-ar .epb-nl{min-width:88px;}' +
+      '.epb-duo{display:block;}' +
+      '.epb-cell+.epb-cell{border-left:0;padding-left:0;margin-top:16px;padding-top:14px;' +
+      'border-top:1px solid var(--epb-bd);}}' +
       // layout devices: un solo colore per tutte le barre. Il nome del dispositivo e'
       // gia' sulla riga, quindi tinte diverse per riga brucerebbero l'unico canale
       // libero; il colore torna a significare qualcosa (viola = consumo casa, grigio =
