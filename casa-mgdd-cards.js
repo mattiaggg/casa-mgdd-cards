@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.67.0
+ * Version: 1.68.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1450,6 +1450,14 @@ class EnergyPowerCard extends HTMLElement {
     return v.toFixed(dec === undefined ? 0 : dec) + (unit || '');
   }
 
+  // Segno sempre esplicito, e meno tipografico invece del trattino: un saldo senza
+  // segno si legge come una quantita' e non come una differenza.
+  _fmtSigned(v) {
+    if (v === null || v === undefined) return '--';
+    const a = Math.abs(v).toFixed(1);
+    return (v > 0 ? '+' : v < 0 ? '−' : '') + a;
+  }
+
   async _maybeFetchHistory() {
     const now = Date.now();
     if (this._fetchedAt && now - this._fetchedAt < 5 * 60 * 1000) return;
@@ -2243,18 +2251,21 @@ class EnergyPowerCard extends HTMLElement {
   }
 
   // ===========================================================================
-  // layout: prodcons - il consumo di ogni giorno diviso per provenienza.
+  // layout: prodcons - prodotto contro consumato, due barre per giorno.
   //
-  // Risponde a una domanda che nessun'altra card della vista risponde: l'impianto
-  // ti sta coprendo o no. La versione a coppie di barre confrontava produzione e
-  // consumo, che sono due grandezze che non si toccano: 22 kWh prodotti non sono
-  // 22 kWh entrati in casa, una parte va in rete o in batteria. Qui l'area e' il
-  // consumo, diviso fra quello servito dall'impianto (consumo meno prelievo) e
-  // quello comprato: due parti che sommano davvero al totale.
+  // La card risponde a una domanda sola: quel giorno l'impianto ha fatto piu' o meno
+  // di quello che la casa ha chiesto. La scomposizione per provenienza (solare,
+  // batteria, rete) la fa già il layout balance, e non va rifatta qui.
   //
-  // Telaio, smussamento e tooltip sono quelli di energy-monthly-card, perche' in
-  // dashboard questa card sta nella stessa colonna delle sue tre sorelle.
-  // Config: production, consumption, grid_import, days (10), title.
+  // Provata anche come area del consumo divisa fra coperto e prelevato: senza
+  // immissione in rete il prelievo sta a 0.3 kWh al giorno, le due curve si
+  // sovrappongono e la banda non si vede. Le due quantita' separate, invece, variano
+  // entrambe in ogni stagione.
+  //
+  // Testata, altezza del grafico, riga di oggi ed etichette sono quelle di
+  // energy-monthly-card, perche' in dashboard la card sta nella stessa colonna delle
+  // sue tre sorelle; le barre hanno la sfumatura delle loro aree.
+  // Config: production, consumption, grid_import (solo per il tooltip), days (10), title.
   // ===========================================================================
   async _fetchProdCons() {
     const c = this.config;
@@ -2306,25 +2317,6 @@ class EnergyPowerCard extends HTMLElement {
     }
   }
 
-  // Cardinal spline con tensione 0.18: la stessa di energy-monthly-card, cosi' le
-  // curve delle quattro card della colonna hanno lo stesso carattere.
-  _smoothPath(pts) {
-    if (pts.length < 2) return '';
-    const f = (n) => n.toFixed(2);
-    let d = 'M' + f(pts[0].x) + ',' + f(pts[0].y);
-    const t = 0.18;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] || pts[i];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2] || p2;
-      d += 'C' + f(p1.x + (p2.x - p0.x) * t) + ',' + f(p1.y + (p2.y - p0.y) * t) + ' ' +
-        f(p2.x - (p3.x - p1.x) * t) + ',' + f(p2.y - (p3.y - p1.y) * t) + ' ' +
-        f(p2.x) + ',' + f(p2.y);
-    }
-    return d;
-  }
-
   _renderProdCons() {
     const c = this.config;
     const rows = this._pc;
@@ -2337,174 +2329,176 @@ class EnergyPowerCard extends HTMLElement {
       this._pcHover = null;
     } else {
       const W = 300;
-      const H = 120;
+      const H = 122;
       const padX = 3;
       const padTop = 12;
       const n = rows.length;
-      const xAt = (i) => (n < 2 ? W / 2 : padX + (i * (W - 2 * padX)) / (n - 1));
+      const slot = (W - 2 * padX) / n;
+      const xMid = (i) => padX + slot * (i + 0.5);
       let tp = 0;
       let tc = 0;
-      let ti = 0;
       let vmax = 0;
-      let hasImp = false;
       rows.forEach((r) => {
-        if (r.prod !== null) tp += r.prod;
+        if (r.prod !== null) {
+          tp += r.prod;
+          if (r.prod > vmax) vmax = r.prod;
+        }
         if (r.cons !== null) {
           tc += r.cons;
           if (r.cons > vmax) vmax = r.cons;
         }
-        if (r.imp !== null) {
-          ti += r.imp;
-          hasImp = true;
-        }
       });
       if (!vmax) vmax = 1;
       const yAt = (v) => H - (v / vmax) * (H - padTop);
-      // Coperto = consumo meno prelievo. NON la produzione: quella comprende anche
-      // quello che e' finito in rete o in batteria, e sommata al prelievo darebbe
-      // piu' del consumo reale.
-      const covOf = (r) => (r.cons === null || r.imp === null ? null : Math.max(0, r.cons - r.imp));
-      // un tratto per ogni sequenza contigua di giorni con dato: un buco nelle
-      // statistiche non deve diventare una retta che attraversa il grafico
-      const segs = [];
-      let cur = [];
+      // Barra con gli angoli arrotondati solo in cima: un fondo arrotondato la
+      // staccherebbe dalla linea di base. Un rect con rx li arrotonda tutti e quattro,
+      // percio' serve un percorso.
+      const bar = (x, w, v, fill, faded) => {
+        const h = Math.max(1.5, H - yAt(v));
+        const y = H - h;
+        const r = Math.min(2.5, w / 2, h);
+        const d = 'M' + x.toFixed(2) + ',' + H +
+          ' L' + x.toFixed(2) + ',' + (y + r).toFixed(2) +
+          ' Q' + x.toFixed(2) + ',' + y.toFixed(2) + ' ' + (x + r).toFixed(2) + ',' + y.toFixed(2) +
+          ' L' + (x + w - r).toFixed(2) + ',' + y.toFixed(2) +
+          ' Q' + (x + w).toFixed(2) + ',' + y.toFixed(2) + ' ' + (x + w).toFixed(2) + ',' + (y + r).toFixed(2) +
+          ' L' + (x + w).toFixed(2) + ',' + H + ' Z';
+        return '<path d="' + d + '" fill="' + fill + '"' +
+          (faded ? ' fill-opacity=".55"' : '') + '/>';
+      };
+      const gp = 'eppp' + this._uid;
+      const gc = 'eppc' + this._uid;
+      const bw = slot * 0.34;
+      const gap = slot * 0.08;
+      let bars = '';
       rows.forEach((r, i) => {
-        if (r.cons === null) {
-          if (cur.length) segs.push(cur);
-          cur = [];
-        } else {
-          cur.push(i);
-        }
+        const cx = xMid(i);
+        // giorno senza dato: niente barra. Una barra a zero affermerebbe un consumo nullo
+        if (r.prod !== null && r.prod > 0) bars += bar(cx - bw - gap / 2, bw, r.prod, 'url(#' + gp + ')', r.today);
+        if (r.cons !== null) bars += bar(cx + gap / 2, bw, r.cons, 'url(#' + gc + ')', r.today);
       });
-      if (cur.length) segs.push(cur);
-      const gid = 'eppg' + this._uid;
-      let fills = '';
-      let lines = '';
-      segs.forEach((seg) => {
-        if (seg.length < 2) return;
-        const pc = seg.map((i) => ({ x: xAt(i), y: yAt(rows[i].cons) }));
-        const dc = this._smoothPath(pc);
-        const x0 = pc[0].x.toFixed(2);
-        const xN = pc[pc.length - 1].x.toFixed(2);
-        const covOk = hasImp && seg.every((i) => covOf(rows[i]) !== null);
-        if (covOk) {
-          const pv = seg.map((i) => ({ x: xAt(i), y: yAt(covOf(rows[i])) }));
-          const dv = this._smoothPath(pv);
-          // Il ritorno e' la stessa curva percorsa all'indietro: la spline cardinale
-          // e' simmetrica, percio' il bordo inferiore della banda coincide con la
-          // linea del coperto invece di sfalsarsi di qualche pixel.
-          const back = this._smoothPath(pv.slice().reverse()).replace('M', 'L');
-          const last = pv[pv.length - 1];
-          fills += '<path d="' + dc + ' L' + last.x.toFixed(2) + ',' + last.y.toFixed(2) + ' ' +
-            back + ' Z" fill="var(--epb-grid)" fill-opacity=".3"/>';
-          fills += '<path d="' + dv + ' L' + xN + ',' + H + ' L' + x0 + ',' + H +
-            ' Z" fill="url(#' + gid + ')"/>';
-          lines += '<path class="epp-ln" d="' + dv + '" fill="none" stroke="var(--epb-sun)"/>';
-        } else {
-          fills += '<path d="' + dc + ' L' + xN + ',' + H + ' L' + x0 + ',' + H +
-            ' Z" fill="url(#' + gid + ')"/>';
-        }
-        lines += '<path class="epp-ln" d="' + dc + '" fill="none" stroke="var(--epb-grid)" stroke-opacity=".85"/>';
-      });
-      const nowX = xAt(n - 1).toFixed(2);
+      const nowX = xMid(n - 1).toFixed(2);
+      // La sfumatura e' in objectBoundingBox, cioe' calcolata sull'altezza di OGNI
+      // barra: con un gradiente unico per il riquadro le barre basse cadrebbero tutte
+      // nella parte trasparente e sbiadirebbero.
+      const stops = (color) =>
+        '<stop offset="0" stop-color="' + color + '" stop-opacity="1"/>' +
+        '<stop offset="1" stop-color="' + color + '" stop-opacity="0.28"/>';
       const svg =
         '<svg class="epp-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
-        '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
-        '<stop offset="0" stop-color="var(--epb-sun)" stop-opacity="0.42"/>' +
-        '<stop offset="1" stop-color="var(--epb-sun)" stop-opacity="0.05"/>' +
-        '</linearGradient></defs>' +
-        fills +
+        '<defs>' +
+        '<linearGradient id="' + gp + '" x1="0" y1="0" x2="0" y2="1">' + stops('var(--epb-sun)') + '</linearGradient>' +
+        '<linearGradient id="' + gc + '" x1="0" y1="0" x2="0" y2="1">' + stops('var(--epp-cons)') + '</linearGradient>' +
+        '</defs>' +
+        bars +
         '<line class="epp-nl" x1="' + nowX + '" y1="0" x2="' + nowX + '" y2="' + H + '"/>' +
-        lines +
+        '<line class="epp-bl" x1="0" y1="' + H + '" x2="' + W + '" y2="' + H + '"/>' +
         '</svg>';
       const ax = rows.map((r) => '<span>' + (r.d.getDate() === 1 || r.today
         ? r.d.getDate() + ' ' + MESI[r.d.getMonth()] : r.d.getDate()) + '</span>').join('');
-      const covTot = hasImp && tc > 0 ? Math.max(0, (tc - ti) / tc) : null;
-      big = covTot === null ? this._fmt(tc, ' kWh', 1) : Math.round(covTot * 100) + ' %';
-      sub = (c.days || 10) + ' giorni · ' + this._fmt(tp, '', 1) + ' kWh prodotti, ' +
+      big = this._fmtSigned(tp - tc) + ' kWh';
+      sub = (c.days || 10) + ' giorni · ' + this._fmt(tp, '', 1) + ' prodotti, ' +
         this._fmt(tc, '', 1) + ' consumati';
       body =
-        '<div class="epp-chart">' + svg +
-        '<div class="epp-hl"></div><div class="epp-pt"></div>' +
+        '<div class="epp-chart">' +
+        '<div class="epp-hb"></div>' + svg +
         '<div class="epb-tip epp-tip" hidden></div>' +
         '</div><div class="epp-ax">' + ax + '</div>' +
-        (hasImp
-          ? '<div class="epb-leg"><span class="epb-lg"><i class="epb-dot epp-sw-p"></i>impianto</span>' +
-            '<span class="epb-lg"><i class="epb-dot epp-sw-g"></i>rete</span></div>'
-          : '<div class="epb-leg"><span class="epb-lg"><i class="epb-dot epp-sw-p"></i>consumo</span></div>');
-      this._pcHover = { rows: rows, n: n, vmax: vmax, H: H, padTop: padTop, mesi: MESI, hasImp: hasImp };
+        '<div class="epb-leg"><span class="epb-lg"><i class="epb-dot epp-sw-p"></i>produzione</span>' +
+        '<span class="epb-lg"><i class="epb-dot epp-sw-c"></i>consumo</span></div>';
+      this._pcHover = { rows: rows, n: n, slot: slot, padX: padX, W: W, H: H, mesi: MESI };
     }
     mgddPaint(this, this._styles(),
       '<div class="epb-wrap epp-wrap' + (this._isDark() ? ' epb-dark' : '') + '">' +
       '<div class="epp-top"><div class="epp-titles">' +
-      '<span class="epp-title">' + (c.title || 'Copertura del consumo') + '</span>' +
+      '<span class="epp-title">' + (c.title || 'Produzione e consumo') + '</span>' +
       (sub ? '<span class="epp-sub">' + sub + '</span>' : '') +
       '</div><div class="epp-big">' + big + '</div></div>' +
       body + '</div>');
     this._wireProdConsTip();
   }
 
-  // Tooltip: la riga verticale, il punto sulla curva del consumo e il riquadro con
-  // la giornata in chiaro. Stesso funzionamento delle card a linea (mouse + dito),
-  // ma il riquadro ha piu' di una riga: qui le grandezze in gioco sono quattro.
+  // Tooltip: la fascia sul giorno puntato e il riquadro con la giornata in chiaro.
+  //
+  // Il riquadro sta ACCANTO alla fascia e non sopra: centrato sul giorno copriva
+  // proprio le due barre che si stanno leggendo, e non si capiva piu' su che giorno
+  // fosse il puntatore. Va a destra nella metà sinistra del grafico e a sinistra
+  // nell'altra metà; quando da nessuna delle due parti c'e' spazio (card molto stretta
+  // o molti giorni) scende sotto il grafico, dove copre l'asse e non le barre.
   _wireProdConsTip() {
     const h = this._pcHover;
     const chart = this.querySelector('.epp-chart');
     if (!h || !chart) return;
-    const hline = chart.querySelector('.epp-hl');
-    const dot = chart.querySelector('.epp-pt');
+    const band = chart.querySelector('.epp-hb');
     const tip = chart.querySelector('.epp-tip');
-    if (!hline || !dot || !tip) return;
-    const row = (label, cls, val, tot) =>
+    if (!band || !tip) return;
+    // Senza <em>: nel tooltip del profilo orario quella colonna porta la percentuale e
+    // vale i suoi 32px, qui sarebbe vuota — e 32px di larghezza in piu' sono la
+    // differenza fra un riquadro che entra di fianco al giorno e uno che non entra.
+    const row = (label, cls, val) =>
       '<div class="epb-tr"><i class="epb-dot epp-sw-' + cls + '"></i><span>' + label + '</span>' +
-      '<b>' + this._fmt(val, '', 1) + '</b><em>' + (tot ? Math.round((val / tot) * 100) + '%' : '') + '</em></div>';
+      '<b>' + this._fmt(val, '', 1) + '</b></div>';
     const show = (idx) => {
       const r = h.rows[idx];
       if (!r) return;
-      const leftPct = h.n < 2 ? 50 : (idx / (h.n - 1)) * 100;
       const rectW = chart.clientWidth;
       const lab = r.d.getDate() + ' ' + h.mesi[r.d.getMonth()] + (r.today ? ' · in corso' : '');
-      hline.style.left = leftPct + '%';
-      hline.style.opacity = '1';
+      // la fascia copre lo spicchio del giorno, non una riga sola: con due barre per
+      // giorno una riga verticale cadrebbe nel mezzo e non direbbe a quale appartiene
+      band.style.left = (((h.padX + h.slot * idx) / h.W) * 100).toFixed(3) + '%';
+      band.style.width = ((h.slot / h.W) * 100).toFixed(3) + '%';
+      band.style.opacity = '1';
+      const saldo = r.prod === null || r.cons === null ? null : r.prod - r.cons;
+      tip.innerHTML =
+        '<div class="epb-tt">' + lab +
+        (saldo === null ? '<b>nessun dato</b>'
+          : '<b style="color:' + (saldo >= 0 ? 'var(--epb-sun)' : 'var(--epp-cons)') + '">' +
+            this._fmtSigned(saldo) + ' kWh</b>') + '</div>' +
+        (r.prod === null ? '' : row('Produzione', 'p', r.prod)) +
+        (r.cons === null ? '' : row('Consumo', 'c', r.cons)) +
+        (r.imp === null ? '' : '<div class="epp-tf"><span>Dalla rete</span><b>' +
+          this._fmt(r.imp, '', 1) + '</b></div>');
       tip.hidden = false;
-      if (r.cons === null) {
-        dot.style.opacity = '0';
-        tip.innerHTML = '<div class="epb-tt">' + lab + '<b>nessun dato</b></div>';
-        tip.style.top = '0px';
-      } else {
-        const cov = r.imp === null ? null : Math.max(0, r.cons - r.imp);
-        const dotY = h.H - (r.cons / h.vmax) * (h.H - h.padTop); // px: l'svg e' alto 120
-        dot.style.left = leftPct + '%';
-        dot.style.top = dotY + 'px';
-        dot.style.opacity = '1';
-        tip.innerHTML =
-          '<div class="epb-tt">' + lab + '<b>' + this._fmt(r.cons, ' kWh', 1) + '</b></div>' +
-          (cov === null ? '' : row('Impianto', 'p', cov, r.cons) + row('Rete', 'g', r.imp, r.cons)) +
-          (r.prod === null ? '' : '<div class="epp-tf"><span>Prodotti</span><b>' +
-            this._fmt(r.prod, ' kWh', 1) + '</b></div>');
-        tip.style.top = Math.max(0, dotY - 10) + 'px';
-      }
-      // rientrato nei bordi: sul primo e sull'ultimo giorno un riquadro centrato
-      // sul punto usciva dalla card
       const tw = tip.offsetWidth;
-      let left = (leftPct / 100) * rectW;
-      if (left < tw / 2) left = tw / 2;
-      if (left > rectW - tw / 2) left = rectW - tw / 2;
-      tip.style.left = left + 'px';
+      const mid = ((h.padX + h.slot * (idx + 0.5)) / h.W) * rectW;
+      const half = ((h.slot / h.W) * rectW) / 2 + 8;
+      const roomL = mid - half;
+      const roomR = rectW - (mid + half);
+      let left;
+      let top = 4;
+      if (Math.max(roomL, roomR) >= tw) {
+        // Di fianco: dalla parte opposta a dove sta il giorno, cosi' la scelta e'
+        // prevedibile mentre si scorre il grafico; se da quel lato non ci sta, dall'altro.
+        const preferRight = mid < rectW / 2;
+        const okPreferred = preferRight ? roomR >= tw : roomL >= tw;
+        const goRight = okPreferred ? preferRight : !preferRight;
+        left = goRight ? mid + half : mid - half - tw;
+      } else {
+        // Su una card strettissima un riquadro da 140px non entra di fianco a un giorno
+        // centrale. Allora va SOTTO il grafico: li' copre l'asse dei giorni e la legenda,
+        // non le due barre che si stanno leggendo. Il giorno resta scritto nel riquadro.
+        left = Math.max(0, Math.min(rectW - tw, mid - tw / 2));
+        top = h.H + 6;
+      }
+      tip.style.left = Math.max(0, Math.min(rectW - tw, left)) + 'px';
+      tip.style.top = top + 'px';
     };
     const hide = () => {
-      hline.style.opacity = '0';
-      dot.style.opacity = '0';
+      band.style.opacity = '0';
       tip.hidden = true;
     };
     // Larghezza zero: succede se un movimento del mouse arriva mentre la card sta
     // ancora prendendo posto nella sezione. Senza il controllo la divisione da NaN
     // e l'indice pesca un giorno che non esiste.
+    //
+    // L'indice viene dallo spicchio in cui cade il puntatore e non dal giorno piu'
+    // vicino: le barre stanno al centro dello spicchio, e col secondo criterio il
+    // primo e l'ultimo giorno avrebbero mezza zona sensibile in meno.
     const idxFromEvent = (e) => {
       const rect = chart.getBoundingClientRect();
       if (!rect.width) return -1;
       const rel = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-      return Math.min(h.n - 1, Math.max(0, Math.round(rel * (h.n - 1))));
+      return Math.min(h.n - 1, Math.max(0, Math.floor(rel * h.n)));
     };
     chart.addEventListener('mousemove', (e) => show(idxFromEvent(e)));
     chart.addEventListener('mouseleave', hide);
@@ -3772,10 +3766,12 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-mo-f{display:flex;justify-content:space-between;align-items:baseline;gap:10px;' +
       'font-size:9.5px;color:var(--epb-tx2);margin-top:7px;letter-spacing:.3px;}' +
       '.epb-mo-p{color:var(--epb-tx2);font-weight:650;text-transform:uppercase;letter-spacing:.5px;opacity:.9;}' +
-      // layout prodcons: arancio = impianto e azzurro = rete, le stesse due tinte che
-      // il layout balance usa per le stesse due cose. Il viola della vecchia coppia di
-      // barre non serve piu': non c'e' una seconda grandezza da distinguere, c'e' una
-      // sola grandezza (il consumo) divisa in due provenienze.
+      // layout prodcons: arancio = produzione e viola = consumo casa. La coppia e'
+      // molto piu' solida della terna a tre: dE 33.8 in daltonismo contro 10.2,
+      // tritanopia 28.1 contro 3.3. Nel tema scuro il viola e' #8B7BFF perche'
+      // #A99BFF stava fuori dalla banda di luminosita' ammessa.
+      '.epb-wrap{--epp-cons:#6D5AE6;}' +
+      '.epb-dark{--epp-cons:#8B7BFF;}' +
       //
       // Testata, altezza del grafico ed etichette sono quelle di energy-monthly-card:
       // in dashboard questa card sta nella stessa colonna delle sue tre sorelle, e una
@@ -3788,23 +3784,21 @@ class EnergyPowerCard extends HTMLElement {
       '.epp-big{font-size:26px;font-weight:600;letter-spacing:-.5px;color:var(--epb-tx);' +
       'white-space:nowrap;font-variant-numeric:tabular-nums;}' +
       '.epp-chart{width:100%;position:relative;}' +
-      // overflow:hidden e non visible come nelle card sorelle: quando una serie sta a
-      // zero per giorni e poi sale, la spline sottopassa lo zero di qualche pixel e
-      // l'area sbordava sotto la linea di base, sulle etichette dei giorni. Il taglio
-      // e' esattamente sulla linea di base, e non tocca ne' il punto ne' il riquadro
-      // del tooltip, che sono div fuori dall'svg.
-      '.epp-svg{display:block;width:100%;height:120px;overflow:hidden;}' +
-      '.epp-ln{stroke-width:2;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round;}' +
+      // z-index: la fascia del giorno e' un div che sta PRIMA dell'svg nel DOM, e senza
+      // impilamento esplicito coprirebbe le barre invece di stargli dietro.
+      '.epp-svg{display:block;width:100%;height:122px;position:relative;z-index:1;}' +
       '.epp-nl{stroke:var(--epb-tx2);stroke-width:1;stroke-dasharray:3 3;opacity:.4;vector-effect:non-scaling-stroke;}' +
-      '.epp-hl{position:absolute;top:0;height:120px;width:1px;background:var(--epb-tx2);opacity:0;' +
-      'transform:translateX(-0.5px);pointer-events:none;transition:opacity .08s;}' +
-      '.epp-pt{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--epb-grid);' +
-      'border:2px solid var(--ha-card-background,var(--card-background-color,#fff));opacity:0;' +
-      'transform:translate(-50%,-50%);pointer-events:none;transition:opacity .08s;}' +
+      '.epp-bl{stroke:var(--epb-bd);stroke-width:1;vector-effect:non-scaling-stroke;}' +
+      '.epp-hb{position:absolute;top:0;height:122px;background:var(--epb-fill);border-radius:4px;' +
+      'opacity:0;pointer-events:none;transition:opacity .08s;}' +
       // Selettore doppio e non solo `.epp-tip`: la regola base `.epb-tip` ancora il
       // riquadro sopra il contenitore con `bottom`, e sta piu' in basso nel foglio.
       // A pari specificita' vincerebbe lei e il tooltip finirebbe sopra la card.
-      '.epb-tip.epp-tip{bottom:auto;transform:translate(-50%,-100%);transition:opacity .08s;}' +
+      // Nessuna traslazione: la posizione la calcola il codice, che lo mette di fianco
+      // al giorno puntato invece che sopra. E min-width azzerato: il riquadro deve
+      // stringersi sul contenuto, altrimenti su una card stretta non entra mai di fianco
+      // e finisce sempre sotto il grafico.
+      '.epb-tip.epp-tip{bottom:auto;transform:none;z-index:6;min-width:0;white-space:nowrap;}' +
       '.epp-tf{display:flex;align-items:baseline;justify-content:space-between;gap:10px;' +
       'font-size:11.5px;color:var(--epb-tx2);margin-top:5px;padding-top:5px;' +
       'border-top:1px solid var(--epb-bd);}' +
@@ -3813,7 +3807,7 @@ class EnergyPowerCard extends HTMLElement {
       '.epp-ax span{flex:1;font-size:10px;color:var(--epb-tx2);text-align:center;' +
       'white-space:nowrap;font-variant-numeric:tabular-nums;}' +
       '.epp-sw-p{background:var(--epb-sun);}' +
-      '.epp-sw-g{background:var(--epb-grid);}' +
+      '.epp-sw-c{background:var(--epp-cons);}' +
       '.epp-load{font-size:12px;color:var(--epb-tx2);padding:34px 0;text-align:center;}' +
       // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo.
       // Il contenitore serve solo ad ancorare il tooltip: vedi .epb-tip-mx sopra.
