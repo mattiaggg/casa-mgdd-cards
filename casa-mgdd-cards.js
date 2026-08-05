@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.64.0
+ * Version: 1.65.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2146,9 +2146,7 @@ class EnergyPowerCard extends HTMLElement {
           '<div class="epb-cv">' + this._fmt(power, '', power < 10 ? 1 : 0) +
           '<span class="epb-cu">W</span></div>') +
         kwhCell + '</div>' +
-        '<div class="epb-self"><span class="epb-self-v">' + pctTxt +
-        '<span class="epb-self-u">%</span></span>' +
-        '<span class="epb-self-l">autosufficienza</span></div>';
+        this._balSelfArc(pctTxt, selfSuff);
     } else {
       // senza power_entity il posto dei watt lo prende la percentuale, come prima
       hero =
@@ -2401,6 +2399,63 @@ class EnergyPowerCard extends HTMLElement {
     if (sel.back === 0) return 'oggi';
     if (sel.back === 1) return 'ieri';
     return GG[d.getDay()] + ' ' + d.getDate() + ' ' + MESI[d.getMonth()];
+  }
+
+  // Autosufficienza come arco piatto stile "Efficiency Trend": traccia sottile,
+  // parte riempita fino al valore, tacca sul punto attuale, numero risalito nella
+  // conca. Il numero resta in colore di TESTO; il verde qui e' "autoprodotto"
+  // (solare+batteria = cio' che non e' rete), non un accento decorativo.
+  _balSelfArc(pctTxt, pct) {
+    const has = pct !== null && pct !== undefined && !isNaN(pct);
+    return (
+      '<div class="epb-selfw"><div class="epb-tr-stack">' +
+      this._balTrendArc(has ? pct : 0, has) +
+      '<div class="epb-tr-n">' + pctTxt + '<span class="epb-tr-u">%</span></div>' +
+      '<div class="epb-tr-l">autosufficienza</div></div></div>'
+    );
+  }
+
+  // SVG dell'arco. Corda 288 e saetta 26 su un viewBox 320 largo: raggio grande =
+  // curva poco pronunciata. Il path e' campionato punto per punto, cosi' non dipende
+  // dai flag di sweep del comando A (facili da sbagliare). viewBox ritagliato in
+  // verticale al solo contenuto (y 16..52), percio' il numero appena sotto resta
+  // vicino alla curva a qualunque larghezza. `filled` distingue il dato presente
+  // (riempimento + tacca) dal "--" (sola traccia).
+  _balTrendArc(pct, filled) {
+    const W = 320, CHORD = 288, SAG = 26;
+    const R = SAG / 2 + (CHORD * CHORD) / (8 * SAG);
+    const CX = W / 2, PEAK = 22, CY = PEAK + R;
+    const PHI0 = Math.asin((CHORD / 2) / R);
+    const pt = (t) => {
+      const phi = -PHI0 + t * 2 * PHI0;
+      return [CX + R * Math.sin(phi), CY - R * Math.cos(phi)];
+    };
+    const path = (a, b) => {
+      let d = '';
+      const n = 44;
+      for (let k = 0; k <= n; k++) {
+        const q = pt(a + (b - a) * k / n);
+        d += (k ? ' L' : 'M') + q[0].toFixed(2) + ' ' + q[1].toFixed(2);
+      }
+      return d;
+    };
+    const p = Math.max(0, Math.min(1, pct / 100));
+    let extra = '';
+    if (filled) {
+      const m = pt(p);
+      const phi = -PHI0 + p * 2 * PHI0;
+      const dx = Math.sin(phi), dy = -Math.cos(phi);
+      extra =
+        '<path class="epb-tr-v" d="' + path(0, p) + '" fill="none" stroke-width="2.5" stroke-linecap="round"/>' +
+        '<line class="epb-tr-m" x1="' + (m[0] - dx * 3).toFixed(2) + '" y1="' + (m[1] - dy * 3).toFixed(2) +
+        '" x2="' + (m[0] + dx * 8.5).toFixed(2) + '" y2="' + (m[1] + dy * 8.5).toFixed(2) +
+        '" stroke-width="4" stroke-linecap="round"/>';
+    }
+    return (
+      '<svg class="epb-tr" viewBox="0 16 320 36" preserveAspectRatio="xMidYMid meet" aria-hidden="true">' +
+      '<path class="epb-tr-t" d="' + path(0, 1) + '" fill="none" stroke-width="2.5" stroke-linecap="round"/>' +
+      extra + '</svg>'
+    );
   }
 
   // Nel navigatore la data va in cifre: la forma lunga ("domenica 2 agosto") e' gia'
@@ -3498,6 +3553,7 @@ class EnergyPowerCard extends HTMLElement {
       '--epb-tx:var(--primary-text-color,#10131a);--epb-tx2:var(--secondary-text-color,#6b7280);' +
       '--epb-bd:var(--divider-color,rgba(15,23,42,.09));--epb-fill:rgba(127,127,127,.09);' +
       '--epb-track:rgba(127,127,127,.18);--epb-hatch:rgba(15,23,42,.22);' +
+      '--epb-trtrack:rgba(15,23,42,.16);' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));' +
       'border:1px solid var(--epb-bd);border-radius:20px;padding:17px 17px 18px;color:var(--epb-tx);}' +
       // Passi scuri SCELTI, non schiariti: i precedenti (#F5B301 #22E39A #38BDF8)
@@ -3507,7 +3563,7 @@ class EnergyPowerCard extends HTMLElement {
       // contrasto 5.3-5.9:1 sul fondo scuro.
       '.epb-wrap.epb-dark{--epb-sun:#D27B00;--epb-bat:#00AE6F;--epb-grid:#0099E4;--epb-good:#8B7BFF;' +
       '--epb-fill:rgba(255,255,255,.055);--epb-track:rgba(255,255,255,.12);' +
-      '--epb-hatch:rgba(255,255,255,.26);}' +
+      '--epb-hatch:rgba(255,255,255,.26);--epb-trtrack:rgba(255,255,255,.22);}' +
       '.epb-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}' +
       '.epb-t{font-size:11px;font-weight:700;letter-spacing:.85px;text-transform:uppercase;color:var(--epb-tx2);}' +
       '.epb-pill{font-size:10.5px;font-weight:600;letter-spacing:.4px;color:var(--epb-tx2);background:var(--epb-fill);padding:3px 9px;border-radius:20px;}' +
@@ -3536,12 +3592,21 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-dn{color:#0B8F5E;}' +
       '.epb-dark .epb-up{color:#F5B301;}' +
       '.epb-dark .epb-dn{color:#22E39A;}' +
-      // autosufficienza su una riga sua quando i watt prendono il posto del numero grande
-      '.epb-self{display:flex;align-items:baseline;gap:8px;margin:22px 0 10px;padding-top:16px;' +
-      'border-top:1px solid var(--epb-bd);}' +
-      '.epb-self-v{font-size:24px;font-weight:660;letter-spacing:-.9px;font-variant-numeric:tabular-nums;}' +
-      '.epb-self-u{font-size:13px;font-weight:600;color:var(--epb-tx2);letter-spacing:0;}' +
-      '.epb-self-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);}' +
+      // autosufficienza ad arco piatto, quando i watt prendono il posto del numero grande.
+      // L'arco sta al 60% e centrato; il numero e' rialzato di -.18em (proporzionale al
+      // numero, non all'arco) cosi' entra nella conca senza scavalcare la curva quando
+      // l'arco si accorcia su mobile. La tacca e' verde su chiaro, bianca su scuro.
+      '.epb-selfw{margin:22px 0 4px;padding-top:14px;border-top:1px solid var(--epb-bd);}' +
+      '.epb-tr-stack{display:flex;flex-direction:column;align-items:center;}' +
+      '.epb-tr{display:block;width:60%;height:auto;margin:0 auto;overflow:visible;}' +
+      '.epb-tr-t{stroke:var(--epb-trtrack);}' +
+      '.epb-tr-v,.epb-tr-m{stroke:var(--epb-bat);}' +
+      '.epb-dark .epb-tr-m{stroke:#fff;opacity:.92;}' +
+      '.epb-tr-n{font-size:40px;font-weight:670;letter-spacing:-2px;line-height:.9;' +
+      'margin-top:-.18em;font-variant-numeric:tabular-nums;}' +
+      '.epb-tr-u{font-size:17px;font-weight:600;color:var(--epb-tx2);margin-left:2px;letter-spacing:0;}' +
+      '.epb-tr-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);' +
+      'font-weight:600;margin-top:6px;}' +
       // mese: barra con dentro il consumato e la tacca di dove sei oggi
       '.epb-mo{margin-top:16px;padding-top:14px;border-top:1px solid var(--epb-bd);}' +
       '.epb-mo-hd{display:flex;justify-content:space-between;align-items:baseline;gap:10px;' +
