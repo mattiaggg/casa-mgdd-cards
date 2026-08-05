@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.66.0
+ * Version: 1.67.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2568,60 +2568,46 @@ class EnergyPowerCard extends HTMLElement {
     return GG[d.getDay()] + ' ' + d.getDate() + ' ' + MESI[d.getMonth()];
   }
 
-  // Autosufficienza come arco piatto stile "Efficiency Trend": traccia sottile,
-  // parte riempita fino al valore, tacca sul punto attuale, numero risalito nella
-  // conca. Il numero resta in colore di TESTO; il verde qui e' "autoprodotto"
-  // (solare+batteria = cio' che non e' rete), non un accento decorativo.
+  // Autosufficienza come semicerchio compatto IN LINEA col numero (layout "E2"):
+  // il gauge a sinistra, il numero e l'etichetta accanto. Il numero resta in colore
+  // di TESTO; il verde e' "autoprodotto" (solare+batteria = cio' che non e' rete).
   _balSelfArc(pctTxt, pct) {
     const has = pct !== null && pct !== undefined && !isNaN(pct);
     return (
-      '<div class="epb-selfw"><div class="epb-tr-stack">' +
-      this._balTrendArc(has ? pct : 0, has) +
-      '<div class="epb-tr-n">' + pctTxt + '<span class="epb-tr-u">%</span></div>' +
-      '<div class="epb-tr-l">autosufficienza</div></div></div>'
+      '<div class="epb-selfw"><div class="epb-self-il">' +
+      this._balSelfSemi(has ? pct : 0, has) +
+      '<div class="epb-self-tx"><div class="epb-self-n">' + pctTxt +
+      '<span class="epb-self-u">%</span></div>' +
+      '<div class="epb-self-l">autosufficienza</div></div></div></div>'
     );
   }
 
-  // SVG dell'arco. Corda 288 e saetta 26 su un viewBox 320 largo: raggio grande =
-  // curva poco pronunciata. Il path e' campionato punto per punto, cosi' non dipende
-  // dai flag di sweep del comando A (facili da sbagliare). viewBox ritagliato in
-  // verticale al solo contenuto (y 16..52), percio' il numero appena sotto resta
-  // vicino alla curva a qualunque larghezza. `filled` distingue il dato presente
-  // (riempimento + tacca) dal "--" (sola traccia).
-  _balTrendArc(pct, filled) {
-    const W = 320, CHORD = 288, SAG = 26;
-    const R = SAG / 2 + (CHORD * CHORD) / (8 * SAG);
-    const CX = W / 2, PEAK = 22, CY = PEAK + R;
-    const PHI0 = Math.asin((CHORD / 2) / R);
-    const pt = (t) => {
-      const phi = -PHI0 + t * 2 * PHI0;
-      return [CX + R * Math.sin(phi), CY - R * Math.cos(phi)];
+  // Semicerchio del gauge. Path campionato punto per punto: non dipende dai flag di
+  // sweep del comando A (sul semicerchio pieno danno spesso il verso sbagliato).
+  // `filled` distingue il dato presente (traccia + valore) dal "--" (sola traccia).
+  _balSelfSemi(pct, filled) {
+    const W = 84, SW = 9, R = (W - SW) / 2, CX = W / 2, CY = R + SW / 2, H = CY + SW / 2;
+    const p = (deg) => {
+      const a = (deg * Math.PI) / 180;
+      return [CX + R * Math.cos(a), CY - R * Math.sin(a)];
     };
-    const path = (a, b) => {
+    const path = (d0, d1) => {
       let d = '';
       const n = 44;
       for (let k = 0; k <= n; k++) {
-        const q = pt(a + (b - a) * k / n);
+        const q = p(d0 + (d1 - d0) * k / n);
         d += (k ? ' L' : 'M') + q[0].toFixed(2) + ' ' + q[1].toFixed(2);
       }
       return d;
     };
-    const p = Math.max(0, Math.min(1, pct / 100));
-    let extra = '';
-    if (filled) {
-      const m = pt(p);
-      const phi = -PHI0 + p * 2 * PHI0;
-      const dx = Math.sin(phi), dy = -Math.cos(phi);
-      extra =
-        '<path class="epb-tr-v" d="' + path(0, p) + '" fill="none" stroke-width="2.5" stroke-linecap="round"/>' +
-        '<line class="epb-tr-m" x1="' + (m[0] - dx * 3).toFixed(2) + '" y1="' + (m[1] - dy * 3).toFixed(2) +
-        '" x2="' + (m[0] + dx * 8.5).toFixed(2) + '" y2="' + (m[1] + dy * 8.5).toFixed(2) +
-        '" stroke-width="4" stroke-linecap="round"/>';
-    }
+    const end = 180 - (180 * Math.max(0, Math.min(100, pct))) / 100;
+    const val = filled
+      ? '<path class="epb-self-v" d="' + path(180, end) + '" fill="none" stroke-width="' + SW + '" stroke-linecap="round"/>'
+      : '';
     return (
-      '<svg class="epb-tr" viewBox="0 16 320 36" preserveAspectRatio="xMidYMid meet" aria-hidden="true">' +
-      '<path class="epb-tr-t" d="' + path(0, 1) + '" fill="none" stroke-width="2.5" stroke-linecap="round"/>' +
-      extra + '</svg>'
+      '<svg class="epb-self-g" viewBox="0 0 ' + W + ' ' + H.toFixed(1) + '" width="' + W + '" aria-hidden="true">' +
+      '<path class="epb-self-t" d="' + path(180, 0) + '" fill="none" stroke-width="' + SW + '" stroke-linecap="round"/>' +
+      val + '</svg>'
     );
   }
 
@@ -3759,20 +3745,19 @@ class EnergyPowerCard extends HTMLElement {
       '.epb-dn{color:#0B8F5E;}' +
       '.epb-dark .epb-up{color:#F5B301;}' +
       '.epb-dark .epb-dn{color:#22E39A;}' +
-      // autosufficienza ad arco piatto, quando i watt prendono il posto del numero grande.
-      // L'arco sta al 60% e centrato; il numero e' rialzato di -.18em (proporzionale al
-      // numero, non all'arco) cosi' entra nella conca senza scavalcare la curva quando
-      // l'arco si accorcia su mobile. La tacca e' verde su chiaro, bianca su scuro.
-      '.epb-selfw{margin:22px 0 4px;padding-top:14px;border-top:1px solid var(--epb-bd);}' +
-      '.epb-tr-stack{display:flex;flex-direction:column;align-items:center;}' +
-      '.epb-tr{display:block;width:60%;height:auto;margin:0 auto;overflow:visible;}' +
-      '.epb-tr-t{stroke:var(--epb-trtrack);}' +
-      '.epb-tr-v,.epb-tr-m{stroke:var(--epb-bat);}' +
-      '.epb-dark .epb-tr-m{stroke:#fff;opacity:.92;}' +
-      '.epb-tr-n{font-size:40px;font-weight:670;letter-spacing:-2px;line-height:.9;' +
-      'margin-top:-.18em;font-variant-numeric:tabular-nums;}' +
-      '.epb-tr-u{font-size:17px;font-weight:600;color:var(--epb-tx2);margin-left:2px;letter-spacing:0;}' +
-      '.epb-tr-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);' +
+      // autosufficienza: semicerchio compatto in linea col numero (layout E2), quando i
+      // watt prendono il posto del numero grande. Il gauge a sinistra, numero+etichetta a
+      // destra; la traccia usa --epb-trtrack (piu' marcata di --epb-track su fondo scuro).
+      '.epb-selfw{margin:22px 0 12px;padding-top:14px;border-top:1px solid var(--epb-bd);}' +
+      '.epb-self-il{display:flex;align-items:center;gap:16px;}' +
+      '.epb-self-g{display:block;flex:0 0 auto;overflow:visible;}' +
+      '.epb-self-t{stroke:var(--epb-trtrack);}' +
+      '.epb-self-v{stroke:var(--epb-bat);}' +
+      '.epb-self-tx{min-width:0;}' +
+      '.epb-self-n{font-size:32px;font-weight:670;letter-spacing:-1.3px;line-height:1;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.epb-self-u{font-size:15px;font-weight:600;color:var(--epb-tx2);margin-left:2px;letter-spacing:0;}' +
+      '.epb-self-l{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--epb-tx2);' +
       'font-weight:600;margin-top:6px;}' +
       // mese: barra con dentro il consumato e la tacca di dove sei oggi
       '.epb-mo{margin-top:16px;padding-top:14px;border-top:1px solid var(--epb-bd);}' +
