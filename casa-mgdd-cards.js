@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.68.0
+ * Version: 1.69.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -3111,7 +3111,8 @@ class EnergyPowerCard extends HTMLElement {
   // circuito porta `energy` (sensore kWh cumulativo); `house_energy` e' il
   // contatore di tutta la casa e serve solo a ricavare la quota e il residuo non
   // attribuito. Config: title, circuits[{name,energy}], house_energy, days (15),
-  // months (9), mode (plain|compare|trend).
+  // months (9), mode (plain|compare), top (6 righe sempre visibili, il resto sotto
+  // l'espansore), strip (false: la barretta dei periodi e' opt-in).
   // ===========================================================================
   _dp2(n) {
     return n < 10 ? '0' + n : '' + n;
@@ -3285,31 +3286,6 @@ class EnergyPowerCard extends HTMLElement {
     return period === 'month' ? MESI[+p[1] - 1] : String(+p[2]);
   }
 
-  _dspark(dev, sn) {
-    const W = 124;
-    const H = 20;
-    const bw = W / sn.axis.length;
-    let mx = 0;
-    const cells = sn.axis.map((k) => {
-      const c = this._dcell(dev.energy, sn.period, k);
-      if (c.v !== undefined && c.v !== null && c.v > mx) mx = c.v;
-      return c;
-    });
-    if (mx <= 0) mx = 1;
-    let s = '<svg class="epd-spk" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">';
-    cells.forEach((c, i) => {
-      const x = i * bw + 1;
-      const w = Math.max(1.4, bw - 2);
-      if (c.v === undefined || c.v === null) {
-        s += '<rect x="' + x.toFixed(1) + '" y="' + (H - 2) + '" width="' + w.toFixed(1) + '" height="2" rx="1" fill="var(--epd-weak)"/>';
-        return;
-      }
-      const h = Math.max(1.2, (c.v / mx) * (H - 2));
-      s += '<rect x="' + x.toFixed(1) + '" y="' + (H - h).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="1.5" fill="' + (i === sn.idx ? 'var(--epd-acc)' : 'var(--epd-weak)') + '"/>';
-    });
-    return s + '</svg>';
-  }
-
   _ddeltaChip(cur, prev) {
     if (cur === null || prev === null || prev === undefined) return '<span class="epd-d epd-na">n.d.</span>';
     const d = cur - prev;
@@ -3355,12 +3331,39 @@ class EnergyPowerCard extends HTMLElement {
     );
   }
 
+  // Le cifre di sintesi stanno sulla riga della navigazione: la data la dice gia' il
+  // navigatore, quindi il vecchio blocco "Misurato - <data>" ripeteva l'etichetta
+  // spendendo due righe di card.
+  _dheadStats(sn) {
+    const quota =
+      sn.house !== null
+        ? 'su ' + this._dnum(sn.house) + ' kWh di casa · ' + Math.round((sn.meas / sn.house) * 100) + '% attribuito'
+        : 'totale casa non disponibile';
+    return (
+      '<div class="epd-st">' +
+      '<span class="epd-v">' + this._dnum(sn.meas) + '<small>kWh</small></span>' +
+      '<span title="vs ' + (sn.period === 'day' ? 'giorno' : 'mese') + ' precedente">' +
+      this._ddeltaChip(sn.meas, sn.prevMeas) + '</span>' +
+      '<span class="epd-k">' + quota + (sn.partial ? ' · in corso' : '') + '</span>' +
+      '</div>'
+    );
+  }
+
   _dbodyHtml(sn) {
     const mode = this._dmode || this.config.mode || 'plain';
-    const cls = mode === 'compare' ? 'epd-b' : mode === 'trend' ? 'epd-c' : 'epd-a';
+    const cls = mode === 'compare' ? 'epd-b' : 'epd-a';
     const active = sn.list.filter((r) => r.v !== null && r.v > 0);
     const zeros = sn.list.filter((r) => r.v === 0);
     const absent = sn.list.filter((r) => r.v === null);
+    // La coda dei dispositivi trascurabili resta chiusa: sono le righe che facevano
+    // crescere la card senza dire niente. La scala resta quella del primo circuito,
+    // quindi aprire l'elenco non ridisegna le barre gia' lette.
+    const top = this.config.top === undefined ? 6 : Math.max(1, this.config.top);
+    const open = !!this._dopen;
+    const tail = active.slice(top);
+    const shown = open ? active : active.slice(0, top);
+    const nHidden = tail.length + zeros.length + absent.length;
+    const tailSum = tail.reduce((s, r) => s + (r.v || 0), 0);
     let mx = active.length ? active[0].v : 0;
     if (sn.other !== null && sn.other > mx) mx = sn.other;
     // In confronto le due barre della riga devono stare sulla STESSA scala, altrimenti
@@ -3375,20 +3378,8 @@ class EnergyPowerCard extends HTMLElement {
     if (!mx) mx = 1;
     const w = (v) => Math.min(100, Math.max(0.4, (v / mx) * 100)).toFixed(2);
 
-    let h =
-      '<div class="epd-hd"><div>' +
-      '<div class="epd-k">Misurato · ' + this._dlabel(sn.period, sn.axis[sn.idx]) + (sn.partial ? ' · in corso' : '') + '</div>' +
-      '<div class="epd-v">' + this._dnum(sn.meas) + '<small>kWh</small></div>' +
-      (sn.house !== null
-        ? '<div class="epd-k" style="margin-top:3px">su ' + this._dnum(sn.house) + ' kWh di casa · ' + Math.round((sn.meas / sn.house) * 100) + '% attribuito</div>'
-        : '<div class="epd-k" style="margin-top:3px">totale casa non disponibile per questo periodo</div>') +
-      '</div><div style="text-align:right">' +
-      '<div class="epd-k">vs ' + (sn.period === 'day' ? 'giorno' : 'mese') + ' precedente</div>' +
-      '<div style="margin-top:6px">' + this._ddeltaChip(sn.meas, sn.prevMeas) + '</div>' +
-      '</div></div>';
-
-    h += '<div class="epd-rows">';
-    active.forEach((r) => {
+    let h = '<div class="epd-rows">';
+    shown.forEach((r) => {
       h +=
         '<div class="epd-r ' + cls + '"><div class="epd-n" title="' + r.name + '">' + r.name + '</div>' +
         '<div class="epd-tr">' +
@@ -3397,9 +3388,7 @@ class EnergyPowerCard extends HTMLElement {
         '<div class="epd-val">' + this._dfmt(r.v) + '</div>' +
         (mode === 'compare'
           ? this._ddeltaCell(r.v, r.prev)
-          : mode === 'trend'
-            ? '<div>' + this._dspark(r.dev, sn) + '</div>'
-            : '<div class="epd-pc">' + (sn.house !== null ? Math.round((r.v / sn.house) * 100) + '%' : '—') + '</div>') +
+          : '<div class="epd-pc">' + (sn.house !== null ? Math.round((r.v / sn.house) * 100) + '%' : '—') + '</div>') +
         '</div>';
     });
     if (sn.other !== null && sn.other > 0) {
@@ -3412,16 +3401,23 @@ class EnergyPowerCard extends HTMLElement {
           : '<div class="epd-dd epd-na">—</div>') +
         '</div>';
     }
-    if (zeros.length) {
+    if (open && zeros.length) {
       h +=
         '<div class="epd-r epd-off ' + cls + '"><div class="epd-n">' + zeros.length +
         (zeros.length === 1 ? ' dispositivo a zero' : ' dispositivi a zero') + '</div>' +
         '<div class="epd-tr"><span class="epd-z"></span></div><div class="epd-val">0</div><div></div></div>';
     }
-    if (absent.length) {
+    if (open && absent.length) {
       h +=
         '<div class="epd-r epd-off ' + cls + '"><div class="epd-n">' + absent.length + ' senza dato</div>' +
         '<div class="epd-tr"><span class="epd-z"></span></div><div class="epd-val">—</div><div></div></div>';
+    }
+    if (nHidden) {
+      h +=
+        '<button class="epd-more" data-epd-more="1" aria-expanded="' + open + '">' +
+        '<span>' + (open ? '▾ nascondi i minori' : '▸ altri ' + nHidden + (nHidden === 1 ? ' dispositivo' : ' dispositivi')) + '</span>' +
+        (open || tailSum <= 0 ? '<span></span>' : '<b>' + this._dfmt(tailSum) + '</b>') +
+        '</button>';
     }
     h += '</div>';
 
@@ -3457,13 +3453,15 @@ class EnergyPowerCard extends HTMLElement {
       opts.map((o) => '<button data-epd-' + attr + '="' + o[0] + '" aria-pressed="' + o[2] + '">' + o[1] + '</button>').join('') +
       '</div>';
 
+    const ready = !!(this._dstats && this._dstats[period] && this._dlist().length);
+    const sn = ready ? this._dsnap() : null;
+
     let head =
       '<div class="epd-top">' +
       '<div class="epd-t">' + (this.config.title || 'Totali per dispositivo') + '</div>' +
       seg('mode', [
         ['plain', 'Quota', mode === 'plain'],
         ['compare', 'Confronto', mode === 'compare'],
-        ['trend', 'Andamento', mode === 'trend'],
       ]) +
       '</div>' +
       '<div class="epd-nvbar">' +
@@ -3475,16 +3473,18 @@ class EnergyPowerCard extends HTMLElement {
       '<button data-epd-step="-1" title="Precedente"' + (idx <= 0 ? ' disabled' : '') + '>‹</button>' +
       '<span class="epd-lbl">' + this._dlabel(period, axis[idx]) + '</span>' +
       '<button data-epd-step="1" title="Successivo"' + (idx >= axis.length - 1 ? ' disabled' : '') + '>›</button>' +
-      '</div></div>';
+      '</div>' +
+      (sn ? this._dheadStats(sn) : '') +
+      '</div>' +
+      // La barretta dei periodi costa ~50px di altezza: resta disponibile con
+      // `strip: true` per chi la usa per saltare al giorno, ma non e' piu' il default.
+      (sn && this.config.strip ? this._dstripHtml(sn) : '');
 
     let body;
     if (!this._dstats) body = '<div class="epd-load">Caricamento statistiche…</div>';
     else if (!this._dstats[period]) body = '<div class="epd-load">Statistiche non disponibili: il recorder non ha risposto.</div>';
     else if (!this._dlist().length) body = '<div class="epd-load">Nessun circuito con la chiave <code>energy</code> in configurazione.</div>';
-    else {
-      const sn = this._dsnap();
-      body = this._dstripHtml(sn) + this._dbodyHtml(sn);
-    }
+    else body = this._dbodyHtml(sn);
 
     mgddPaint(this, this._styles(), '<div class="epd-wrap' + (this._isDark() ? ' epd-dark' : '') + '"><div class="epd-card">' + head + body + '</div></div>');
     this._wireDevices();
@@ -3502,6 +3502,12 @@ class EnergyPowerCard extends HTMLElement {
     this.querySelectorAll('[data-epd-mode]').forEach((el) => {
       el.addEventListener('click', () => {
         this._dmode = el.getAttribute('data-epd-mode');
+        rerender();
+      });
+    });
+    this.querySelectorAll('[data-epd-more]').forEach((el) => {
+      el.addEventListener('click', () => {
+        this._dopen = !this._dopen;
         rerender();
       });
     });
@@ -3923,13 +3929,16 @@ class EnergyPowerCard extends HTMLElement {
       // non attribuito, verde/rosso = solo la differenza).
       '.epd-wrap{--epd-acc:#6D5AE6;--epd-weak:#EDEBFB;--epd-up:#C0392B;--epd-dn:#0F8A4D;' +
       '--epd-tx:var(--primary-text-color,#1c1c1e);--epd-tx2:var(--secondary-text-color,#6b6f76);' +
-      '--epd-bd:var(--divider-color,rgba(0,0,0,.10));}' +
+      '--epd-bd:var(--divider-color,rgba(0,0,0,.10));' +
+      // separatore interno fra le righe: con righe dense il divider pieno diventa
+      // una griglia, quindi le righe usano una versione smorzata dello stesso colore
+      '--epd-bd2:color-mix(in srgb,var(--epd-bd) 55%,transparent);}' +
       '.epd-wrap.epd-dark{--epd-acc:#A99BFF;--epd-weak:#2A2740;--epd-up:#F07167;--epd-dn:#3BD98A;}' +
       '.epd-card{background:var(--ha-card-background,var(--card-background-color,#fff));' +
-      'border:1px solid var(--epd-bd);border-radius:18px;padding:16px 18px;}' +
+      'border:1px solid var(--epd-bd);border-radius:18px;padding:13px 16px;}' +
       '.epd-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}' +
       '.epd-t{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--epd-tx2);}' +
-      '.epd-nvbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;}' +
+      '.epd-nvbar{display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;margin:10px 0 9px;}' +
       '.epd-seg,.epd-nav{display:flex;gap:2px;padding:3px;border-radius:11px;border:1px solid var(--epd-bd);}' +
       '.epd-seg button,.epd-nav button{font:inherit;font-size:12px;font-weight:600;color:var(--epd-tx2);' +
       'background:none;border:0;padding:5px 10px;border-radius:8px;cursor:pointer;}' +
@@ -3938,7 +3947,7 @@ class EnergyPowerCard extends HTMLElement {
       '.epd-nav button:disabled{opacity:.35;cursor:default;}' +
       '.epd-lbl{min-width:168px;text-align:center;font-size:12.5px;font-weight:700;padding:0 6px;' +
       'text-transform:capitalize;color:var(--epd-tx);}' +
-      '.epd-strip{display:flex;gap:3px;align-items:flex-end;height:40px;margin-top:10px;padding:5px 7px;' +
+      '.epd-strip{display:flex;gap:3px;align-items:flex-end;height:40px;margin:0 0 10px;padding:5px 7px;' +
       'border-radius:11px;border:1px solid var(--epd-bd);}' +
       '.epd-sb{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;' +
       'align-items:center;gap:2px;background:none;border:0;padding:0;height:100%;cursor:pointer;}' +
@@ -3946,36 +3955,39 @@ class EnergyPowerCard extends HTMLElement {
       '.epd-sb[aria-pressed="true"] i{background:var(--epd-acc);}' +
       '.epd-sb u{font-size:8.5px;text-decoration:none;color:var(--epd-tx2);font-variant-numeric:tabular-nums;}' +
       '.epd-sb[aria-pressed="true"] u{color:var(--epd-tx);font-weight:700;}' +
-      '.epd-hd{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;' +
-      'margin:14px 0 12px;}' +
+      '.epd-st{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;}' +
       '.epd-k{font-size:11.5px;color:var(--epd-tx2);}' +
-      '.epd-v{font-size:27px;font-weight:700;letter-spacing:-.5px;margin-top:3px;color:var(--epd-tx);}' +
-      '.epd-v small{font-size:13px;font-weight:600;color:var(--epd-tx2);margin-left:2px;}' +
+      '.epd-v{font-size:21px;font-weight:700;letter-spacing:-.4px;color:var(--epd-tx);' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.epd-v small{font-size:11.5px;font-weight:600;color:var(--epd-tx2);margin-left:2px;}' +
       '.epd-d{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;' +
       'padding:3px 9px;border-radius:999px;border:1px solid var(--epd-bd);white-space:nowrap;}' +
       '.epd-up{color:var(--epd-up);} .epd-dn{color:var(--epd-dn);} .epd-na{color:var(--epd-tx2);}' +
       '.epd-rows{display:flex;flex-direction:column;}' +
-      '.epd-r{display:grid;align-items:center;gap:12px;padding:6px 0;border-top:1px solid var(--epd-bd);}' +
+      '.epd-r{display:grid;align-items:center;gap:10px;padding:3px 0;border-top:1px solid var(--epd-bd2);}' +
       '.epd-r:first-child{border-top:0;}' +
-      '.epd-a{grid-template-columns:170px 1fr 86px 40px;}' +
-      '.epd-b{grid-template-columns:170px 1fr 86px 70px;}' +
-      '.epd-c{grid-template-columns:170px 1fr 86px 124px;}' +
-      '.epd-n{font-size:12.5px;color:var(--epd-tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.epd-a{grid-template-columns:150px 1fr 76px 36px;}' +
+      '.epd-b{grid-template-columns:150px 1fr 76px 64px;}' +
+      '.epd-n{font-size:12px;color:var(--epd-tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
       // overflow nascosto: nessuna barra puo' uscire dalla propria cella, qualunque
       // scala venga calcolata sopra
-      '.epd-tr{position:relative;height:15px;overflow:hidden;}' +
+      '.epd-tr{position:relative;height:9px;overflow:hidden;}' +
       '.epd-tr span{position:absolute;left:0;top:0;height:100%;border-radius:0 4px 4px 0;}' +
       '.epd-g{background:var(--epd-weak);}' +
       '.epd-bar{background:var(--epd-acc);}' +
       '.epd-bar.epd-oth{background:#9A9993;}' +
       '.epd-z{width:2px;background:var(--epd-bd);border-radius:0;}' +
-      '.epd-val{font-size:12.5px;font-weight:600;text-align:right;color:var(--epd-tx);' +
+      '.epd-val{font-size:12px;font-weight:600;text-align:right;color:var(--epd-tx);' +
       'font-variant-numeric:tabular-nums;}' +
-      '.epd-pc{font-size:11px;text-align:right;color:var(--epd-tx2);font-variant-numeric:tabular-nums;}' +
-      '.epd-dd{font-size:11.5px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums;}' +
+      '.epd-pc{font-size:10.5px;text-align:right;color:var(--epd-tx2);font-variant-numeric:tabular-nums;}' +
+      '.epd-dd{font-size:11px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums;}' +
       '.epd-off .epd-n,.epd-off .epd-val{color:var(--epd-tx2);}' +
-      '.epd-spk{display:block;}' +
-      '.epd-foot{margin-top:12px;padding-top:11px;border-top:1px solid var(--epd-bd);display:flex;' +
+      '.epd-more{font:inherit;font-size:11.5px;color:var(--epd-tx2);background:none;border:0;' +
+      'border-top:1px solid var(--epd-bd2);width:100%;display:flex;justify-content:space-between;' +
+      'gap:10px;align-items:center;padding:6px 0 2px;cursor:pointer;text-align:left;}' +
+      '.epd-more b{color:var(--epd-tx);font-weight:600;font-variant-numeric:tabular-nums;}' +
+      '.epd-more:hover{color:var(--epd-tx);}' +
+      '.epd-foot{margin-top:10px;padding-top:9px;border-top:1px solid var(--epd-bd);display:flex;' +
       'flex-wrap:wrap;gap:5px 16px;font-size:11.5px;color:var(--epd-tx2);}' +
       '.epd-foot b{color:var(--epd-tx);}' +
       '.epd-sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;' +
@@ -3984,9 +3996,10 @@ class EnergyPowerCard extends HTMLElement {
       'background:rgba(192,57,43,.09);border:1px solid rgba(192,57,43,.26);}' +
       '.epd-warn b{color:var(--epd-tx);}' +
       '.epd-load{font-size:12.5px;color:var(--epd-tx2);padding:26px 0;text-align:center;}' +
-      '@media (max-width:560px){.epd-a,.epd-b,.epd-c{grid-template-columns:104px 1fr 72px;}' +
-      '.epd-a .epd-pc,.epd-b .epd-dd,.epd-c .epd-spk{display:none;}' +
-      '.epd-lbl{min-width:118px;font-size:12px;}.epd-sb u{display:none;}}' +
+      '@media (max-width:560px){.epd-a,.epd-b{grid-template-columns:104px 1fr 72px;}' +
+      '.epd-a .epd-pc,.epd-b .epd-dd{display:none;}' +
+      '.epd-lbl{min-width:118px;font-size:12px;}.epd-sb u{display:none;}' +
+      '.epd-st{gap:7px;}.epd-v{font-size:19px;}}' +
       '</style>'
     );
   }
