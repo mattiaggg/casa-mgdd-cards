@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.69.0
+ * Version: 1.70.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -4535,9 +4535,10 @@ class EnergyMonthlyCard extends HTMLElement {
     // `period: hour` + `metric: mean` serve alle MISURE (la carica della batteria),
     // non ai contatori: legge la media oraria invece della differenza, non completa
     // il periodo col delta di un cumulativo, e usa una scala fissa 0-100.
+    // `hours` e' l'ampiezza della finestra mobile che finisce sull'ora in corso.
     const defaults =
       period === 'hour'
-        ? { entity: 'sensor.powerwall3_charge', period: 'hour', metric: 'mean', y_max: 100, decimals: 0, title: 'Batteria', color: '#0FB57E' }
+        ? { entity: 'sensor.powerwall3_charge', period: 'hour', metric: 'mean', hours: 24, y_max: 100, decimals: 0, title: 'Batteria', color: '#0FB57E' }
         : period === 'day'
           ? { entity: 'sensor.energy_totale_sonoff_casa', period: 'day', days: 14, title: 'Consumo giornaliero', color: '#EF9F27' }
           : { entity: 'sensor.energy_totale_sonoff_casa', period: 'month', months: 12, title: 'Consumo mensile', color: '#7C6CF0' };
@@ -4568,6 +4569,36 @@ class EnergyMonthlyCard extends HTMLElement {
     return 4;
   }
 
+  // Ampiezza della finestra oraria. Minimo 3 ore: con due punti la spline non
+  // disegna un andamento. Massimo 168 (una settimana): oltre, i punti sono meno
+  // larghi di un pixel e il grafico diventa una macchia.
+  _hourSpan() {
+    const h = parseInt(this.config.hours, 10);
+    return Math.max(3, Math.min(168, isFinite(h) && h > 0 ? h : 24));
+  }
+
+  // Inizio della finestra: l'ora in corso arretrata di `hours - 1`. Ricalcolato a
+  // ogni disegno, cosi' l'asse resta ancorato ad adesso anche fra due fetch.
+  _hourStart(now) {
+    const d = new Date(now);
+    d.setMinutes(0, 0, 0);
+    return d.getTime() - (this._hourSpan() - 1) * 3600 * 1000;
+  }
+
+  // Etichetta di un'ora per il tooltip: l'ora secca se e' oggi, con il giorno
+  // davanti altrimenti, perche' in una finestra mobile "07:00" da solo e' ambiguo.
+  _hourLabel(ts, now) {
+    const GG = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
+    const d = new Date(ts);
+    const hh = (d.getHours() < 10 ? '0' : '') + d.getHours() + ':00';
+    const same = (a, b) =>
+      a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (same(d, now)) return hh;
+    const ieri = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    if (same(d, ieri)) return 'ieri ' + hh;
+    return GG[d.getDay()] + ' ' + hh;
+  }
+
   async _maybeFetch() {
     const now = Date.now();
     if (this._fetchedAt && now - this._fetchedAt < 10 * 60 * 1000) return;
@@ -4577,9 +4608,10 @@ class EnergyMonthlyCard extends HTMLElement {
     const isMean = this.config.metric === 'mean';
     let start;
     if (period === 'hour') {
-      // dalla mezzanotte locale: l'asse e' l'orologio del giorno, non "le ultime 24h"
-      const d = new Date(now);
-      start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      // Finestra mobile che finisce sull'ora in corso: ancorare l'asse alla
+      // mezzanotte lasciava vuota tutta la parte destra del grafico, che non e'
+      // dato mancante ma il futuro.
+      start = new Date(this._hourStart(now));
     } else if (period === 'day') {
       const days = Math.max(2, this.config.days || 14);
       start = new Date(now - days * 24 * 3600 * 1000);
@@ -4676,14 +4708,18 @@ class EnergyMonthlyCard extends HTMLElement {
       const isHour = cfg.period === 'hour';
       const isMean = cfg.metric === 'mean';
       const pad2 = (v) => (v < 10 ? '0' + v : '' + v);
-      const curIdx = isHour ? now.getHours() : data.findIndex(isCurrent);
+      // Slot 0 = l'ora piu' vecchia della finestra, ultimo slot = l'ora in corso.
+      const hourSpan = isHour ? this._hourSpan() : 0;
+      const hourStart = isHour ? this._hourStart(now.getTime()) : 0;
+      const hourAt = (i) => hourStart + i * 3600 * 1000;
+      const curIdx = isHour ? hourSpan - 1 : data.findIndex(isCurrent);
       // Il periodo in corso si fermerebbe all'ultima ora compilata dal recorder
       // (le statistiche a lungo termine sono orarie): lo completiamo col delta
       // fra il valore live del contatore e quello di fine ultima ora, che la
       // statistica riporta in `state`. Cosi' il periodo in corso coincide con
       // il contatore giornaliero invece di restare fino a un'ora indietro.
       let live = 0;
-      if (!isMean && curIdx >= 0 && data[curIdx] && cfg.live_current !== false && st) {
+      if (!isMean && !isHour && curIdx >= 0 && data[curIdx] && cfg.live_current !== false && st) {
         const cum = parseFloat(st.state);
         const upTo = parseFloat(data[curIdx].state);
         if (isFinite(cum) && isFinite(upTo) && cum > upTo) live = cum - upTo;
@@ -4695,19 +4731,21 @@ class EnergyMonthlyCard extends HTMLElement {
       let labelsFull;
       let count;
       if (isHour) {
-        count = 24;
-        vals = new Array(24).fill(null);
+        count = hourSpan;
+        vals = new Array(count).fill(null);
         data.forEach((d) => {
-          const i = new Date(d.start).getHours();
+          // posizione = distanza in ore dall'inizio della finestra, non l'ora del
+          // giorno: la finestra attraversa la mezzanotte
+          const i = Math.round((new Date(d.start).getTime() - hourStart) / (3600 * 1000));
           const v = isMean ? d.mean : d.change;
-          if (i >= 0 && i < 24 && v !== null && v !== undefined) vals[i] = v;
+          if (i >= 0 && i < count && v !== null && v !== undefined) vals[i] = v;
         });
         // per una misura il valore vivo E' il valore dell'ora in corso
         if (isMean && st) {
           const now2 = parseFloat(st.state);
-          if (isFinite(now2) && curIdx >= 0 && curIdx < 24) vals[curIdx] = now2;
+          if (isFinite(now2)) vals[count - 1] = now2;
         }
-        labelsFull = vals.map((v, i) => pad2(i) + ':00');
+        labelsFull = vals.map((v, i) => this._hourLabel(hourAt(i), now));
       } else {
         count = n;
         vals = data.map((d, i) => Math.max(0, (d.change || 0) + (i === curIdx ? live : 0)));
@@ -4722,8 +4760,10 @@ class EnergyMonthlyCard extends HTMLElement {
         bigVal = lastV === null ? '--' : fmt(lastV) + ' ' + uom;
         if (seen.length) {
           const mn = Math.min.apply(null, seen);
-          const mh = vals.indexOf(mn);
-          bigCap = 'minimo ' + fmt(mn) + ' ' + uom + ' alle ' + pad2(mh);
+          const mi = vals.indexOf(mn);
+          // l'indice non e' piu' l'ora: va riconvertito in orologio
+          const quando = isHour ? this._hourLabel(hourAt(mi), now).replace(':00', '') : pad2(mi);
+          bigCap = (isHour ? 'ultime ' + count + ' h · ' : '') + 'minimo ' + fmt(mn) + ' ' + uom + ' alle ' + quando;
         } else {
           bigCap = '';
         }
@@ -4771,8 +4811,10 @@ class EnergyMonthlyCard extends HTMLElement {
             ' L' + p[0].x.toFixed(2) + ',' + H + ' Z" fill="url(#' + gid + ')" stroke="none"/>';
           lines += '<path class="emc-line" d="' + lp + '" fill="none" stroke="' + cfg.color + '"/>';
         });
+        // Nella finestra mobile l'ora in corso E' il bordo destro: la tratteggiata
+        // ci finirebbe sopra, leggendosi come una cornice invece che come "adesso".
         const nowLine =
-          curIdx >= 0 && curIdx < count
+          !isHour && curIdx >= 0 && curIdx < count
             ? '<line class="emc-now" x1="' + xAt(curIdx).toFixed(2) + '" y1="0" x2="' + xAt(curIdx).toFixed(2) + '" y2="' + H + '"/>'
             : '';
         const svg =
@@ -4786,8 +4828,15 @@ class EnergyMonthlyCard extends HTMLElement {
         // etichette asse X: mensile tutte; giornaliero diradate; orario ogni 6 ore
         let labels = '';
         if (isHour) {
-          for (let i = 0; i < 24; i++) {
-            labels += '<span>' + (i % 6 === 0 || i === 23 ? pad2(i) : '') + '</span>';
+          // Sull'orologio, non sull'indice: lo slot 0 non e' piu' mezzanotte. L'ultima
+          // etichetta e' sempre l'ora in corso; le multiple di 6 troppo vicine al bordo
+          // vengono saltate, altrimenti i due numeri si toccano.
+          const step = count > 72 ? 12 : 6;
+          for (let i = 0; i < count; i++) {
+            const hh = new Date(hourAt(i)).getHours();
+            const last = i === count - 1;
+            const tick = hh % step === 0 && i < count - 1 - step / 3;
+            labels += '<span>' + (last || tick ? pad2(hh) : '') + '</span>';
           }
         } else {
           const step = isDay ? (n > 10 ? Math.ceil(n / 7) : 1) : 1;
