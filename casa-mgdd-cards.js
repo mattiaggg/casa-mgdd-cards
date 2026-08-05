@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.62.0
+ * Version: 1.63.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -2168,6 +2168,21 @@ class EnergyPowerCard extends HTMLElement {
     });
     if (!segs) segs = '<div class="epb-seg epb-seg-empty" style="flex:1"></div>';
 
+    // Tooltip del mix: nella legenda c'e' spazio solo per la percentuale, quindi le
+    // quantita' in kWh non stanno da nessuna parte. Stessa ricetta del profilo orario
+    // (.epb-tip/.epb-tt/.epb-tr): nessuna regola CSS nuova, cambia solo cosa lo apre.
+    let mixTip = '';
+    if (tot) {
+      let tr = '';
+      parts.forEach((p) => {
+        tr += '<div class="epb-tr"><i class="epb-dot epb-c-' + p[2] + '"></i><span>' + p[0] +
+          '</span><b>' + p[1].toFixed(2) + '</b><em>' + Math.round((p[1] / tot) * 100) +
+          '%</em></div>';
+      });
+      mixTip = '<div class="epb-tip epb-tip-mx" hidden><div class="epb-tt">' + periodLab +
+        '<b>' + tot.toFixed(2) + ' kWh</b></div>' + tr + '</div>';
+    }
+
     const kpi = (icon, color, label, entity) =>
       '<div class="epb-k" style="--k:' + color + '" data-entity="' + (entity || '') + '">' + svg(icon, color) +
       '<div><div class="epb-kl">' + label + '</div><div class="epb-kv">' +
@@ -2179,8 +2194,10 @@ class EnergyPowerCard extends HTMLElement {
       (this._balPill() ? '<span class="epb-pill">' + this._balPill() + '</span>' : '') + '</div>' +
       this._balNav() +
       hero +
+      '<div class="epb-mxw">' +
       '<div class="epb-mx">' + segs + '</div>' +
-      '<div class="epb-leg">' + leg + '</div>' +
+      '<div class="epb-leg">' + leg + '</div>' + mixTip +
+      '</div>' +
       this._balanceHourly() +
       this._balMonthBar() +
       '<div class="epb-grid">' +
@@ -2192,7 +2209,31 @@ class EnergyPowerCard extends HTMLElement {
       '</div>');
     this._wireClicks();
     this._wireBalanceTip();
+    this._wireMixTip();
     this._wireBalanceNav();
+  }
+
+  // Tooltip del mix: lo apre tutta la barra e tutta la legenda, non il singolo
+  // segmento. Nei giorni in cui una sorgente fa il 3% il suo segmento e' largo dieci
+  // pixel — col dito non lo prendi — e per confrontare le tre quote dovresti passarle
+  // una a una: un riquadro solo con tutte e tre le righe risolve entrambe le cose.
+  _wireMixTip() {
+    const wrap = this.querySelector('.epb-mxw');
+    const tip = wrap ? wrap.querySelector('.epb-tip-mx') : null;
+    if (!wrap || !tip) return;
+    // Al primo tocco l'hover smette di esistere: iOS sintetizza mouseenter sul tap, e
+    // senza questo interruttore riaprirebbe il tooltip appena il tap dopo l'ha chiuso.
+    let touched = false;
+    wrap.addEventListener('touchstart', () => {
+      touched = true;
+      tip.hidden = !tip.hidden;
+    }, { passive: true });
+    wrap.addEventListener('mouseenter', () => {
+      if (!touched) tip.hidden = false;
+    });
+    wrap.addEventListener('mouseleave', () => {
+      if (!touched) tip.hidden = true;
+    });
   }
 
   // ===========================================================================
@@ -3523,6 +3564,12 @@ class EnergyPowerCard extends HTMLElement {
       '.epp-sw-c{background:var(--epp-cons);}' +
       '.epp-load{font-size:12px;color:var(--epb-tx2);padding:34px 0;text-align:center;}' +
       // 2px di superficie fra i segmenti: separa senza aggiungere un colore di bordo
+      // Il tooltip del mix e' ancorato SOTTO la barra: sopra coprirebbe i watt e
+      // l'autosufficienza. Sotto copre la legenda, cioe' proprio il dato che sta
+      // ripetendo con piu' dettaglio. Offset fisso dalla barra e non dal fondo del
+      // contenitore, cosi' non si sposta quando la legenda va a due righe.
+      '.epb-mxw{position:relative;}' +
+      '.epb-tip-mx{top:19px;left:0;}' +
       '.epb-mx{display:flex;height:11px;border-radius:6px;overflow:hidden;gap:2px;background:var(--epb-track);}' +
       '.epb-seg{height:100%;}' +
       '.epb-seg-empty{background:var(--epb-track);}' +
