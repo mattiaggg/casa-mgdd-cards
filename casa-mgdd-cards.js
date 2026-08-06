@@ -5,7 +5,7 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
  *
- * Version: 1.70.0
+ * Version: 1.71.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -1616,15 +1616,23 @@ class EnergyPowerCard extends HTMLElement {
     return { kind: kind, back: back, max: max, from: from, to: to, n: n, hours: hours, current: back === 0 };
   }
 
+  // Ore lette PRIMA dell'inizio del periodo. Non finiscono nel grafico: dicono con
+  // che cosa e' stata caricata la batteria che si scarica a inizio periodo.
+  _balPreHours() {
+    return 24;
+  }
+
   async _fetchBalance() {
     const c = this.config;
     const ids = [c.house, c.solar, c.grid_import, c.grid_export, c.battery_charge, c.battery_discharge].filter(Boolean);
     if (!ids.length) return;
     const sel = this._balSelection();
-    // un'ora prima dell'inizio: quella riga porta il valore del contatore al
-    // confine, cioe' il riferimento da cui misurare il primo bucket del periodo
-    // quando di righe dentro il periodo non ce n'e' ancora nessuna.
-    const from = new Date(sel.from.getTime() - 3600 * 1000);
+    // Le righe prima dell'inizio servono a due cose: l'ultima porta il valore del
+    // contatore al confine, cioe' il riferimento da cui misurare il primo bucket del
+    // periodo quando di righe dentro il periodo non ce n'e' ancora nessuna, e tutte
+    // insieme dicono da dove veniva l'energia in batteria. Un'ora sola non basta per
+    // la seconda: alle 3 di notte la carica utile e' quella del pomeriggio prima.
+    const from = new Date(sel.from.getTime() - this._balPreHours() * 3600 * 1000);
     const to = sel.current ? new Date() : sel.to;
     let resp = null;
     try {
@@ -1656,20 +1664,27 @@ class EnergyPowerCard extends HTMLElement {
       // sensore era irraggiungibile diventa indistinguibile da un'ora a consumo
       // nullo, e il grafico afferma una cosa che non sa.
       const seen = new Array(sel.hours).fill(false);
+      const PRE = this._balPreHours();
+      const pre = new Array(PRE).fill(0);
       let edge = null;
       ((resp && resp[id]) || []).forEach((r) => {
         const s = parseFloat(r.state);
         if (!Number.isNaN(s)) edge = s;
         const d = new Date(r.start);
-        if (d < sel.from || d >= sel.to) return;
-        const i = Math.floor((d - sel.from) / 3600000);
         const v = Math.max(0, r.change || 0);
+        if (d < sel.from) {
+          const j = Math.round((d - sel.from) / 3600000) + PRE;
+          if (j >= 0 && j < PRE) pre[j] += v;
+          return;
+        }
+        if (d >= sel.to) return;
+        const i = Math.floor((d - sel.from) / 3600000);
         if (i >= 0 && i < sel.hours) {
           buckets[i] += v;
           seen[i] = true;
         }
       });
-      out[id] = { buckets: buckets, seen: seen, edge: edge };
+      out[id] = { buckets: buckets, seen: seen, pre: pre, edge: edge };
     });
     return out;
   }
@@ -1967,17 +1982,24 @@ class EnergyPowerCard extends HTMLElement {
     return b;
   }
 
+  // Le ore prima dell'inizio del periodo. Niente pezzo vivo: sono tutte ore gia'
+  // compilate dal recorder.
+  _balPreBuckets(id) {
+    const st = this._balStats && this._balStats[id];
+    return st && st.pre ? st.pre.slice() : null;
+  }
+
   // layout balance (variante "Arc"): bilancio energetico giornaliero.
   // Scomposizione del consumo di casa nelle tre origini, ora per ora. Il riepilogo
   // del giorno e' la somma delle ore, non un secondo calcolo sui totali: i due non
   // possono raccontare cose diverse, e la scomposizione oraria e' molto piu' fedele
   // (nella singola ora consumo e produzione sono davvero contemporanei).
   //
-  // Il solare viene LETTO dal sensore, non dedotto per differenza. Prima era il
-  // residuo casa-batteria-rete: siccome quei contatori hanno un solo decimale e non
-  // scattano nello stesso istante, ogni ora sballava di +-0.1 kWh e quel decimo
-  // finiva etichettato come solare anche con i pannelli staccati. Ora il residuo e'
-  // la RETE, che e' il numero grande: li' 0.1 kWh e' rumore invisibile.
+  // Solare e RETE si LEGGONO dai rispettivi sensori, non si deducono per differenza:
+  // il residuo e' la batteria. Prima il residuo era la rete, e ogni imprecisione del
+  // modello finiva etichettata come prelievo: il 5 agosto 2026 il grafico diceva 1.1
+  // kWh di rete contro gli 0.3 kWh misurati dal contatore nella stessa card. Un
+  // numero che il contatore misura non va dedotto.
   //
   // Il solare copre PRIMA la casa e poi la batteria: e' l'ordine di priorita' reale
   // del Powerwall in autoconsumo. Il consumo di casa e' quello di casa e basta: la
@@ -1988,10 +2010,21 @@ class EnergyPowerCard extends HTMLElement {
   //
   // La batteria conta come autoprodotta solo per la frazione con cui e' stata
   // caricata dal sole. Caricarla dalla rete e riscaricarla non e' autosufficienza:
-  // e' la stessa energia della rete che fa un giro. La frazione si calcola sul
-  // GIORNO, non sull'ora: si carica di pomeriggio e si scarica di sera, quando la
-  // carica e' zero e una frazione oraria risulterebbe nulla: tutta la scarica della
-  // sera finirebbe etichettata come rete.
+  // e' la stessa energia della rete che fa un giro. Quella frazione e' uno STATO
+  // della batteria, quindi si legge su una finestra mobile di 24 ore che scavalca la
+  // mezzanotte, non sul giorno solare. Sul giorno solare, alle 6 del mattino il
+  // denominatore e' ancora zero (di notte non si carica) e la frazione crollava a
+  // zero: tutta la scarica notturna veniva etichettata come rete. Il 6 agosto 2026
+  // alle 06:33 la card diceva rete 100% e autosufficienza 0% con 0.1 kWh davvero
+  // prelevati: la casa aveva consumato batteria per tutta la notte.
+  //
+  // La quota di carica venuta dalla rete e' anch'essa MISURATA, non stimata dal
+  // solare avanzato: e' il minimo fra la carica non coperta dal surplus solare e
+  // l'import di rete di quell'ora. Senza il tetto sull'import, ogni ora in cui
+  // solare e consumo si equivalgono (contatori a un decimale, surplus apparente
+  // zero) marchiava come "di rete" una carica arrivata dal sole, e il 5 agosto
+  // faceva scendere la frazione solare a 0.88 con la rete a zero per tutto il
+  // pomeriggio.
   //
   // La scomposizione si calcola SEMPRE sull'ora, anche in modalita' mese, e solo
   // dopo le ore si sommano nella barra del giorno. Calcolarla direttamente sul
@@ -2012,30 +2045,52 @@ class EnergyPowerCard extends HTMLElement {
     const zero = () => new Array(n).fill(0);
     const solar = this._balBuckets(c.solar) || zero();
     const gexp = this._balBuckets(c.grid_export) || zero();
+    const gimp = this._balBuckets(c.grid_import) || zero();
     const chg = this._balBuckets(c.battery_charge) || zero();
     const dis = this._balBuckets(c.battery_discharge) || zero();
 
-    // ora -> barra e ora -> giorno, letti dalla data vera e non per divisione,
-    // cosi' il cambio d'ora legale non sfasa il mese di un'ora.
+    // ora -> barra, letta dalla data vera e non per divisione, cosi' il cambio
+    // d'ora legale non sfasa il mese di un'ora.
     const slotOf = [];
-    const dayOf = [];
     for (let i = 0; i < n; i++) {
       const d = new Date(sel.from.getTime() + i * 3600000);
       slotOf.push(sel.kind === 'month' ? d.getDate() - 1 : d.getHours());
-      dayOf.push(sel.kind === 'month' ? d.getDate() - 1 : 0);
     }
 
+    // solare rimasto in casa: prodotto meno quello immesso in rete
     const sun = zero();
-    const chgTot = {};
-    const greenTot = {};
     for (let i = 0; i < n; i++) {
-      // solare rimasto in casa: prodotto meno quello immesso in rete
-      const site = Math.max(0, solar[i] - gexp[i]);
-      sun[i] = Math.min(site, house[i]);
-      const g = dayOf[i];
-      chgTot[g] = (chgTot[g] || 0) + chg[i];
-      greenTot[g] = (greenTot[g] || 0) + Math.min(chg[i], site - sun[i]);
+      sun[i] = Math.min(Math.max(0, solar[i] - gexp[i]), house[i]);
     }
+
+    // Frazione solare dell'energia in batteria, su finestra mobile di PRE ore: il
+    // periodo mostrato piu' le PRE ore che lo precedono, cosi' la scarica delle
+    // prime ore trova la carica che l'ha riempita.
+    const PRE = this._balPreHours();
+    const pad = (id, cur) => (this._balPreBuckets(id) || new Array(PRE).fill(0)).concat(cur);
+    const solX = pad(c.solar, solar);
+    const gexX = pad(c.grid_export, gexp);
+    const houX = pad(c.house, house);
+    const gimX = pad(c.grid_import, gimp);
+    const chgX = pad(c.battery_charge, chg);
+    const fromGrid = [];
+    const pChg = [0];
+    const pGrid = [0];
+    for (let i = 0; i < chgX.length; i++) {
+      const surplus = Math.max(0, Math.max(0, solX[i] - gexX[i]) - houX[i]);
+      fromGrid.push(Math.min(Math.max(0, chgX[i] - surplus), Math.max(0, gimX[i])));
+      pChg.push(pChg[i] + chgX[i]);
+      pGrid.push(pGrid[i] + fromGrid[i]);
+    }
+    // Senza carica nella finestra la frazione non e' zero: e' ignota, e l'unica
+    // risposta onesta e' non penalizzare la batteria. Zero era la vecchia risposta,
+    // e significava "tutta rete".
+    const greenAt = (i) => {
+      const a = Math.max(0, i - PRE + 1);
+      const tot = pChg[i + 1] - pChg[a];
+      if (tot <= 0) return 1;
+      return Math.max(0, Math.min(1, 1 - (pGrid[i + 1] - pGrid[a]) / tot));
+    };
 
     const rows = new Array(slots).fill(null);
     const day = { house: 0, sun: 0, batt: 0, grid: 0, self: null };
@@ -2054,12 +2109,17 @@ class EnergyPowerCard extends HTMLElement {
       voidH.push(hst && hst.seen ? !hst.seen[i] && i !== nowIdx : false);
     }
     for (let i = 0; i <= upTo && i < n; i++) {
-      const g = dayOf[i];
-      // frazione solare della carica, del giorno a cui l'ora appartiene
-      const green = chgTot[g] > 0 ? greenTot[g] / chgTot[g] : 0;
       const rest = Math.max(0, house[i] - sun[i]);
-      const batt = Math.min(dis[i] * green, rest);
-      const grid = rest - batt;
+      // la rete andata ALLA CASA: importata meno la parte finita in batteria
+      let grid = Math.min(rest, Math.max(0, gimp[i] - fromGrid[PRE + i]));
+      // mai piu' batteria di quanta ne e' davvero uscita: lo scarto fra contatori a
+      // un decimale che non scattano nello stesso istante resta attribuito alla rete
+      let batt = Math.min(rest - grid, dis[i]);
+      grid = rest - batt;
+      // la parte caricata dalla rete non e' autoprodotta: e' rete che fa un giro
+      const dirty = batt * (1 - greenAt(PRE + i));
+      batt -= dirty;
+      grid += dirty;
       const k = slotOf[i];
       if (k < 0 || k >= slots) continue;
       if (!rows[k]) rows[k] = { h: k, house: 0, sun: 0, batt: 0, grid: 0, gap: true, susp: false };
