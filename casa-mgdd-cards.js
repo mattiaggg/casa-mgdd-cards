@@ -3,9 +3,10 @@
  * Libreria unica di card custom per la dashboard Home Assistant.
  * Contiene: temperature-bento-card, temperature-row-card, weather-alert-card,
  * energy-power-card, energy-controls-card, energy-history-card,
- * energy-monthly-card, energy-flow-card, casa-mgdd-doors-card.
+ * energy-monthly-card, energy-flow-card, energy-summary-card,
+ * casa-mgdd-doors-card.
  *
- * Version: 1.71.0
+ * Version: 1.72.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -5580,6 +5581,202 @@ window.customCards.push({
   type: 'energy-flow-card',
   name: 'Energy Flusso',
   description: 'Flusso energia Rete/Solare/Batteria/Casa con linee neon animate. Config via YAML.',
+});
+
+// ===== energy-summary-card.js =====
+// Riassunto del flusso energia in una riga sola: Solare, Casa, Rete, Batteria.
+// Stessi sensori e stessa palette della energy-flow-card, ma su una riga di
+// griglia: serve in cima alla vista Home, dove il flusso animato costerebbe
+// troppa altezza.
+//
+// Rete e Batteria non mostrano il segno del sensore: il verso passa
+// nell'etichetta (Prelievo/Immissione, Carica/Scarica), che si legge senza
+// dover ricordare quale segno significhi cosa. Sotto soglia l'etichetta torna
+// neutra ("Rete", "Batteria"), cosi' il fondo scala non racconta un verso che
+// non c'e'.
+class EnergySummaryCard extends HTMLElement {
+  setConfig(config) {
+    this.config = Object.assign({ threshold: 5, battery_min_flow: 120 }, config || {});
+    this._lastSig = null;
+  }
+
+  static getStubConfig() {
+    return {
+      solar_power: 'sensor.powerwall3_solar_power',
+      house_power: 'sensor.powerwall3_load_power',
+      grid_power: 'sensor.powerwall3_site_power',
+      battery_power: 'sensor.powerwall3_battery_power',
+      battery_soc: 'sensor.powerwall3_charge',
+    };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const c = this.config;
+    const ids = [c.solar_power, c.house_power, c.grid_power, c.battery_power, c.battery_soc].filter(Boolean);
+    // i sensori di potenza ripubblicano lo stesso stato ogni 1-2 s: senza la
+    // firma la riga si ricostruirebbe di continuo (vedi mgddPaint)
+    const sig = mgddStatesSig(hass, ids);
+    if (sig === this._lastSig) return;
+    this._lastSig = sig;
+    this._render();
+  }
+
+  getCardSize() { return 1; }
+
+  _num(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  // potenza normalizzata a W leggendo l'unita' dell'entita' (kW->W). Preserva il segno.
+  _pw(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    if (Number.isNaN(v)) return null;
+    const u = ((s.attributes && s.attributes.unit_of_measurement) || '').toLowerCase();
+    if (u === 'kw') return v * 1000;
+    if (u === 'mw') return v * 1e6;
+    return v; // W o unita' non dichiarata: assume W
+  }
+
+  // "406 W" / "2.7 kW": sotto 1 kW resta in W, sopra passa a kW con un
+  // decimale. Sempre valore assoluto: il verso lo dice l'etichetta.
+  _fmt(v) {
+    if (v === null) return { v: '--', u: '' };
+    const a = Math.abs(v);
+    if (a >= 1000) return { v: (a / 1000).toFixed(1), u: 'kW' };
+    return { v: a < 10 ? a.toFixed(1) : String(Math.round(a)), u: 'W' };
+  }
+
+  // stesso criterio della energy-flow-card: testo chiaro => tema scuro
+  _dark() {
+    const cs = getComputedStyle(this).color;
+    const m = cs && cs.match(/[\d.]+/g);
+    if (!m || m.length < 3) return false;
+    return (0.299 * +m[0] + 0.587 * +m[1] + 0.114 * +m[2]) / 255 > 0.6;
+  }
+
+  _palette() {
+    return this._dark()
+      ? { rete: '#38BDF8', sole: '#F5B301', batt: '#22E39A', casa: '#8B7BFF' }
+      : { rete: '#0EA5E9', sole: '#E08A00', batt: '#0FB57E', casa: '#6D5AE6' };
+  }
+
+  _icon(k) {
+    const I = {
+      sole: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>',
+      rete: '<path d="M6 22 12 2l6 20"/><path d="M9 22 12 2l3 20"/><path d="M6.8 8h10.4M7.7 13h8.6M8.6 18h6.8"/>',
+      batt: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M6.5 10.5v3M10 10.5v3"/>',
+      // in carica le tacche lasciano il posto al fulmine, come nel flusso
+      battchg: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M11.4 9.6 8.6 12.2h2.2l-.6 2.4 2.8-2.8h-2.2z"/>',
+      casa: '<path d="M4 11 12 4l8 7"/><path d="M6 10v9h12v-9"/>',
+    };
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + I[k] + '</svg>';
+  }
+
+  _openMoreInfo(entityId) {
+    if (!entityId) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: entityId }, bubbles: true, composed: true }));
+  }
+
+  _chip(color, icon, entity, value, label) {
+    const f = this._fmt(value);
+    return (
+      '<div class="es-chip"' + (entity ? ' data-e="' + entity + '"' : '') + '>' +
+      '<span class="es-ic" style="background:' + color + '22;color:' + color + '">' + this._icon(icon) + '</span>' +
+      '<span class="es-tx">' +
+      '<span class="es-v">' + f.v + (f.u ? '<small> ' + f.u + '</small>' : '') + '</span>' +
+      '<span class="es-k">' + label + '</span>' +
+      '</span></div>'
+    );
+  }
+
+  _render() {
+    const c = this.config;
+    if (!c.solar_power && !c.house_power && !c.grid_power && !c.battery_power) {
+      mgddPaint(this, this._styles(), '<div class="es-card"><div class="es-empty">Configura almeno un sensore di potenza (solar_power, house_power, grid_power, battery_power).</div></div>');
+      return;
+    }
+    const P = this._palette();
+    const TH = c.threshold || 5;
+    // soglia dedicata alla batteria: nasconde l'assorbimento parassita della
+    // Powerwall (~40-150 W), che altrimenti direbbe "carica" a impianto fermo
+    const TB = c.battery_min_flow || 120;
+    const s = this._pw(c.solar_power);
+    const h = this._pw(c.house_power);
+    const g = this._pw(c.grid_power);
+    const b = this._pw(c.battery_power);
+    const soc = this._num(c.battery_soc);
+    // soc_scale: mostra il SOC "app Tesla" nascondendo la riserva ~5%
+    const socDisp = (soc !== null && c.soc_scale) ? Math.max(0, Math.min(100, (soc - 5) / 0.95)) : soc;
+    const socTxt = socDisp === null ? '' : ' · ' + Math.round(socDisp) + '%';
+
+    let chips = '';
+    if (c.solar_power) chips += this._chip(P.sole, 'sole', c.solar_power, s, 'Solare');
+    if (c.house_power) chips += this._chip(P.casa, 'casa', c.house_power, h, 'Casa');
+    if (c.grid_power) {
+      const lab = g === null ? 'Rete' : g > TH ? 'Prelievo' : g < -TH ? 'Immissione' : 'Rete';
+      chips += this._chip(P.rete, 'rete', c.grid_power, g, lab);
+    }
+    if (c.battery_power || c.battery_soc) {
+      const chg = b !== null && b < -TB;
+      const lab = (b === null ? 'Batteria' : chg ? 'Carica' : b > TB ? 'Scarica' : 'Batteria') + socTxt;
+      chips += this._chip(P.batt, chg ? 'battchg' : 'batt', c.battery_power || c.battery_soc, b, lab);
+    }
+
+    mgddPaint(this, this._styles(),
+      '<div class="es-card">' +
+      (c.title ? '<div class="es-t">' + c.title + '</div>' : '') +
+      '<div class="es-grid">' + chips + '</div></div>'
+    );
+
+    // il click sta sul contenitore, non sui chip: mgddPaint riscrive il
+    // sottoalbero a ogni refresh e i listener sui chip andrebbero persi
+    if (!this._clickBound) {
+      this._clickBound = true;
+      this.addEventListener('click', (ev) => {
+        const chip = ev.target && ev.target.closest ? ev.target.closest('.es-chip') : null;
+        if (chip && chip.dataset.e) this._openMoreInfo(chip.dataset.e);
+      });
+    }
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      ':host{display:block;}' +
+      '.es-card{background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:var(--ha-card-border-radius,18px);' +
+      'padding:10px 12px;box-sizing:border-box;}' +
+      // auto-fit: quattro colonne a larghezza piena, due su mezza colonna, una
+      // su mobile stretto. Nessuna misura in JS, nessun listener di resize.
+      '.es-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(102px,1fr));gap:8px 10px;}' +
+      '.es-chip{display:flex;align-items:center;gap:8px;min-width:0;padding:2px;border-radius:12px;cursor:pointer;}' +
+      '.es-chip:hover{background:var(--secondary-background-color,rgba(0,0,0,.04));}' +
+      '.es-ic{width:32px;height:32px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;}' +
+      '.es-ic svg{width:19px;height:19px;}' +
+      '.es-tx{min-width:0;display:flex;flex-direction:column;line-height:1.2;}' +
+      '.es-v{font-size:16px;font-weight:600;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;}' +
+      '.es-v small{font-size:11px;font-weight:500;color:var(--secondary-text-color,#6b6f76);}' +
+      '.es-k{font-size:11.5px;color:var(--secondary-text-color,#6b6f76);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.es-t{font-size:13px;font-weight:600;color:var(--secondary-text-color,#6b6f76);margin:0 2px 8px;}' +
+      '.es-empty{font-size:13px;color:var(--secondary-text-color,#6b6f76);}' +
+      '</style>'
+    );
+  }
+}
+
+customElements.define('energy-summary-card', EnergySummaryCard);
+window.customCards.push({
+  type: 'energy-summary-card',
+  name: 'Energy Riassunto',
+  description: 'Solare/Casa/Rete/Batteria in una riga compatta, con verso e SOC nell’etichetta. Config via YAML.',
 });
 
 // ===== doors-card.js =====
