@@ -4,9 +4,9 @@
  * Contiene: temperature-bento-card, temperature-row-card, weather-alert-card,
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, energy-summary-card,
- * casa-mgdd-doors-card.
+ * casa-mgdd-doors-card, casa-mgdd-system-card.
  *
- * Version: 1.72.0
+ * Version: 1.73.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -6560,4 +6560,1030 @@ window.customCards.push({
   type: 'casa-mgdd-doors-card',
   name: 'Casa MGDD Porte e Finestre',
   description: 'Quadro aperture con orari dal recorder, ingresso, tapparelle, acqua, presenze e aria. Config via YAML.',
+});
+
+// ===== casa-mgdd-system-card.js =====
+// Quadro di stato di Home Assistant nel registro "sala controllo": un punteggio
+// unico in alto dice SE c'e' qualcosa che non va, i led accanto dicono DOVE, e
+// solo scendendo si trovano i numeri. La vista precedente era un elenco di 25
+// tile tutte uguali: host, backup, Zigbee e batterie con lo stesso peso visivo
+// e nessun modo di accorgersi di un problema senza leggerle una per una.
+//
+// La card resta SCURA anche in tema chiaro: e' una scelta, non una svista. Il
+// verde/ambra al neon su fondo nero e' l'unico modo per far leggere lo stato a
+// colpo d'occhio, e su bianco quei colori diventano illeggibili (stessa ragione
+// per cui la doors-card cambia palette fra i temi invece di invertirla).
+//
+// Tre cose non arrivano da entita' e vanno prese altrove:
+//  - le notifiche persistenti NON sono entita': si apre una sottoscrizione
+//    websocket `persistent_notification/subscribe` (il vecchio `.../get` non
+//    esiste piu' dal 2022.9);
+//  - le riparazioni si leggono con `repairs/list_issues`, scartando le ignorate;
+//  - conteggi (entita' non disponibili, aggiornamenti, batterie, LQI) si
+//    ricavano scandendo `hass.states`, non da sensori che non esistono.
+// Tutti e tre sono opzionali: se la chiamata fallisce la riga sparisce e il
+// resto della card continua a funzionare.
+
+// Entita' predefinite: sono quelle verificate sull'installazione di casa. Ogni
+// chiave e' sovrascrivibile singolarmente dalla config; un'intera sezione si
+// spegne con `false` (es. `zigbee: false`).
+const SY_DEFAULTS = {
+  host: {
+    cpu: 'sensor.system_monitor_processor_use',
+    cpu_temp: 'sensor.system_monitor_processor_temperature',
+    memory: 'sensor.system_monitor_memory_usage',
+    memory_free: 'sensor.system_monitor_memory_free',
+    memory_used: 'sensor.system_monitor_memory_use',
+    disk_free: 'sensor.system_monitor_disk_free',
+    disk_use: 'sensor.system_monitor_disk_use',
+    last_boot: 'sensor.system_monitor_last_boot',
+  },
+  network: {
+    connected: 'binary_sensor.fritz_box_4060_connessione',
+    ip: 'sensor.fritz_box_4060_ip_esterno',
+    uptime: 'sensor.fritz_box_4060_tempo_di_attivita_della_connessione',
+    link_down: 'sensor.fritz_box_4060_velocita_effettiva_di_scaricamento_del_collegamento',
+    link_up: 'sensor.fritz_box_4060_velocita_effettiva_di_caricamento_del_collegamento',
+    rate_down: 'sensor.fritz_box_4060_velocita_effettiva_di_scaricamento',
+    rate_up: 'sensor.fritz_box_4060_velocita_effettiva_di_caricamento',
+    speed_down: 'sensor.speedtest_scarica',
+    speed_up: 'sensor.speedtest_carica',
+    speed_ping: 'sensor.speedtest_ping',
+    router_temp: 'sensor.fritz_box_4060_temperatura_cpu',
+    repeater_temp: 'sensor.fritz_repeater_6000_temperatura_cpu',
+    repeater_name: 'Repeater 6000',
+    gateway_ping: 'binary_sensor.ping_powerwall3',
+    gateway_rtt: 'sensor.ping_powerwall3_round_trip_time_average',
+    gateway_loss: 'sensor.ping_powerwall3_perdita_di_pacchetti',
+    gateway_name: 'Gateway Powerwall',
+  },
+  zigbee: {
+    connection: 'binary_sensor.zigbee2mqtt_bridge_connection_state',
+    version: 'sensor.zigbee2mqtt_bridge_version',
+    coordinator: 'sensor.zigbee2mqtt_bridge_coordinator_version',
+    permit_join: 'switch.zigbee2mqtt_bridge_permit_join',
+    restart: 'button.zigbee2mqtt_bridge_restart',
+    log_level: 'select.zigbee2mqtt_bridge_log_level',
+  },
+  backup: {
+    state: 'sensor.backup_backup_manager_state',
+    last_ok: 'sensor.backup_last_successful_automatic_backup',
+    last_try: 'sensor.backup_last_attempted_automatic_backup',
+    next: 'sensor.backup_next_scheduled_automatic_backup',
+  },
+};
+
+// Soglie: superarle vale un avviso (−6 punti); i guasti veri (bridge caduto,
+// linea giu', backup fallito) valgono −20 e sono cablati nella logica.
+const SY_TH = {
+  cpu: 85, // %
+  cpu_temp: 80, // °C
+  memory: 85, // %
+  disk: 85, // % occupato
+  device_temp: 80, // °C su router/repeater
+  ping: 60, // ms
+  speed_ratio: 0.5, // frazione del link negoziato sotto cui la linea e' degradata
+  speed_min: null, // alternativa assoluta in Mbit/s quando il link non e' noto
+  packet_loss: 2, // %
+  unavailable: 50, // numero di entita' non disponibili
+  linkquality: 30, // LQI
+  battery: 20, // %
+  backup_age: 36, // ore dall'ultimo backup riuscito
+};
+
+class SystemCard extends HTMLElement {
+  setConfig(config) {
+    const c = config || {};
+    const sect = (k) => (c[k] === false ? null : Object.assign({}, SY_DEFAULTS[k], c[k] || {}));
+    this.config = {
+      title: c.title || 'Stato sistema',
+      host: sect('host'),
+      network: sect('network'),
+      zigbee: sect('zigbee'),
+      backup: sect('backup'),
+      batteries:
+        c.batteries === false
+          ? null
+          : Object.assign({ count: 8 }, c.batteries === true || c.batteries == null ? {} : c.batteries),
+      thresholds: Object.assign({}, SY_TH, c.thresholds || {}),
+    };
+    this._lastSig = null;
+    this._stats = {}; // entity_id -> serie oraria per le sparkline
+    this._statAt = 0;
+    this._repairs = null; // null = non ancora letto, [] = nessuna
+    this._repAt = 0;
+    this._notif = null; // dizionario id -> notifica, dalla sottoscrizione
+    this._scanAt = 0;
+    this._scan = { unav: 0, upd: 0, updName: '', lq: null, lqName: '', batt: [] };
+    if (!this._uid) {
+      SystemCard._seq = (SystemCard._seq || 0) + 1;
+      this._uid = SystemCard._seq;
+    }
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    this._maybeScan();
+    const sig =
+      mgddStatesSig(hass, this._allIds()) +
+      '|' + this._scan.unav + ';' + this._scan.upd + ';' + this._scan.lq +
+      ';' + (this._notif ? Object.keys(this._notif).length : -1) +
+      ';' + (this._repairs ? this._repairs.length : -1);
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
+    if (first) this._subscribeNotifications();
+    this._maybeFetchStats();
+    this._maybeFetchRepairs();
+  }
+
+  disconnectedCallback() {
+    if (this._unsubNotif) {
+      try {
+        this._unsubNotif();
+      } catch (e) {
+        /* la connessione puo' essere gia' caduta */
+      }
+      this._unsubNotif = null;
+    }
+  }
+
+  getCardSize() {
+    return 12;
+  }
+
+  _allIds() {
+    const ids = [];
+    ['host', 'network', 'zigbee', 'backup'].forEach((k) => {
+      const s = this.config[k];
+      if (!s) return;
+      Object.keys(s).forEach((kk) => {
+        const v = s[kk];
+        if (typeof v === 'string' && v.indexOf('.') > 0) ids.push(v);
+      });
+    });
+    const b = this.config.batteries;
+    if (b) {
+      if (b.button) ids.push(b.button);
+      if (b.result) ids.push(b.result);
+    }
+    return ids;
+  }
+
+  // ---------- lettura stati ----------
+
+  _st(id) {
+    return (id && this._hass && this._hass.states[id]) || null;
+  }
+
+  _num(id) {
+    const s = this._st(id);
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return isNaN(v) ? null : v;
+  }
+
+  _txt(id) {
+    const s = this._st(id);
+    if (!s || s.state === 'unknown' || s.state === 'unavailable') return null;
+    return s.state;
+  }
+
+  _ts(id) {
+    const s = this._txt(id);
+    if (!s) return null;
+    const t = new Date(s).getTime();
+    return isNaN(t) ? null : t;
+  }
+
+  _on(id) {
+    const s = this._st(id);
+    if (!s) return null;
+    if (s.state === 'unknown' || s.state === 'unavailable') return null;
+    return s.state === 'on';
+  }
+
+  // ---------- formattazione ----------
+
+  _pad(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  _n(v, dec) {
+    if (v == null) return '—';
+    return v.toFixed(dec == null ? 0 : dec).replace('.', ',');
+  }
+
+  _dur(ms) {
+    if (ms == null || ms < 0) return '—';
+    const m = Math.floor(ms / 60000);
+    const d = Math.floor(m / 1440);
+    const h = Math.floor((m % 1440) / 60);
+    if (d > 0) return d + ' gg ' + h + ' h';
+    if (h > 0) return h + ' h ' + this._pad(m % 60) + ' m';
+    return (m % 60) + ' m';
+  }
+
+  // "oggi 05:07", "domani 05:08", altrimenti "05/08 21:37".
+  _when(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts);
+    const now = new Date();
+    const same = (a, b) =>
+      a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    const hm = this._pad(d.getHours()) + ':' + this._pad(d.getMinutes());
+    if (same(d, now)) return 'oggi ' + hm;
+    if (same(d, new Date(now.getTime() + 86400000))) return 'domani ' + hm;
+    if (same(d, new Date(now.getTime() - 86400000))) return 'ieri ' + hm;
+    return this._pad(d.getDate()) + '/' + this._pad(d.getMonth() + 1) + ' ' + hm;
+  }
+
+  // ---------- scansione degli stati ----------
+
+  // Conteggi che nessun sensore espone: entita' non disponibili, aggiornamenti
+  // in attesa, batterie, qualita' del collegamento Zigbee peggiore. Sono ~1500
+  // stati da scorrere, quindi si rifa' al massimo ogni 30 s: senza il freno la
+  // scansione ripartirebbe a ogni cambio di un sensore di potenza.
+  _maybeScan() {
+    const now = Date.now();
+    if (this._scanAt && now - this._scanAt < 30000) return;
+    this._scanAt = now;
+    if (!this._hass) return;
+    const st = this._hass.states;
+    let unav = 0;
+    let upd = 0;
+    let updName = '';
+    let lq = null;
+    let lqName = '';
+    const batt = [];
+    Object.keys(st).forEach((id) => {
+      const s = st[id];
+      if (s.state === 'unavailable') {
+        unav++;
+        return;
+      }
+      if (id.indexOf('update.') === 0 && s.state === 'on') {
+        upd++;
+        // "Home Assistant Core Update" -> "Home Assistant Core": il suffisso e'
+        // sempre lo stesso e nella riga stretta mangia il nome vero.
+        if (!updName) {
+          updName = String((s.attributes && s.attributes.friendly_name) || id).replace(/\s*update\s*$/i, '');
+        }
+        return;
+      }
+      if (s.state === 'unknown') return;
+      if (id.indexOf('sensor.') === 0) {
+        const a = s.attributes || {};
+        if (/_linkquality$/.test(id)) {
+          const v = parseFloat(s.state);
+          if (!isNaN(v) && (lq === null || v < lq)) {
+            lq = v;
+            lqName = (a.friendly_name || id).replace(/\s*linkquality\s*$/i, '').trim();
+          }
+        } else if (a.device_class === 'battery') {
+          const v = parseFloat(s.state);
+          if (!isNaN(v)) batt.push({ entity: id, name: this._battName(a.friendly_name || id), val: v });
+        }
+      }
+    });
+    batt.sort((a, b) => a.val - b.val);
+    this._scan = { unav: unav, upd: upd, updName: updName, lq: lq, lqName: lqName, batt: batt };
+  }
+
+  // Stessa ripulitura dei nomi che faceva il template auto-entities della vista
+  // precedente: "Porta Cucina Battery" -> "Porta Cucina".
+  _battName(fn) {
+    let s = String(fn || '');
+    s = s.replace(/\s*watch\s*battery\s*level\s*$/i, '');
+    s = s.replace(/\s*watch\s*battery\s*$/i, '');
+    s = s.replace(/\s*battery\s*level\s*$/i, '');
+    s = s.replace(/\s*battery\s*$/i, '');
+    s = s.replace(/\s*batteria\s*$/i, '');
+    return s.replace(/\s+/g, ' ').trim();
+  }
+
+  // ---------- statistiche per le sparkline ----------
+
+  _sparkIds() {
+    const h = this.config.host || {};
+    return [h.cpu, h.memory, h.disk_use].filter(Boolean);
+  }
+
+  async _maybeFetchStats() {
+    const now = Date.now();
+    if (this._statAt && now - this._statAt < 5 * 60 * 1000) return;
+    this._statAt = now;
+    const ids = this._sparkIds();
+    if (!ids.length || !this._hass || !this._hass.callWS) return;
+    const req = {
+      type: 'recorder/statistics_during_period',
+      start_time: new Date(now - 24 * 3600 * 1000).toISOString(),
+      statistic_ids: ids,
+      period: 'hour',
+      types: ['mean'],
+    };
+    let res = null;
+    try {
+      res = await this._hass.callWS(req);
+    } catch (e) {
+      delete req.types; // versioni piu' vecchie non accettano `types`
+      try {
+        res = await this._hass.callWS(req);
+      } catch (e2) {
+        res = null;
+      }
+    }
+    if (!res) return;
+    const out = {};
+    ids.forEach((id) => {
+      const rows = res[id];
+      if (rows && rows.length > 1) out[id] = rows.map((r) => (r.mean == null ? 0 : r.mean));
+    });
+    this._stats = out;
+    this._render();
+  }
+
+  // ---------- riparazioni ----------
+
+  async _maybeFetchRepairs() {
+    const now = Date.now();
+    if (this._repAt && now - this._repAt < 5 * 60 * 1000) return;
+    this._repAt = now;
+    if (!this._hass || !this._hass.callWS) return;
+    try {
+      const res = await this._hass.callWS({ type: 'repairs/list_issues' });
+      const list = (res && res.issues) || [];
+      this._repairs = list.filter((i) => !i.ignored);
+      this._render();
+    } catch (e) {
+      this._repairs = null; // la riga resta muta invece di mentire
+    }
+  }
+
+  // ---------- notifiche persistenti ----------
+
+  // Non sono entita': l'unico modo e' la sottoscrizione websocket, che manda
+  // prima l'elenco corrente e poi le variazioni.
+  _subscribeNotifications() {
+    if (this._unsubNotif || !this._hass || !this._hass.connection) return;
+    let p = null;
+    try {
+      p = this._hass.connection.subscribeMessage(
+        (msg) => {
+          if (!msg) return;
+          if (msg.type === 'current' || !this._notif) this._notif = {};
+          const items = msg.notifications || {};
+          if (msg.type === 'removed') {
+            Object.keys(items).forEach((k) => delete this._notif[k]);
+          } else {
+            Object.keys(items).forEach((k) => {
+              this._notif[k] = items[k];
+            });
+          }
+          this._render();
+        },
+        { type: 'persistent_notification/subscribe' }
+      );
+    } catch (e) {
+      p = null;
+    }
+    if (p && p.then) {
+      p.then(
+        (un) => {
+          this._unsubNotif = un;
+        },
+        () => {
+          this._unsubNotif = null;
+        }
+      );
+    }
+  }
+
+  // ---------- valutazione ----------
+
+  // Ogni riga della card dichiara il proprio livello: 0 ok, 1 avviso, 2 guasto,
+  // 3 dato assente. Il punteggio e i led discendono da qui, non viceversa: cosi'
+  // non puo' capitare un semaforo verde con una riga rossa sotto.
+  _eval() {
+    const t = this.config.thresholds;
+    const sub = { host: 0, backup: 0, zigbee: 0, rete: 0, entita: 0, riparazioni: 0 };
+    let warn = 0;
+    let crit = 0;
+    const bump = (k, lv) => {
+      if (lv === 1) warn++;
+      if (lv === 2) crit++;
+      if (lv > sub[k] && lv < 3) sub[k] = lv;
+      return lv;
+    };
+    const L = {};
+
+    const h = this.config.host;
+    if (h) {
+      const cpu = this._num(h.cpu);
+      const tmp = this._num(h.cpu_temp);
+      const mem = this._num(h.memory);
+      const df = this._num(h.disk_free);
+      const du = this._num(h.disk_use);
+      L.cpu = bump('host', cpu == null ? 3 : cpu >= t.cpu ? 1 : 0);
+      L.temp = bump('host', tmp == null ? 3 : tmp >= t.cpu_temp ? 1 : 0);
+      L.mem = bump('host', mem == null ? 3 : mem >= t.memory ? 1 : 0);
+      const diskPct = df != null && du != null && df + du > 0 ? (du / (df + du)) * 100 : null;
+      L.diskPct = diskPct;
+      L.disk = bump('host', diskPct == null ? 3 : diskPct >= t.disk ? 1 : 0);
+    }
+
+    const b = this.config.backup;
+    if (b) {
+      const ok = this._ts(b.last_ok);
+      const age = ok ? (Date.now() - ok) / 3600000 : null;
+      L.backup = bump('backup', ok == null ? 3 : age > t.backup_age ? 2 : 0);
+      const state = this._txt(b.state);
+      if (state && state !== 'idle' && state !== 'completed') bump('backup', 1);
+      L.backupState = state;
+    }
+
+    const z = this.config.zigbee;
+    if (z) {
+      const conn = this._on(z.connection);
+      L.zconn = bump('zigbee', conn == null ? 3 : conn ? 0 : 2);
+      const log = this._txt(z.log_level);
+      // il livello debug non e' un guasto ma gonfia log e disco: vale un avviso
+      L.zlog = bump('zigbee', log == null ? 3 : log === 'debug' ? 1 : 0);
+      const join = this._on(z.permit_join);
+      L.zjoin = bump('zigbee', join ? 1 : 0);
+      L.zlq = bump('zigbee', this._scan.lq == null ? 3 : this._scan.lq < t.linkquality ? 1 : 0);
+    }
+
+    const n = this.config.network;
+    if (n) {
+      const conn = this._on(n.connected);
+      L.nconn = bump('rete', conn == null ? 3 : conn ? 0 : 2);
+      const sd = this._num(n.speed_down);
+      const link = this._num(n.link_down);
+      const floor = link != null ? link * t.speed_ratio : t.speed_min;
+      L.nspeed = bump('rete', sd == null ? 3 : floor != null && sd < floor ? 1 : 0);
+      const ping = this._num(n.speed_ping);
+      L.nping = bump('rete', ping == null ? 3 : ping >= t.ping ? 1 : 0);
+      const rt = this._num(n.router_temp);
+      const pt = this._num(n.repeater_temp);
+      L.ntemp = bump(
+        'rete',
+        rt == null && pt == null ? 3 : (rt || 0) >= t.device_temp || (pt || 0) >= t.device_temp ? 1 : 0
+      );
+      const gw = this._on(n.gateway_ping);
+      const loss = this._num(n.gateway_loss);
+      L.ngw = bump('rete', gw == null ? 3 : !gw ? 2 : loss != null && loss > t.packet_loss ? 1 : 0);
+    }
+
+    L.upd = bump('entita', this._scan.upd > 0 ? 1 : 0);
+    L.unav = bump('entita', this._scan.unav >= t.unavailable ? 1 : 0);
+    const nn = this._notif ? Object.keys(this._notif).length : null;
+    L.notif = bump('entita', nn == null ? 3 : nn > 0 ? 1 : 0);
+    L.notifCount = nn;
+    const rep = this._repairs;
+    L.rep = bump('riparazioni', rep == null ? 3 : rep.length ? 1 : 0);
+    L.repCount = rep == null ? null : rep.length;
+
+    const bt = this.config.batteries;
+    if (bt && this._scan.batt.length) {
+      const low = this._scan.batt.filter((x) => x.val <= t.battery);
+      L.battLow = low.length;
+      if (low.length) bump('entita', 1);
+    }
+
+    // Il punteggio conta le AREE, non le singole righe: pesare ogni riga
+    // portava un impianto sano a 52/100 solo perche' sette dettagli minori
+    // erano gialli, e il numero smetteva di corrispondere ai led accanto.
+    // Cosi' invece "3 aree da guardare" e tre led ambra dicono la stessa cosa.
+    let sw = 0;
+    let sc = 0;
+    Object.keys(sub).forEach((k) => {
+      if (sub[k] === 1) sw++;
+      if (sub[k] === 2) sc++;
+    });
+    const score = Math.max(0, Math.min(100, 100 - sw * 8 - sc * 25));
+    return { L: L, sub: sub, warn: warn, crit: crit, areasWarn: sw, areasCrit: sc, score: score };
+  }
+
+  // ---------- pezzi grafici ----------
+
+  _ring(pct, color, size, sw) {
+    const r = (size - sw) / 2;
+    const c = 2 * Math.PI * r;
+    const on = Math.max(0, Math.min(100, pct == null ? 0 : pct)) / 100;
+    return (
+      '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '" aria-hidden="true">' +
+      '<circle cx="' + size / 2 + '" cy="' + size / 2 + '" r="' + r + '" fill="none" ' +
+      'stroke="rgba(255,255,255,.09)" stroke-width="' + sw + '"/>' +
+      '<circle cx="' + size / 2 + '" cy="' + size / 2 + '" r="' + r + '" fill="none" stroke="' + color + '" ' +
+      'stroke-width="' + sw + '" stroke-linecap="round" stroke-dasharray="' + (c * on).toFixed(1) + ' ' +
+      (c * (1 - on)).toFixed(1) + '" transform="rotate(-90 ' + size / 2 + ' ' + size / 2 + ')"/></svg>'
+    );
+  }
+
+  _spark(id, color) {
+    const d = this._stats[id];
+    if (!d || d.length < 2) return '<div class="sy-spk"></div>';
+    let min = d[0];
+    let max = d[0];
+    d.forEach((v) => {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    });
+    const span = max - min || 1;
+    const W = 200;
+    const H = 26;
+    const pts = d
+      .map((v, i) => {
+        const x = (i / (d.length - 1)) * W;
+        const y = H - 3 - ((v - min) / span) * (H - 7);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      })
+      .join(' ');
+    return (
+      '<svg class="sy-spk" width="100%" height="26" viewBox="0 0 200 26" preserveAspectRatio="none" ' +
+      'aria-hidden="true"><polyline fill="none" stroke="' + color + '" stroke-width="1.4" opacity=".85" ' +
+      'points="' + pts + '"/></svg>'
+    );
+  }
+
+  _col(lv) {
+    return lv === 2 ? 'var(--sy-r)' : lv === 1 ? 'var(--sy-w)' : lv === 3 ? 'var(--sy-t2)' : 'var(--sy-g)';
+  }
+
+  _dot(lv) {
+    const k = lv === 2 ? ' sy-r' : lv === 1 ? ' sy-w' : lv === 3 ? ' sy-n' : '';
+    return '<i class="sy-dot' + k + '"></i>';
+  }
+
+  // Riga di un pannello: pallino, testo, valore a destra. `more` rende la riga
+  // cliccabile e apre la scheda dell'entita'.
+  _ln(lv, label, value, more) {
+    const cls = lv === 2 ? ' class="sy-r"' : lv === 1 ? ' class="sy-w"' : lv === 0 ? ' class="sy-g"' : '';
+    return (
+      '<div class="sy-ln"' + (more ? ' data-more="' + more + '"' : '') + '>' + this._dot(lv) +
+      '<span>' + label + '</span><u' + cls + '>' + value + '</u></div>'
+    );
+  }
+
+  // ---------- disegno ----------
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+  }
+
+  _html() {
+    const e = this._eval();
+    return (
+      '<div class="sy">' +
+      this._bar(e) +
+      this._gauges(e) +
+      this._panels(e) +
+      this._batteries(e) +
+      '</div>'
+    );
+  }
+
+  _bar(e) {
+    const col = e.score >= 80 ? 'var(--sy-g)' : e.score >= 50 ? 'var(--sy-w)' : 'var(--sy-r)';
+    const parts = [];
+    if (e.areasCrit) parts.push(e.areasCrit + (e.areasCrit === 1 ? ' area in guasto' : ' aree in guasto'));
+    if (e.areasWarn) parts.push(e.areasWarn + (e.areasWarn === 1 ? ' area da guardare' : ' aree da guardare'));
+    if (!parts.length) parts.push('tutto in regola');
+    if (e.warn + e.crit) parts.push(e.warn + e.crit + (e.warn + e.crit === 1 ? ' segnalazione' : ' segnalazioni'));
+    const labels = { host: 'Host', backup: 'Backup', zigbee: 'Zigbee', rete: 'Rete', entita: 'Entità', riparazioni: 'Riparazioni' };
+    const leds = Object.keys(labels)
+      .map((k) => {
+        const lv = k === 'riparazioni' && this._repairs == null ? 3 : e.sub[k];
+        return '<div class="sy-led">' + this._dot(lv) + labels[k] + '</div>';
+      })
+      .join('');
+    return (
+      '<div class="sy-bar"><div class="sy-score">' +
+      this._ring(e.score, col, 54, 5) +
+      '<div><div class="sy-lab">' + this.config.title + '</div>' +
+      '<div class="sy-num" style="color:' + col + '">' + e.score +
+      '<span class="sy-num-max"> / 100</span></div>' +
+      '<div class="sy-sub">' + parts.join(', ') + ' · Core ' + (this._hass.config.version || '—') + '</div>' +
+      '</div></div><div class="sy-leds">' + leds + '</div></div>'
+    );
+  }
+
+  _gauges(e) {
+    const h = this.config.host;
+    if (!h) return '';
+    const L = e.L;
+    const cell = (label, lv, badge, ring, big, small, extra) =>
+      '<div class="sy-cell"><div class="sy-cl">' + label +
+      '<u style="color:' + this._col(lv) + '">' + badge + '</u></div>' +
+      '<div class="sy-gg">' + ring + '<div><div class="sy-gv">' + big + '</div>' +
+      '<div class="sy-gs">' + small + '</div></div></div>' + (extra || '') + '</div>';
+
+    const cpu = this._num(h.cpu);
+    const tmp = this._num(h.cpu_temp);
+    const mem = this._num(h.memory);
+    const mf = this._num(h.memory_free);
+    const mu = this._num(h.memory_used);
+    const df = this._num(h.disk_free);
+    const du = this._num(h.disk_use);
+    const boot = this._ts(h.last_boot);
+
+    const c1 = cell(
+      'Processore',
+      L.cpu,
+      cpu == null ? '—' : this._n(cpu) + '%',
+      this._ring(cpu, this._col(L.cpu), 46, 4),
+      tmp == null ? '—' : this._n(tmp) + '<small>°C</small>',
+      cpu == null ? 'nessun dato' : 'carico attuale ' + this._n(cpu) + '%',
+      this._spark(h.cpu, this._col(L.cpu))
+    );
+    const c2 = cell(
+      'Memoria',
+      L.mem,
+      mem == null ? '—' : this._n(mem, 1) + '%',
+      this._ring(mem, this._col(L.mem), 46, 4),
+      mu == null ? '—' : this._n(mu, 1) + '<small>GB</small>',
+      mf == null ? 'nessun dato' : this._n(mf, 1) + ' GB liberi di ' + this._n((mf || 0) + (mu || 0), 1),
+      this._spark(h.memory, this._col(L.mem))
+    );
+    const c3 = cell(
+      'Disco /',
+      L.disk,
+      L.diskPct == null ? '—' : this._n(L.diskPct, 1) + '%',
+      this._ring(L.diskPct, this._col(L.disk), 46, 4),
+      df == null ? '—' : this._n(df, 1) + '<small>GB</small>',
+      du == null ? 'nessun dato' : 'liberi · ' + this._n(du, 1) + ' GB usati',
+      this._spark(h.disk_use, this._col(L.disk))
+    );
+    // L'anello dell'uptime e' tarato su una settimana: e' un colpo d'occhio su
+    // "quanto e' passato dall'ultimo riavvio", non una percentuale di qualcosa.
+    const upPct = boot ? Math.min(100, ((Date.now() - boot) / (7 * 86400000)) * 100) : 0;
+    const c4 =
+      '<div class="sy-cell"><div class="sy-cl">Attività<u>' +
+      (boot ? this._dur(Date.now() - boot) : '—') + '</u></div>' +
+      '<div class="sy-gg">' + this._ring(upPct, 'var(--sy-b)', 46, 4) +
+      '<div><div class="sy-gv sy-gv-s">' + (this._hass.config.version || '—') + '</div>' +
+      '<div class="sy-gs">riavvio ' + this._when(boot) + '</div></div></div>' +
+      '<div class="sy-btns">' +
+      '<button class="sy-btn" data-svc="homeassistant.reload_all" data-ask="Ricaricare tutta la configurazione YAML?">Ricarica YAML</button>' +
+      '<button class="sy-btn sy-btnw" data-svc="homeassistant.restart" data-ask="Riavviare Home Assistant?">Riavvia HA</button>' +
+      '</div></div>';
+
+    return '<div class="sy-row">' + c1 + c2 + c3 + c4 + '</div>';
+  }
+
+  _panels(e) {
+    const cols = [this._panelNet(e), this._panelZig(e), this._panelHealth(e)].filter(Boolean);
+    if (!cols.length) return '';
+    return '<div class="sy-cols sy-cols-' + cols.length + '">' + cols.join('') + '</div>';
+  }
+
+  _panelNet(e) {
+    const n = this.config.network;
+    if (!n) return '';
+    const L = e.L;
+    const lv = e.sub.rete;
+    const rows = [];
+    const upt = this._ts(n.uptime);
+    rows.push(
+      this._ln(
+        L.nconn,
+        'Collegamento a Internet',
+        L.nconn === 2 ? 'CADUTO' : L.nconn === 3 ? '—' : upt ? this._dur(Date.now() - upt) : 'attivo',
+        n.connected
+      )
+    );
+    const ip = this._txt(n.ip);
+    if (ip) rows.push(this._ln(0, 'IP pubblico', ip, n.ip));
+    const ld = this._num(n.link_down);
+    const lu = this._num(n.link_up);
+    if (ld != null || lu != null) {
+      rows.push(this._ln(0, 'Link negoziato', this._n(ld) + ' / ' + this._n(lu) + ' Mbit', n.link_down));
+    }
+    const sd = this._num(n.speed_down);
+    const su = this._num(n.speed_up);
+    const pg = this._num(n.speed_ping);
+    if (sd != null || su != null) {
+      const worst = Math.max(L.nspeed === 3 ? 0 : L.nspeed, L.nping === 3 ? 0 : L.nping);
+      rows.push(
+        this._ln(worst, 'Speedtest', this._n(sd, 1) + ' ↓ · ' + this._n(su, 1) + ' ↑ · ' + this._n(pg) + ' ms', n.speed_down)
+      );
+    }
+    const rd = this._num(n.rate_down);
+    const ru = this._num(n.rate_up);
+    if (rd != null || ru != null) {
+      rows.push(this._ln(0, 'Traffico ora', this._n(rd, 1) + ' ↓ · ' + this._n(ru, 1) + ' ↑ Mbit/s', n.rate_down));
+    }
+    const gw = this._on(n.gateway_ping);
+    const rtt = this._num(n.gateway_rtt);
+    const loss = this._num(n.gateway_loss);
+    if (gw !== null) {
+      rows.push(
+        this._ln(
+          L.ngw,
+          n.gateway_name || 'Gateway',
+          gw ? this._n(rtt) + ' ms · ' + this._n(loss, 1) + '% loss' : 'NON RISPONDE',
+          n.gateway_ping
+        )
+      );
+    }
+    const rt = this._num(n.router_temp);
+    const pt = this._num(n.repeater_temp);
+    const th = this.config.thresholds.device_temp;
+    if (rt != null) rows.push(this._ln(rt >= th ? 1 : 0, 'Router — CPU', this._n(rt) + ' °C', n.router_temp));
+    if (pt != null) {
+      rows.push(this._ln(pt >= th ? 1 : 0, (n.repeater_name || 'Repeater') + ' — CPU', this._n(pt) + ' °C', n.repeater_temp));
+    }
+    const badge = lv === 2 ? 'Caduta' : lv === 1 ? 'Degradata' : 'In linea';
+    return (
+      '<div class="sy-cell"><div class="sy-cl">Rete e uplink<u style="color:' + this._col(lv) + '">' + badge + '</u></div>' +
+      '<div class="sy-lns">' + rows.join('') + '</div></div>'
+    );
+  }
+
+  _panelZig(e) {
+    const z = this.config.zigbee;
+    if (!z) return '';
+    const L = e.L;
+    const lv = e.sub.zigbee;
+    const rows = [];
+    rows.push(this._ln(L.zconn, 'Bridge', L.zconn === 0 ? 'Connesso' : L.zconn === 2 ? 'DISCONNESSO' : '—', z.connection));
+    const v = this._txt(z.version);
+    const co = this._txt(z.coordinator);
+    if (v || co) rows.push(this._ln(0, 'Versione · coordinatore', (v || '—') + ' · ' + (co || '—'), z.version));
+    const join = this._on(z.permit_join);
+    if (join !== null) rows.push(this._ln(join ? 1 : 0, 'Permit join', join ? 'Aperto' : 'Chiuso', z.permit_join));
+    const log = this._txt(z.log_level);
+    if (log) rows.push(this._ln(L.zlog, 'Livello log', log, z.log_level));
+    if (this._scan.lq != null) {
+      rows.push(this._ln(L.zlq, 'LQI peggiore', this._scan.lqName + ' · ' + this._n(this._scan.lq), null));
+    }
+    const btns = [];
+    if (z.permit_join) {
+      // aprire la rete all'accoppiamento merita una conferma; richiuderla no
+      btns.push(
+        '<button class="sy-btn" data-toggle="' + z.permit_join + '"' +
+        (join ? '' : ' data-ask="Aprire la rete Zigbee all\'accoppiamento?"') + '>' +
+        (join ? 'Chiudi join' : 'Permit join') + '</button>'
+      );
+    }
+    if (z.log_level && log === 'debug') {
+      btns.push('<button class="sy-btn" data-select="' + z.log_level + '" data-opt="info">Log → info</button>');
+    }
+    if (z.restart) {
+      btns.push('<button class="sy-btn sy-btnw" data-press="' + z.restart + '" data-ask="Riavviare il bridge Zigbee2MQTT?">Riavvia bridge</button>');
+    }
+    const badge = lv === 2 ? 'Giù' : lv === 1 ? '1 nota' : 'Regolare';
+    return (
+      '<div class="sy-cell"><div class="sy-cl">Zigbee2MQTT<u style="color:' + this._col(lv) + '">' + badge + '</u></div>' +
+      '<div class="sy-lns">' + rows.join('') + '</div>' +
+      (btns.length ? '<div class="sy-btns">' + btns.join('') + '</div>' : '') +
+      '</div>'
+    );
+  }
+
+  _panelHealth(e) {
+    const L = e.L;
+    const b = this.config.backup;
+    const rows = [];
+    if (b) {
+      const ok = this._ts(b.last_ok);
+      rows.push(this._ln(L.backup, 'Ultimo backup riuscito', this._when(ok), b.last_ok));
+      const nx = this._ts(b.next);
+      if (nx) rows.push(this._ln(0, 'Prossimo backup', this._when(nx), b.next));
+      const stt = this._txt(b.state);
+      if (stt) rows.push(this._ln(stt === 'idle' || stt === 'completed' ? 0 : 1, 'Manager backup', stt, b.state));
+    }
+    const upd = this._scan.upd;
+    rows.push(
+      this._ln(L.upd, 'Aggiornamenti in attesa', upd ? upd + (upd === 1 ? ' · ' + this._scan.updName : ' pacchetti') : 'nessuno', null)
+    );
+    rows.push(this._ln(L.unav, 'Entità non disponibili', String(this._scan.unav), null));
+    rows.push(this._ln(L.notif, 'Notifiche aperte', L.notifCount == null ? '—' : String(L.notifCount), null));
+    rows.push(this._ln(L.rep, 'Riparazioni', L.repCount == null ? '—' : L.repCount ? String(L.repCount) : 'nessuna', null));
+    const lv = Math.max(e.sub.backup, e.sub.entita, e.sub.riparazioni);
+    const badge = lv === 2 ? 'Da vedere subito' : lv === 1 ? 'Da guardare' : 'A posto';
+    return (
+      '<div class="sy-cell"><div class="sy-cl">Backup e integrità<u style="color:' + this._col(lv) + '">' + badge + '</u></div>' +
+      '<div class="sy-lns">' + rows.join('') + '</div></div>'
+    );
+  }
+
+  _batteries() {
+    const c = this.config.batteries;
+    if (!c) return '';
+    const t = this.config.thresholds.battery;
+    const list = this._scan.batt.slice(0, c.count || 8);
+    if (!list.length) return '';
+    const tiles = list
+      .map((x) => {
+        const k = x.val <= t ? ' sy-bt-r' : x.val <= t * 1.75 ? ' sy-bt-w' : '';
+        return (
+          '<div class="sy-bt' + k + '" data-more="' + x.entity + '">' +
+          '<span class="sy-btn2">' + x.name + '</span>' +
+          '<span class="sy-btv">' + this._n(x.val) + '<small>%</small></span></div>'
+        );
+      })
+      .join('');
+    const low = this._scan.batt.filter((x) => x.val <= t).length;
+    const res = c.result ? this._txt(c.result) : null;
+    const btn = c.button
+      ? '<button class="sy-btn" data-press="' + c.button + '">Verifica adesso</button>'
+      : '';
+    return (
+      '<div class="sy-cell sy-full"><div class="sy-cl">Batterie' +
+      '<u style="color:' + (low ? 'var(--sy-w)' : 'var(--sy-g)') + '">' +
+      (low ? low + ' sotto il ' + t + '%' : 'tutte cariche') + '</u></div>' +
+      '<div class="sy-bts">' + tiles + '</div>' +
+      (res ? '<div class="sy-btr">' + res + '</div>' : '') +
+      (btn ? '<div class="sy-btns">' + btn + '</div>' : '') +
+      '</div>'
+    );
+  }
+
+  // ---------- interazione ----------
+
+  _wire() {
+    const ask = (el) => {
+      const q = el.getAttribute('data-ask');
+      return !q || window.confirm(q);
+    };
+    this.querySelectorAll('[data-svc]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!this._hass || !ask(el)) return;
+        const p = (el.getAttribute('data-svc') || '').split('.');
+        if (p.length === 2) this._hass.callService(p[0], p[1], {});
+      });
+    });
+    this.querySelectorAll('[data-toggle]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const id = el.getAttribute('data-toggle');
+        if (id && this._hass && ask(el)) this._hass.callService('switch', 'toggle', { entity_id: id });
+      });
+    });
+    this.querySelectorAll('[data-press]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const id = el.getAttribute('data-press');
+        if (!id || !this._hass || !ask(el)) return;
+        this._hass.callService(id.split('.')[0], 'press', { entity_id: id });
+      });
+    });
+    this.querySelectorAll('[data-select]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const id = el.getAttribute('data-select');
+        const opt = el.getAttribute('data-opt');
+        if (id && opt && this._hass) this._hass.callService('select', 'select_option', { entity_id: id, option: opt });
+      });
+    });
+    this.querySelectorAll('[data-more]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const id = el.getAttribute('data-more');
+        if (!id) return;
+        this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+      });
+    });
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      // Palette fissa: la card e' scura in entrambi i temi (vedi nota in testa).
+      '.sy{container-type:inline-size;border-radius:16px;padding:16px;font-size:13px;' +
+      '--sy-g:#2FE39B;--sy-w:#FFB020;--sy-r:#FF5C5C;--sy-b:#5AA9FF;' +
+      '--sy-t1:#dfe6ee;--sy-t2:#5f6b7a;--sy-t3:#96a2b0;--sy-hair:rgba(255,255,255,.09);' +
+      'background:#06070a;color:var(--sy-t1);border:1px solid rgba(255,255,255,.06);' +
+      'background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),' +
+      'linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:36px 36px;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
+      '.sy *{box-sizing:border-box;}' +
+      '.sy svg{display:block;}' +
+      '.sy button{font:inherit;cursor:pointer;}' +
+
+      // barra di testa
+      '.sy-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;border:1px solid var(--sy-hair);' +
+      'border-radius:14px;padding:14px 16px;background:rgba(255,255,255,.028);}' +
+      '.sy-score{display:flex;align-items:center;gap:13px;}' +
+      '.sy-num{font-size:34px;font-weight:300;letter-spacing:-1.6px;line-height:1;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.sy-num-max{color:var(--sy-t2);font-size:15px;}' +
+      '.sy-lab{font-size:9.5px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;color:var(--sy-t2);}' +
+      '.sy-sub{font-size:11px;color:var(--sy-t3);margin-top:3px;}' +
+      '.sy-leds{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap;}' +
+      '.sy-led{display:flex;align-items:center;gap:7px;border:1px solid var(--sy-hair);border-radius:9px;' +
+      'padding:7px 10px;font-size:9.5px;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;' +
+      'color:var(--sy-t3);}' +
+      '.sy-dot{width:6px;height:6px;border-radius:99px;flex:none;background:var(--sy-g);color:var(--sy-g);' +
+      'box-shadow:0 0 7px currentColor;}' +
+      '.sy-dot.sy-w{background:var(--sy-w);color:var(--sy-w);}' +
+      '.sy-dot.sy-r{background:var(--sy-r);color:var(--sy-r);}' +
+      '.sy-dot.sy-n{background:var(--sy-t2);color:var(--sy-t2);box-shadow:none;}' +
+
+      // griglie: un filetto da 1px fra le celle, ottenuto col gap sul fondo
+      '.sy-row,.sy-cols{display:grid;gap:1px;margin-top:10px;background:var(--sy-hair);' +
+      'border:1px solid var(--sy-hair);border-radius:14px;overflow:hidden;}' +
+      '.sy-row{grid-template-columns:repeat(4,minmax(0,1fr));}' +
+      '.sy-cols-3{grid-template-columns:1.15fr 1fr 1fr;}' +
+      '.sy-cols-2{grid-template-columns:repeat(2,minmax(0,1fr));}' +
+      '.sy-cols-1{grid-template-columns:1fr;}' +
+      '.sy-cell{background:#080a0e;padding:14px 15px 15px;min-width:0;}' +
+      '.sy-full{margin-top:10px;border:1px solid var(--sy-hair);border-radius:14px;}' +
+      '.sy-cl{font-size:9px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;color:var(--sy-t2);' +
+      'display:flex;justify-content:space-between;gap:8px;}' +
+      '.sy-cl u{text-decoration:none;color:var(--sy-g);}' +
+
+      // quadranti
+      '.sy-gg{display:flex;align-items:center;gap:13px;margin-top:11px;}' +
+      '.sy-gv{font-size:26px;font-weight:300;letter-spacing:-1.2px;line-height:1;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.sy-gv-s{font-size:19px;letter-spacing:-.7px;}' +
+      '.sy-gv small{font-size:11px;color:var(--sy-t2);letter-spacing:0;margin-left:3px;}' +
+      '.sy-gs{font-size:10.5px;color:var(--sy-t3);margin-top:5px;font-variant-numeric:tabular-nums;}' +
+      '.sy-spk{margin-top:10px;display:block;}' +
+
+      // righe dei pannelli
+      '.sy-lns{margin-top:8px;}' +
+      '.sy-ln{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:11.5px;' +
+      'border-bottom:1px solid rgba(255,255,255,.07);}' +
+      '.sy-ln:last-child{border-bottom:none;}' +
+      '.sy-ln[data-more]{cursor:pointer;}' +
+      '.sy-ln span{flex:1;color:var(--sy-t3);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.sy-ln u{text-decoration:none;font-size:10.5px;letter-spacing:.5px;color:var(--sy-t2);' +
+      // il valore non si comprime mai: a stringersi e' l'etichetta a sinistra,
+      // che ha gia' i puntini di sospensione
+      'font-variant-numeric:tabular-nums;text-transform:uppercase;white-space:nowrap;flex:none;}' +
+      '.sy-ln u.sy-g{color:var(--sy-g);}.sy-ln u.sy-w{color:var(--sy-w);}.sy-ln u.sy-r{color:var(--sy-r);}' +
+
+      // comandi
+      '.sy-btns{display:flex;gap:6px;margin-top:11px;flex-wrap:wrap;}' +
+      '.sy-btn{border:1px solid rgba(255,255,255,.11);background:rgba(255,255,255,.03);color:var(--sy-t3);' +
+      'border-radius:8px;padding:7px 10px;font-size:9.5px;font-weight:700;letter-spacing:1.1px;' +
+      'text-transform:uppercase;transition:border-color .15s,color .15s;}' +
+      '.sy-btn:hover{border-color:color-mix(in srgb,var(--sy-g) 45%,transparent);color:var(--sy-g);}' +
+      '.sy-btnw:hover{border-color:color-mix(in srgb,var(--sy-w) 50%,transparent);color:var(--sy-w);}' +
+      '.sy-btn:focus-visible{outline:2px solid var(--sy-g);outline-offset:2px;}' +
+
+      // batterie
+      '.sy-bts{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;margin-top:11px;}' +
+      '.sy-bt{border:1px solid var(--sy-hair);border-radius:10px;padding:9px 10px;cursor:pointer;' +
+      'display:flex;flex-direction:column;gap:5px;background:rgba(255,255,255,.02);}' +
+      '.sy-bt:hover{background:rgba(255,255,255,.05);}' +
+      '.sy-btn2{font-size:10px;color:var(--sy-t3);line-height:1.25;overflow:hidden;text-overflow:ellipsis;' +
+      'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}' +
+      '.sy-btv{font-size:17px;font-weight:300;letter-spacing:-.6px;color:var(--sy-g);' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.sy-btv small{font-size:10px;color:var(--sy-t2);margin-left:2px;}' +
+      '.sy-bt-w .sy-btv{color:var(--sy-w);}.sy-bt-r .sy-btv{color:var(--sy-r);}' +
+      '.sy-bt-r{border-color:color-mix(in srgb,var(--sy-r) 40%,transparent);}' +
+      '.sy-btr{font-size:11px;color:var(--sy-t3);margin-top:10px;white-space:pre-wrap;line-height:1.5;}' +
+
+      // due passaggi, come nella doors-card: prima si stringe la griglia, poi
+      // si passa a una colonna sola per iPhone
+      '@container (max-width:1000px){' +
+      '.sy-row{grid-template-columns:repeat(2,minmax(0,1fr));}' +
+      '.sy-cols-3{grid-template-columns:repeat(2,minmax(0,1fr));}' +
+      // la terza colonna occupa la riga intera invece di lasciare un buco
+      '.sy-cols-3>.sy-cell:nth-child(3){grid-column:span 2;}' +
+      '.sy-bts{grid-template-columns:repeat(4,minmax(0,1fr));}' +
+      '}' +
+      '@container (max-width:720px){' +
+      '.sy{padding:12px;}' +
+      '.sy-row,.sy-cols-2,.sy-cols-3{grid-template-columns:1fr;}' +
+      // annulla lo span di riga intera del passaggio precedente: su una sola
+      // colonna creerebbe una colonna implicita e schiaccerebbe le altre celle
+      '.sy-cols-3>.sy-cell:nth-child(3){grid-column:auto;}' +
+      '.sy-bts{grid-template-columns:repeat(2,minmax(0,1fr));}' +
+      '.sy-leds{width:100%;margin-left:0;order:3;overflow-x:auto;flex-wrap:nowrap;' +
+      'padding-bottom:3px;scrollbar-width:none;}' +
+      '.sy-leds::-webkit-scrollbar{display:none;}' +
+      '.sy-led{flex:none;height:38px;border-radius:99px;padding:0 13px;font-size:11px;' +
+      'font-weight:600;letter-spacing:0;text-transform:none;}' +
+      '.sy-btn{height:40px;border-radius:99px;padding:0 15px;font-size:11.5px;font-weight:600;' +
+      'letter-spacing:0;text-transform:none;display:flex;align-items:center;}' +
+      '.sy-ln{padding:8px 0;font-size:12.5px;}' +
+      '.sy-ln u{font-size:11.5px;}' +
+      '}' +
+      '</style>'
+    );
+  }
+}
+
+SystemCard.getStubConfig = function () {
+  return { title: 'Stato sistema' };
+};
+
+customElements.define('casa-mgdd-system-card', SystemCard);
+window.customCards.push({
+  type: 'casa-mgdd-system-card',
+  name: 'Casa MGDD Stato sistema',
+  description:
+    'Quadro di monitoraggio di Home Assistant: punteggio, risorse host, rete, Zigbee2MQTT, backup, integrità e batterie. Config via YAML, tutte le entità hanno un valore predefinito.',
 });
