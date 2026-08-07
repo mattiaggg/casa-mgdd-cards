@@ -9,8 +9,35 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card.
  *
- * Version: 1.81.0
+ * Version: 1.82.0
  */
+
+// Inter, chiesto una volta sola per pagina.
+//
+// Prima stava come `@import` dentro il foglio di stile di SETTE card
+// (temperature-bento, temperature-row, weather-alert, energy-power,
+// energy-controls, energy-history). Poiche' in questa libreria non si usa mai
+// lo shadow DOM, quell'import valeva per l'intera pagina: le altre card
+// prendevano Inter solo se sulla vista aperta c'era per caso una di quelle
+// sette, altrimenti ripiegavano su Segoe UI. La stessa card cambiava carattere
+// a seconda della vista in cui la si metteva.
+//
+// Si chiede l'asse variabile 100..900 e non i quattro pesi statici di prima:
+// la libreria usa 545, 580, 620, 640, 645, 650, 660, 670, 680... che con le
+// facce statiche venivano arrotondate al peso piu' vicino.
+//
+// NB: e' l'unica cosa che questa libreria prende da internet. Senza rete il
+// testo resta leggibile (`display=swap` e la catena di ripiego), ma cambia
+// carattere.
+function mgddFont() {
+  if (typeof document === 'undefined' || document.getElementById('mgdd-inter')) return;
+  const l = document.createElement('link');
+  l.id = 'mgdd-inter';
+  l.rel = 'stylesheet';
+  l.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap';
+  (document.head || document.documentElement).appendChild(l);
+}
+mgddFont();
 
 // Firma degli stati (state + last_updated) delle entità indicate.
 // Evita di ricostruire il DOM a ogni cambio di hass globale: senza, qualunque
@@ -434,7 +461,6 @@ class TemperatureBentoCard extends HTMLElement {
 
     this.innerHTML =
       '<style>' +
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
       ':host{display:block;}' +
       // colonne dinamiche in base alla larghezza REALE della card (container query): 1 -> 2 -> 3
       // il container-type è impostato via JS sull'host (light DOM: :host non si applica)
@@ -503,7 +529,6 @@ class TemperatureBentoCard extends HTMLElement {
 
     this.innerHTML =
       '<style>' +
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
       ':host{display:block;}' +
       '.wrap{--ha-card-box-shadow:none;box-shadow:none;border:none;background:transparent;padding:0;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
       '.top2{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:stretch;}' +
@@ -968,7 +993,6 @@ class TemperatureRowCard extends HTMLElement {
 
     this.innerHTML =
       '<style>' +
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
       ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
       '.wrap{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:6px 16px;}' +
       '.row{display:flex;align-items:center;gap:14px;padding:10px 0;cursor:pointer;}' +
@@ -1270,7 +1294,6 @@ class WeatherAlertCard extends HTMLElement {
 
     this.innerHTML =
       '<style>' +
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
       ':host{display:block;}' +
       '.wrap{font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
       '.banners{display:flex;flex-direction:column;gap:8px;margin-bottom:' + (banners.length ? '12px' : '0') + ';}' +
@@ -3597,7 +3620,6 @@ class EnergyPowerCard extends HTMLElement {
   _styles() {
     return (
       '<style>' +
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
       ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
       '.hero{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:18px;padding:20px;margin-bottom:10px;}' +
       '.hero-top{display:flex;justify-content:space-between;align-items:baseline;}' +
@@ -4289,7 +4311,6 @@ class EnergyControlsCard extends HTMLElement {
   _styles() {
     return (
       '<style>' +
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
       ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
       '.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}' +
       '.row{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:16px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;}' +
@@ -4558,7 +4579,6 @@ class EnergyHistoryCard extends HTMLElement {
   _styles() {
     return (
       '<style>' +
-      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');" +
       ':host{display:block;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:transparent!important;border:none!important;box-shadow:none!important;}' +
       '.flat{--ha-card-box-shadow:none;box-shadow:none;border:none;background:transparent;border-radius:0;padding:0;display:block;}' +
       // NB: niente selettore generico ".card" — collide con i wrapper .card dello shadow root della sezione (le card sono in light DOM)
@@ -5493,6 +5513,7 @@ class EnergyFlowCard extends HTMLElement {
       '<style>' +
       ':host{display:block}' +
       '.ef-card{--ef-rete:#38BDF8;--ef-sole:#F5B301;--ef-batt:#22E39A;--ef-casa:#8B7BFF;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
       'position:relative;border-radius:18px;padding:10px 14px;overflow:hidden;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));}' +
       '.ef-stage{position:relative;width:100%;aspect-ratio:2.6/1;}' +
@@ -5755,6 +5776,7 @@ class EnergySummaryCard extends HTMLElement {
       '<style>' +
       ':host{display:block;}' +
       '.es-card{background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
       'border:1px solid var(--divider-color,rgba(0,0,0,.08));border-radius:var(--ha-card-border-radius,18px);' +
       'padding:10px 12px;box-sizing:border-box;}' +
       // auto-fit: quattro colonne a larghezza piena, due su mezza colonna, una
