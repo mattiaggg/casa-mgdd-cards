@@ -7,7 +7,7 @@
  * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
  * casa-mgdd-sensors-card.
  *
- * Version: 1.76.0
+ * Version: 1.77.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -5859,7 +5859,12 @@ class DoorsCard extends HTMLElement {
     const hours = this.config.history_hours || 48;
     const start = new Date(now - hours * 3600 * 1000).toISOString();
     try {
-      const path = 'history/period/' + start + '?filter_entity_id=' + ids.join(',') + '&minimal_response';
+      // `end_time` e' obbligatorio, non un di piu': senza, l'endpoint REST non
+      // arriva a adesso ma si ferma a UN GIORNO dopo `start`. Chiedendo 48 ore
+      // si riceveva la giornata di ieri l'altro, e l'ultimo evento mostrato era
+      // quello di allora invece dell'ultimo vero.
+      const path = 'history/period/' + start + '?end_time=' + encodeURIComponent(new Date(now).toISOString()) +
+        '&filter_entity_id=' + ids.join(',') + '&minimal_response&no_attributes';
       const data = await this._hass.callApi('GET', path);
       const out = {};
       (data || []).forEach((arr) => {
@@ -7768,7 +7773,14 @@ class MgddCompactCard extends HTMLElement {
     const hours = this._hours();
     const start = new Date(now - hours * 3600 * 1000).toISOString();
     try {
-      const path = 'history/period/' + start + '?filter_entity_id=' + ids.join(',') + '&minimal_response';
+      // `end_time` e' obbligatorio, non un di piu': senza, l'endpoint REST non
+      // arriva a adesso ma si ferma a UN GIORNO dopo `start` (e' il default
+      // documentato). Chiedendo sette giorni si riceveva la sola giornata del
+      // 31 luglio, e il portone del garage risultava "aperto dal 1° agosto".
+      // `no_attributes` alleggerisce la query: con minimal_response gli
+      // attributi non vengono comunque letti.
+      const path = 'history/period/' + start + '?end_time=' + encodeURIComponent(new Date(now).toISOString()) +
+        '&filter_entity_id=' + ids.join(',') + '&minimal_response&no_attributes';
       const data = await this._hass.callApi('GET', path);
       const out = {};
       (data || []).forEach((arr) => {
