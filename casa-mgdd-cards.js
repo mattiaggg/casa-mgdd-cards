@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card.
  *
- * Version: 1.83.0
+ * Version: 1.83.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -9113,15 +9113,48 @@ function engDelta(t, y, pol) {
 // grandezze omogenee (nessuna delle due ha l'ora in corso). Il numero grande
 // resta invece quello vivo del sensore `_today`: l'ora corrente si vede subito.
 // Una sola chiamata per tutti e quattro i contatori cumulativi.
+// I contatori cumulativi servono SOLO al confronto con ieri: i sensori `_today`
+// si azzerano a mezzanotte e non permettono di risalire al giorno prima.
+// Se non sono indicati in configurazione si ricavano dal nome di quelli
+// giornalieri togliendo il suffisso `_today` — ma solo se l'entita' esiste
+// davvero in hass.states. Cosi' una card gia' in dashboard non resta senza
+// confronti solo perche' e' stata scritta prima che queste chiavi esistessero,
+// e allo stesso tempo non ci si lega mai a un entity_id inventato.
+function engTotal(hass, explicit, todayId) {
+  if (explicit) return explicit;
+  if (!todayId || !hass) return null;
+  const guess = todayId.replace(/_today$/, '');
+  if (guess === todayId) return null;
+  return hass.states[guess] ? guess : null;
+}
+
+function engStatIds(hass, c) {
+  return {
+    cons: engTotal(hass, c.house_total, c.house_today),
+    prod: engTotal(hass, c.solar_total, c.solar_today),
+    imp: engTotal(hass, c.grid_import_total, c.grid_import_today || c.grid_today),
+    exp: engTotal(hass, c.grid_export_total, c.grid_export_today),
+  };
+}
+
 function engFetchStats(card) {
   const c = card.config;
-  const ids = [c.house_total, c.solar_total, c.grid_import_total, c.grid_export_total].filter(Boolean);
   const h = card._hass;
-  if (!ids.length || !h || !h.callWS) return;
+  if (!h || !h.callWS) return;
+  const map = engStatIds(h, c);
+  const ids = [map.cons, map.prod, map.imp, map.exp].filter(Boolean);
+  if (!ids.length) return;
   const now = new Date();
   const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const y0 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime();
-  const yCut = now.getTime() - 24 * 3600 * 1000;
+  // Si contano solo le ore CHIUSE, da entrambe le parti. L'ora in corso non e'
+  // ancora stata aggregata da oggi, mentre di ieri la stessa ora c'e' tutta:
+  // includerla darebbe -100% subito dopo la mezzanotte e uno sconto fasullo a
+  // ogni cambio d'ora. Tagliando all'inizio dell'ora corrente i due lati hanno
+  // sempre lo stesso numero di ore; nella prima ora del giorno non c'e' ancora
+  // niente da confrontare e lo scarto semplicemente non compare.
+  const hCut = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()).getTime();
+  const yCut = hCut - 24 * 3600 * 1000;
   h.callWS({
     type: 'recorder/statistics_during_period',
     start_time: new Date(y0).toISOString(),
@@ -9138,7 +9171,7 @@ function engFetchStats(card) {
       rows.forEach((r) => {
         const ts = new Date(r.start).getTime();
         const v = r.change || 0;
-        if (ts >= t0) a += v;
+        if (ts >= t0 && ts < hCut) a += v;
         else if (ts >= y0 && ts < yCut) b += v;
       });
       out[id] = rows.length ? { t: a, y: b } : null;
@@ -9160,18 +9193,18 @@ function engMaybeStats(card) {
 }
 
 function engDeltas(card) {
-  const c = card.config;
   const s = card._stats;
-  if (!s) return null;
+  if (!s || !card._hass) return null;
+  const map = engStatIds(card._hass, card.config);
   const d = (id, pol) => {
     const r = id && s[id];
     return r ? engDelta(r.t, r.y, pol) : null;
   };
   return {
-    cons: d(c.house_total, -1),
-    prod: d(c.solar_total, 1),
-    imp: d(c.grid_import_total, -1),
-    exp: d(c.grid_export_total, 0),
+    cons: d(map.cons, -1),
+    prod: d(map.prod, 1),
+    imp: d(map.imp, -1),
+    exp: d(map.exp, 0),
   };
 }
 
@@ -9730,7 +9763,10 @@ class EnergySchemeCard extends HTMLElement {
       node(HX, HY, 'casa', 'var(--casa)', 'var(--w-casa)', lbl(engFmt(hW)), 'Casa', c.house_power) +
       '</svg>' +
       engDailyHtml(engNum(h, c.solar_today), engNum(h, c.grid_import_today || c.grid_today),
-        engNum(h, c.grid_export_today), engNum(h, c.house_today), engDeltas(this)) +
+        engNum(h, c.grid_export_today),
+        // senza `house_today` la riga non compare affatto, invece di restare
+        // a "—" per sempre: un trattino fisso e' peggio di una riga in meno
+        c.house_today ? engNum(h, c.house_today) : undefined, engDeltas(this)) +
       '</div></ha-card>'
     );
   }
