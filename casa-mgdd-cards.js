@@ -4,9 +4,10 @@
  * Contiene: temperature-bento-card, temperature-row-card, weather-alert-card,
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, energy-summary-card,
- * casa-mgdd-doors-card, casa-mgdd-system-card.
+ * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
+ * casa-mgdd-sensors-card.
  *
- * Version: 1.74.0
+ * Version: 1.75.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -7636,4 +7637,765 @@ window.customCards.push({
   name: 'Casa MGDD Stato sistema',
   description:
     'Quadro di monitoraggio di Home Assistant, una sezione per card: summary, host, network, zigbee, backup, batteries. Tutte le entità hanno un valore predefinito.',
+});
+
+// ===== compact-cards.js =====
+// Tre card compatte per la vista Home: aperture, perdite acqua, movimento.
+// Sostituiscono una sezione di venti tile aperti (~900 px) con tre righe
+// riassuntive da ~80 px, che si espandono al tocco.
+//
+// Anatomia comune, condivisa da MgddCompactCard:
+//   riga di intestazione  icona · titolo · frase di stato · pastiglia · chevron
+//   strip                 un segmento per sensore, colorato dal suo stato
+//   corpo                 elenco di dettaglio, nascosto finche' non lo apri
+//
+// La strip NON e' un secondo elenco: e' generata dalle stesse righe del
+// dettaglio, cosi' ordine e stati non possono divergere.
+//
+// Gli orari, come nella DoorsCard, vengono dal recorder e non da
+// `last_changed`: dopo un riavvio di Home Assistant tutte le entita' passano
+// per unavailable e `last_changed` diventerebbe l'ora del riavvio.
+
+function mgddPad2(n) {
+  return (n < 10 ? '0' : '') + n;
+}
+
+function mgddHHMM(ts) {
+  const d = new Date(ts);
+  return mgddPad2(d.getHours()) + ':' + mgddPad2(d.getMinutes());
+}
+
+function mgddSameDay(ts, back) {
+  const a = new Date(ts);
+  const b = new Date();
+  b.setDate(b.getDate() - (back || 0));
+  return a.getDate() === b.getDate() && a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
+}
+
+// "14:07" oggi, "ieri 22:15", "03/08 09:40" piu' indietro.
+function mgddWhen(ts) {
+  if (mgddSameDay(ts, 0)) return mgddHHMM(ts);
+  if (mgddSameDay(ts, 1)) return 'ieri ' + mgddHHMM(ts);
+  const d = new Date(ts);
+  return mgddPad2(d.getDate()) + '/' + mgddPad2(d.getMonth() + 1) + ' ' + mgddHHMM(ts);
+}
+
+function mgddDur(ms) {
+  if (ms < 0) ms = 0;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + ' s';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + ' min';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ' + mgddPad2(m % 60) + 'm';
+  const g = Math.floor(h / 24);
+  return g + (g === 1 ? ' giorno' : ' giorni');
+}
+
+function mgddEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const MGDD_CI = {
+  door: 'M3 21h18M6 21V3.6a.6.6 0 0 1 .6-.6h10.8a.6.6 0 0 1 .6.6V21M14.2 12.2h.01',
+  window: 'M4 4h16v16H4zM12 4v16M4 12h16',
+  lock: 'M5 11h14v10H5zM8.5 11V7a3.5 3.5 0 0 1 7 0v4',
+  garage: 'M3 21V9.5L12 4l9 5.5V21M7 21v-7h10v7M7 17.2h10',
+  water: 'M12 3.2s6 6.6 6 10a6 6 0 0 1-12 0c0-3.4 6-10 6-10z',
+  presence: 'M12 11.2a3.1 3.1 0 1 0 0-6.2 3.1 3.1 0 0 0 0 6.2zM5 20.5a7 7 0 0 1 14 0',
+  shield: 'M12 3 5 6v5.5c0 4.4 3 8.1 7 9.5 4-1.4 7-5.1 7-9.5V6l-7-3zM9 12l2 2 4-4',
+  motion: 'M13.5 5.2a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2zM9 22l2.2-5.4-2.4-2 .8-4.4-3.1 1.6L5 14M11.8 14.6l3.4 1.4L17 22M19.5 7.5a5.5 5.5 0 0 1 0 7M4.5 7.5a5.5 5.5 0 0 0 0 7',
+  chev: 'M6 9.5 12 15.5l6-6',
+};
+
+function mgddIcon(kind, sw) {
+  const d = MGDD_CI[kind] || MGDD_CI.door;
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="' + (sw || 1.7) +
+    '" stroke-linecap="round" stroke-linejoin="round"><path d="' + d + '"/></svg>';
+}
+
+// stato della riga -> classe del segmento nella strip
+const MGDD_SEG = { open: 'w', wet: 'a', on: 'm', off: 'n', na: 'na' };
+
+class MgddCompactCard extends HTMLElement {
+  // ---------- ciclo di vita ----------
+
+  set hass(hass) {
+    this._hass = hass;
+    const sig = mgddStatesSig(hass, this._ids());
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+    this._maybeFetchHistory();
+  }
+
+  // In una vista a sezioni la card cambia altezza quando la apri: `auto` lascia
+  // che sia il contenuto a decidere, invece di riservare righe fisse.
+  getGridOptions() {
+    return { rows: 'auto', columns: 'full', min_columns: 6 };
+  }
+
+  getCardSize() {
+    return this._expanded ? 2 + Math.ceil(this._rows().length / 2) : 1;
+  }
+
+  _ids() {
+    return (this._items() || []).map((i) => i.entity).filter(Boolean);
+  }
+
+  _st(entity) {
+    return (this._hass && this._hass.states[entity]) || null;
+  }
+
+  _avail(s) {
+    return !!(s && s.state !== 'unavailable' && s.state !== 'unknown' && s.state !== 'None');
+  }
+
+  // ---------- cronologia dal recorder ----------
+
+  async _maybeFetchHistory() {
+    const now = Date.now();
+    if (this._histAt && now - this._histAt < 2 * 60 * 1000) return;
+    this._histAt = now;
+    if (!this._hass) return;
+    const ids = this._ids();
+    if (!ids.length) return;
+    const hours = (this.config && this.config.history_hours) || 48;
+    const start = new Date(now - hours * 3600 * 1000).toISOString();
+    try {
+      const path = 'history/period/' + start + '?filter_entity_id=' + ids.join(',') + '&minimal_response';
+      const data = await this._hass.callApi('GET', path);
+      const out = {};
+      (data || []).forEach((arr) => {
+        if (!arr || !arr.length) return;
+        const id = arr[0].entity_id;
+        if (!id) return;
+        const ev = [];
+        arr.forEach((s) => {
+          if (s.state === 'unavailable' || s.state === 'unknown' || s.state === 'None') return;
+          const ts = new Date(s.last_changed || s.last_updated).getTime();
+          if (!ts) return;
+          // tratti uguali ricuciti: si tiene il timestamp del cambio vero
+          if (!ev.length || ev[ev.length - 1].state !== s.state) ev.push({ state: s.state, ts: ts });
+        });
+        out[id] = ev;
+      });
+      this._hist = out;
+      this._render();
+    } catch (e) {
+      /* recorder non disponibile: restano gli stati correnti, senza orari */
+    }
+  }
+
+  // Ultimo cambio reale. Il primo elemento e' lo stato a inizio finestra, non
+  // una transizione: con meno di due elementi l'entita' non si e' mai mossa.
+  _last(entity) {
+    const ev = (this._hist || {})[entity];
+    if (!ev || ev.length < 2) return null;
+    return ev[ev.length - 1];
+  }
+
+  // Evento piu' recente fra tutte le entita' della card.
+  _lastAny() {
+    let best = null;
+    this._ids().forEach((id) => {
+      const e = this._last(id);
+      if (e && (!best || e.ts > best.ts)) best = e;
+    });
+    return best;
+  }
+
+  // ---------- markup ----------
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    // mgddPaint ha ricostruito il sottoalbero, quindi il corpo e' tornato allo
+    // stato di riposo del CSS: lo si riporta dov'era, ma senza animazione. Un
+    // aggiornamento di stato non e' un'apertura.
+    this._setBody(false);
+    this._wire();
+  }
+
+  _html() {
+    const groups = this._groups();
+    const rows = [];
+    groups.forEach((g) => g.rows.forEach((r) => rows.push(r)));
+    const S = this._summary(rows);
+
+    const strip = rows
+      .map((r) =>
+        '<span class="mc-seg ' + (MGDD_SEG[r.state] || 'ok') + '" tabindex="0" role="button"' +
+        ' data-more="' + mgddEsc(r.entity) + '"' +
+        ' data-n="' + mgddEsc(r.name) + '" data-s="' + mgddEsc(r.label) + '"' +
+        ' aria-label="' + mgddEsc(r.name + ', ' + r.label) + '"><i></i></span>'
+      )
+      .join('');
+
+    let body = '';
+    groups.forEach((g) => {
+      if (g.name) body += '<div class="mc-zone">' + mgddEsc(g.name) + '</div>';
+      const html = g.rows.map((r) => this._rowHtml(r)).join('');
+      body += this._twoCol() ? '<div class="mc-grid">' + html + '</div>' : html;
+    });
+
+    return (
+      '<div class="mc' + (this._isDark() ? ' mc-dark' : '') + '" data-open="' + (this._expanded ? 'true' : 'false') + '">' +
+      '<button class="mc-hd" type="button" aria-expanded="' + (this._expanded ? 'true' : 'false') + '">' +
+      '<span class="mc-ic ' + S.tone + '">' + mgddIcon(S.icon) + '</span>' +
+      '<span class="mc-tx"><span class="mc-t">' + mgddEsc(S.title) + '</span>' +
+      '<span class="mc-s">' + S.sub + '</span></span>' +
+      '<span class="mc-pill ' + S.pill.cls + '">' + mgddEsc(S.pill.txt) + '</span>' +
+      '<svg class="mc-cv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round"><path d="' + MGDD_CI.chev + '"/></svg>' +
+      '</button>' +
+      '<div class="mc-strip">' + strip + '<div class="mc-tip"></div></div>' +
+      '<div class="mc-bd"><div class="mc-in">' + body + '</div></div>' +
+      '</div>'
+    );
+  }
+
+  _rowHtml(r) {
+    const cls = r.state ? ' ' + r.state : '';
+    return (
+      '<div class="mc-r' + cls + '" data-more="' + mgddEsc(r.entity) + '">' +
+      '<span class="mc-ri">' + mgddIcon(r.icon) + '</span>' +
+      '<span class="mc-rn"><b>' + mgddEsc(r.name) + '</b><i>' + mgddEsc(r.label) + '</i></span>' +
+      '<span class="mc-rt">' + mgddEsc(r.time) + '</span></div>'
+    );
+  }
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  // ---------- interazione ----------
+  //
+  // Tutto per delega sull'host e legato una volta sola: mgddPaint riscrive il
+  // sottoalbero a ogni aggiornamento e i listener sui nodi interni sparirebbero.
+
+  _wire() {
+    if (this._wired) return;
+    this._wired = true;
+
+    this.addEventListener('touchstart', () => { this._touch = true; }, { passive: true });
+
+    this.addEventListener('click', (ev) => {
+      const seg = ev.target.closest ? ev.target.closest('.mc-seg') : null;
+      if (seg) {
+        // il tocco sulla strip parla al tooltip, non all'intestazione
+        ev.stopPropagation();
+        if (this._tipOn === seg) this._hideTip();
+        else this._showTip(seg);
+        return;
+      }
+      const hd = ev.target.closest ? ev.target.closest('.mc-hd') : null;
+      if (hd) {
+        this._toggle();
+        return;
+      }
+      const row = ev.target.closest ? ev.target.closest('.mc-r') : null;
+      const id = row && row.getAttribute('data-more');
+      if (id) {
+        this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+      }
+    });
+
+    // col mouse il tooltip segue il passaggio; col dito lo apre il tocco e lo
+    // chiude il tocco successivo, perche' un hover non arriva mai
+    this.addEventListener('pointerover', (ev) => {
+      if (this._touch) return;
+      const seg = ev.target.closest ? ev.target.closest('.mc-seg') : null;
+      if (seg) this._showTip(seg);
+      else if (this._tipOn) this._hideTip();
+    });
+    this.addEventListener('pointerleave', () => { if (!this._touch) this._hideTip(); });
+
+    this.addEventListener('focusin', (ev) => {
+      const seg = ev.target.closest ? ev.target.closest('.mc-seg') : null;
+      if (seg) this._showTip(seg);
+    });
+    this.addEventListener('focusout', () => this._hideTip());
+    this.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') this._hideTip();
+    });
+  }
+
+  // Apre e chiude senza rigenerare l'HTML: una ricostruzione salterebbe la
+  // transizione, perche' il nodo nuovo nasce gia' nello stato di arrivo.
+  _toggle() {
+    this._expanded = !this._expanded;
+    const card = this.querySelector('.mc');
+    const hd = this.querySelector('.mc-hd');
+    if (card) card.dataset.open = this._expanded ? 'true' : 'false';
+    if (hd) hd.setAttribute('aria-expanded', this._expanded ? 'true' : 'false');
+    this._setBody(true);
+  }
+
+  // Porta il corpo allo stato corrente. `animate` distingue il gesto
+  // dell'utente dal semplice ridisegno.
+  //
+  // L'altezza di arrivo e' scrollHeight, misurato al momento; a transizione
+  // finita si passa a `none`, cosi' il contenuto resta libero di crescere (una
+  // riga che si riflowa girando il telefono, un'etichetta che si allunga) senza
+  // restare tagliato da un'altezza congelata.
+  _setBody(animate) {
+    const bd = this.querySelector('.mc-bd');
+    if (!bd) return;
+    if (this._endTimer) {
+      clearTimeout(this._endTimer);
+      this._endTimer = null;
+    }
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+    // Nessun interruttore da spegnere e riaccendere per saltare l'animazione:
+    // `none` non e' un valore interpolabile, quindi assegnarlo salta di suo. Il
+    // vecchio giro con `transition:none` e un rAF per rimetterla lasciava la
+    // transizione spenta per sempre in una scheda i cui frame non girano.
+    if (!animate || reduce) {
+      bd.style.maxHeight = this._expanded ? 'none' : '0px';
+      return;
+    }
+
+    if (this._expanded) {
+      bd.style.maxHeight = bd.scrollHeight + 'px';
+      this._endTimer = setTimeout(() => { bd.style.maxHeight = 'none'; }, 300);
+    } else {
+      // da `none` non si anima: si fissa l'altezza reale, si forza un reflow,
+      // poi si scende a zero
+      bd.style.maxHeight = bd.scrollHeight + 'px';
+      void bd.offsetHeight;
+      bd.style.maxHeight = '0px';
+    }
+  }
+
+  _showTip(seg) {
+    const strip = seg.parentNode;
+    const tip = strip && strip.querySelector('.mc-tip');
+    if (!tip) return;
+    if (this._tipOn && this._tipOn !== seg) this._tipOn.classList.remove('on');
+    this._tipOn = seg;
+    seg.classList.add('on');
+    tip.innerHTML = '<b>' + mgddEsc(seg.dataset.n) + '</b><s>' + mgddEsc(seg.dataset.s) + '</s>';
+    tip.classList.add('on');
+    // ancorato al centro del segmento, poi rientrato dentro i bordi della card
+    const sr = seg.getBoundingClientRect();
+    const pr = strip.getBoundingClientRect();
+    const half = tip.offsetWidth / 2;
+    const x = sr.left - pr.left + sr.width / 2;
+    tip.style.left = Math.max(half + 4, Math.min(pr.width - half - 4, x)) + 'px';
+  }
+
+  _hideTip() {
+    const tip = this.querySelector('.mc-tip');
+    if (tip) tip.classList.remove('on');
+    if (this._tipOn) this._tipOn.classList.remove('on');
+    this._tipOn = null;
+  }
+
+  // ---------- da implementare nelle sottoclassi ----------
+  _items() { return []; }
+  _groups() { return []; }
+  _rows() { const r = []; this._groups().forEach((g) => g.rows.forEach((x) => r.push(x))); return r; }
+  _summary() { return { tone: '', icon: 'shield', title: '', sub: '', pill: { cls: '', txt: '' } }; }
+  _twoCol() { return false; }
+
+  _styles() {
+    return (
+      '<style>' +
+      ':host{display:block;}' +
+      // Sfondo, bordo e testi sono token del tema, come nella energy-summary-card:
+      // la card deve sembrare una card di Home Assistant. Restano nostri solo i
+      // colori semantici, che cambiano fra chiaro e scuro.
+      '.mc{background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.08));' +
+      'border-radius:var(--ha-card-border-radius,16px);overflow:hidden;container-type:inline-size;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      '--mc-t1:var(--primary-text-color,#14161a);--mc-t2:var(--secondary-text-color,#858b95);' +
+      '--mc-hair:var(--divider-color,rgba(16,20,28,.09));' +
+      '--mc-ok:#0E9B6C;--mc-warn:#C07405;--mc-warn2:#8A5300;--mc-alarm:#C2413E;--mc-move:#6A57E0;' +
+      '--mc-glow:none;' +
+      '--mc-open:linear-gradient(150deg,#D68C0C,#A96303);--mc-opensh:0 8px 22px rgba(201,130,13,.24);' +
+      '--mc-wet:linear-gradient(150deg,#D2504C,#9E2F2C);--mc-wetsh:0 8px 22px rgba(190,60,56,.24);}' +
+      '.mc.mc-dark{--mc-ok:#35E0A1;--mc-warn:#FFB020;--mc-warn2:#FFD48A;--mc-alarm:#FF7B6E;' +
+      '--mc-move:#9083FF;--mc-glow:0 0 7px currentColor;' +
+      '--mc-open:linear-gradient(150deg,#C9820D,#9A5A02);--mc-opensh:0 8px 22px rgba(201,130,13,.30);' +
+      '--mc-wet:linear-gradient(150deg,#B8433F,#7E2321);--mc-wetsh:0 8px 22px rgba(190,60,56,.30);}' +
+      '.mc *{box-sizing:border-box;}' +
+      '.mc svg{display:block;}' +
+
+      '.mc-hd{width:100%;display:flex;align-items:center;gap:11px;padding:10px 12px;' +
+      'background:none;border:none;text-align:left;font:inherit;color:inherit;cursor:pointer;}' +
+      '.mc-hd:focus-visible{outline:2px solid var(--mc-ok);outline-offset:-3px;}' +
+      '.mc-ic{width:36px;height:36px;border-radius:11px;flex:none;display:grid;place-items:center;' +
+      'color:var(--mc-ok);background:color-mix(in srgb,var(--mc-ok) 13%,transparent);}' +
+      '.mc-ic svg{width:20px;height:20px;}' +
+      '.mc-ic.w{color:var(--mc-warn);background:color-mix(in srgb,var(--mc-warn) 15%,transparent);}' +
+      '.mc-ic.a{color:var(--mc-alarm);background:color-mix(in srgb,var(--mc-alarm) 15%,transparent);}' +
+      '.mc-ic.m{color:var(--mc-move);background:color-mix(in srgb,var(--mc-move) 14%,transparent);}' +
+      '.mc-tx{flex:1;min-width:0;}' +
+      '.mc-t{display:block;font-size:13.5px;font-weight:580;color:var(--mc-t1);letter-spacing:-.01em;line-height:1.25;}' +
+      '.mc-s{display:block;font-size:11.5px;color:var(--mc-t2);white-space:nowrap;overflow:hidden;' +
+      'text-overflow:ellipsis;margin-top:1px;}' +
+      '.mc-s em{font-style:normal;color:var(--mc-warn2);font-weight:600;}' +
+      '.mc-s em.a{color:var(--mc-alarm);}' +
+      '.mc-pill{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;' +
+      'padding:4px 9px;border-radius:99px;font-variant-numeric:tabular-nums;' +
+      'color:var(--mc-ok);background:color-mix(in srgb,var(--mc-ok) 13%,transparent);}' +
+      '.mc-pill.w{color:var(--mc-warn2);background:color-mix(in srgb,var(--mc-warn) 20%,transparent);}' +
+      '.mc-pill.a{color:var(--mc-alarm);background:color-mix(in srgb,var(--mc-alarm) 16%,transparent);}' +
+      '.mc-pill.m{color:var(--mc-move);background:color-mix(in srgb,var(--mc-move) 14%,transparent);}' +
+      '.mc-pill.n{color:var(--mc-t2);background:color-mix(in srgb,var(--mc-t2) 16%,transparent);}' +
+      '.mc-cv{width:18px;height:18px;flex:none;color:var(--mc-t2);transition:transform .22s ease;}' +
+      '.mc[data-open="true"] .mc-cv{transform:rotate(180deg);}' +
+
+      // La barra resta 5px, ma l'area sensibile e' 20px: un bersaglio da 5px
+      // col pollice non si centra. Il padding sta sullo <span>, la barra e' la <i>.
+      '.mc-strip{display:flex;gap:3px;padding:0 12px 4px;position:relative;}' +
+      '.mc-seg{flex:1;height:20px;display:flex;align-items:center;cursor:pointer;' +
+      '-webkit-tap-highlight-color:transparent;}' +
+      '.mc-seg i{display:block;width:100%;height:5px;border-radius:99px;transition:height .12s ease;' +
+      'background:color-mix(in srgb,var(--mc-ok) 42%,transparent);}' +
+      '.mc-seg.w i{background:var(--mc-warn);color:var(--mc-warn);box-shadow:var(--mc-glow);}' +
+      '.mc-seg.a i{background:var(--mc-alarm);color:var(--mc-alarm);box-shadow:var(--mc-glow);}' +
+      '.mc-seg.m i{background:var(--mc-move);color:var(--mc-move);box-shadow:var(--mc-glow);}' +
+      '.mc-seg.n i{background:color-mix(in srgb,var(--mc-t2) 45%,transparent);}' +
+      '.mc-seg.na i{background:repeating-linear-gradient(45deg,' +
+      'color-mix(in srgb,var(--mc-t2) 55%,transparent) 0 2px,transparent 2px 4px);}' +
+      '.mc-seg.on i,.mc-seg:hover i{height:8px;}' +
+      '.mc-seg:focus-visible{outline:2px solid var(--mc-ok);outline-offset:2px;border-radius:99px;}' +
+
+      // stesso stile di .zc-tip nella temperature-bento-card
+      '.mc-tip{position:absolute;bottom:20px;transform:translateX(-50%);' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--mc-t1);' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.1));box-shadow:0 6px 18px rgba(0,0,0,.18);' +
+      'border-radius:10px;padding:5px 9px;font-size:11px;font-weight:600;white-space:nowrap;' +
+      'opacity:0;pointer-events:none;transition:opacity .1s;z-index:3;}' +
+      '.mc-tip.on{opacity:1;}' +
+      '.mc-tip s{text-decoration:none;font-weight:500;color:var(--mc-t2);}' +
+      '.mc-tip s::before{content:" \\00b7 ";}' +
+
+      // L'apertura anima su max-height, non sul trucco grid 0fr/1fr: con
+      // overflow:hidden sul contenuto la traccia flessibile resta a zero e la
+      // card non cresce affatto. L'altezza di arrivo la misura _setBody(), cosi'
+      // non c'e' nessun valore inventato da tenere allineato al contenuto.
+      '.mc-bd{overflow:hidden;max-height:0;transition:max-height .26s ease;}' +
+      '.mc-in{padding:2px 12px 10px;border-top:1px solid var(--mc-hair);}' +
+      '@media (prefers-reduced-motion:reduce){.mc-bd,.mc-cv,.mc-seg i{transition:none;}}' +
+
+      '.mc-zone{font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;' +
+      'color:var(--mc-t2);padding:11px 2px 4px;}' +
+      '.mc-r{display:flex;align-items:center;gap:10px;padding:7px 2px;min-height:40px;' +
+      'border-bottom:1px solid var(--mc-hair);cursor:pointer;}' +
+      '.mc-r:last-child{border-bottom:none;}' +
+      '.mc-ri{width:28px;height:28px;border-radius:9px;flex:none;display:grid;place-items:center;' +
+      'color:var(--mc-ok);background:color-mix(in srgb,var(--mc-ok) 12%,transparent);}' +
+      '.mc-ri svg{width:16px;height:16px;}' +
+      '.mc-rn{flex:1;min-width:0;}' +
+      '.mc-rn b{display:block;font-size:12.5px;font-weight:520;color:var(--mc-t1);line-height:1.3;' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.mc-rn i{font-style:normal;font-size:9.5px;font-weight:700;letter-spacing:.1em;' +
+      'text-transform:uppercase;color:var(--mc-ok);}' +
+      '.mc-rt{font-size:12.5px;font-weight:600;color:var(--mc-t2);font-variant-numeric:tabular-nums;' +
+      'letter-spacing:-.02em;white-space:nowrap;}' +
+      '.mc-r.open{background:var(--mc-open);border-radius:12px;border-bottom:none;padding:8px 10px;' +
+      'margin:3px 0;box-shadow:var(--mc-opensh);}' +
+      '.mc-r.open .mc-ri{background:rgba(255,255,255,.22);color:#fff;}' +
+      '.mc-r.open .mc-rn b,.mc-r.open .mc-rn i,.mc-r.open .mc-rt{color:#fff;}' +
+      '.mc-r.wet{background:var(--mc-wet);border-radius:12px;border-bottom:none;padding:8px 10px;' +
+      'margin:3px 0;box-shadow:var(--mc-wetsh);}' +
+      '.mc-r.wet .mc-ri{background:rgba(255,255,255,.22);color:#fff;}' +
+      '.mc-r.wet .mc-rn b,.mc-r.wet .mc-rn i,.mc-r.wet .mc-rt{color:#fff;}' +
+      '.mc-r.on .mc-ri{color:var(--mc-move);background:color-mix(in srgb,var(--mc-move) 13%,transparent);}' +
+      '.mc-r.on .mc-rn i{color:var(--mc-move);}' +
+      '.mc-r.off .mc-ri{color:var(--mc-t2);background:color-mix(in srgb,var(--mc-t2) 13%,transparent);}' +
+      '.mc-r.off .mc-rn i{color:var(--mc-t2);}' +
+      '.mc-r.na{opacity:.62;}' +
+      '.mc-r.na .mc-ri{color:var(--mc-warn);background:color-mix(in srgb,var(--mc-warn) 14%,transparent);}' +
+      '.mc-r.na .mc-rn i{color:var(--mc-warn2);}' +
+
+      '.mc-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;}' +
+      '@container (max-width:420px){.mc-grid{grid-template-columns:1fr;}}' +
+      '</style>'
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// casa-mgdd-openings-card — porte, finestre e serrature, raggruppate per zona
+// ---------------------------------------------------------------------------
+class OpeningsCard extends MgddCompactCard {
+  setConfig(config) {
+    if (!config || !Array.isArray(config.zones) || !config.zones.length) {
+      throw new Error('Config "zones" mancante o vuota');
+    }
+    this.config = Object.assign({ title: 'Porte e finestre', history_hours: 48 }, config);
+    this._expanded = !!config.expanded;
+    this._sig = null;
+    this._hist = {};
+    this._histAt = 0;
+  }
+
+  static getStubConfig() {
+    return { zones: [{ name: 'Zona giorno', items: [] }] };
+  }
+
+  _items() {
+    const out = [];
+    (this.config.zones || []).forEach((z) => (z.items || []).forEach((i) => out.push(i)));
+    return out;
+  }
+
+  // Icona per difetto dalla device_class, cosi' la config non deve ripeterla.
+  _iconOf(item, s) {
+    if (item.icon) return item.icon;
+    if (item.entity && item.entity.indexOf('lock.') === 0) return 'lock';
+    const dc = (s && s.attributes && s.attributes.device_class) || '';
+    if (dc === 'window' || dc === 'opening') return 'window';
+    if (dc === 'garage_door' || dc === 'garage') return 'garage';
+    return 'door';
+  }
+
+  // [aperta, chiusa] col genere giusto per il tipo di apertura.
+  _labelsOf(item, icon) {
+    if (item.open_label || item.closed_label) return [item.open_label || 'Aperto', item.closed_label || 'Chiuso'];
+    if (icon === 'lock') return ['Sbloccata', 'Bloccata'];
+    if (icon === 'garage') return ['Aperto', 'Chiuso'];
+    return ['Aperta', 'Chiusa'];
+  }
+
+  _mkRow(item) {
+    const s = this._st(item.entity);
+    const icon = this._iconOf(item, s);
+    const isLock = icon === 'lock';
+    const avail = this._avail(s);
+    const active = avail && (isLock ? s.state === 'unlocked' : s.state === 'on');
+    const L = this._labelsOf(item, icon);
+    const ev = this._last(item.entity);
+    const name = item.name || (s && s.attributes && s.attributes.friendly_name) || item.entity;
+
+    let label;
+    if (!avail) label = 'Non disponibile';
+    else if (active) label = L[0] + (ev ? ' da ' + mgddDur(Date.now() - ev.ts) : '');
+    else label = L[1];
+
+    return {
+      entity: item.entity,
+      name: name,
+      icon: icon,
+      label: label,
+      time: !avail ? '—' : ev ? mgddWhen(ev.ts) : '—',
+      state: !avail ? 'na' : active ? 'open' : '',
+      active: !!active,
+      lock: isLock,
+      // parola da usare nel riassunto: "aperto" per il portone, "aperta" per una
+      // finestra, "sbloccata" per la serratura. Il genere lo detta l'apertura.
+      word: L[0].toLowerCase(),
+      ts: ev ? ev.ts : 0,
+    };
+  }
+
+  _groups() {
+    return (this.config.zones || []).map((z) => {
+      const rows = (z.items || []).map((i) => this._mkRow(i));
+      // dentro la zona le aperture salgono in cima: sono l'unica cosa da guardare
+      rows.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+      return { name: z.name || null, rows: rows };
+    });
+  }
+
+  _summary(rows) {
+    const act = rows.filter((r) => r.active);
+    const na = rows.filter((r) => r.state === 'na');
+    const title = this.config.title;
+    const naTail = na.length ? ' · <em>' + mgddEsc(na[0].name) + ' non disponibile</em>' : '';
+
+    if (!act.length) {
+      const ev = this._lastAny();
+      let sub = 'Tutte chiuse';
+      if (ev) sub += ' · ultimo movimento ' + mgddWhen(ev.ts);
+      return { tone: '', icon: 'shield', title: title, sub: sub + naTail, pill: { cls: '', txt: 'Tutte chiuse' } };
+    }
+
+    const f = act[0];
+    let sub = '<em>' + mgddEsc(f.name) + ' ' + f.word + '</em>';
+    if (f.ts) sub += ' dalle ' + mgddHHMM(f.ts) + ' · ' + mgddDur(Date.now() - f.ts);
+    if (act.length === 2) sub += ' · e un’altra';
+    else if (act.length > 2) sub += ' · e altre ' + (act.length - 1);
+
+    // Al singolare la pastiglia prende la parola dell'apertura ("1 aperto" per il
+    // portone, "1 sbloccata" per la serratura). Al plurale servirebbe un genere
+    // che un elenco misto non ha: "2 aperture" e' l'unica forma sempre vera.
+    const txt = act.length === 1 ? '1 ' + f.word : act.length + ' aperture';
+
+    return {
+      tone: 'w',
+      icon: 'shield',
+      title: title,
+      sub: sub + naTail,
+      pill: { cls: 'w', txt: txt },
+    };
+  }
+}
+
+customElements.define('casa-mgdd-openings-card', OpeningsCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'casa-mgdd-openings-card',
+  name: 'Casa MGDD Aperture (compatta)',
+  description: 'Riga riassuntiva di porte, finestre e serrature con strip per sensore e dettaglio espandibile. Config via YAML.',
+});
+
+// ---------------------------------------------------------------------------
+// casa-mgdd-sensors-card — perdite acqua oppure movimento, stessa anatomia
+// ---------------------------------------------------------------------------
+const MGDD_MODES = {
+  water: {
+    title: 'Perdite acqua',
+    icon: 'water',
+    rowIcon: 'water',
+    on: 'Bagnato',
+    off: 'Asciutto',
+    tone: 'a',
+    seg: 'wet',
+    okPill: 'Asciutto',
+    // I nomi sono aree, e l'area puo' essere maschile o femminile: la frase gira
+    // attorno al nome invece di concordarci ("Perdita in Lavanderia").
+    subOn: (n) => 'Perdita in <em class="a">' + n + '</em>',
+    alarmPill: (n) => n + (n === 1 ? ' allarme' : ' allarmi'),
+    idle: (n) => 'Tutti e ' + n + ' i sensori asciutti',
+    idleOne: 'Sensore asciutto',
+  },
+  motion: {
+    title: 'Movimento',
+    icon: 'motion',
+    rowIcon: 'presence',
+    on: 'Movimento',
+    off: 'Assente',
+    tone: 'm',
+    seg: 'on',
+    okPill: 'Nessuno',
+    subOn: (n) => 'Movimento in <em>' + n + '</em>',
+    alarmPill: (n) => n + (n === 1 ? ' attivo' : ' attivi'),
+    idle: () => 'Nessun movimento',
+    idleOne: 'Nessun movimento',
+  },
+};
+
+class SensorsCard extends MgddCompactCard {
+  setConfig(config) {
+    if (!config || !Array.isArray(config.items) || !config.items.length) {
+      throw new Error('Config "items" mancante o vuota');
+    }
+    const mode = config.mode || 'water';
+    if (!MGDD_MODES[mode]) throw new Error('mode deve essere "water" oppure "motion"');
+    this.config = Object.assign({ history_hours: 48 }, config, { mode: mode });
+    this._m = MGDD_MODES[mode];
+    this._expanded = !!config.expanded;
+    this._sig = null;
+    this._hist = {};
+    this._histAt = 0;
+  }
+
+  static getStubConfig() {
+    return { mode: 'water', items: [] };
+  }
+
+  _items() {
+    return this.config.items || [];
+  }
+
+  _twoCol() {
+    return this.config.columns !== 1;
+  }
+
+  _mkRow(item) {
+    const M = this._m;
+    const s = this._st(item.entity);
+    const avail = this._avail(s);
+    const active = avail && s.state === 'on';
+    const ev = this._last(item.entity);
+    const name = item.name || (s && s.attributes && s.attributes.friendly_name) || item.entity;
+
+    let label;
+    if (!avail) label = 'Non disponibile';
+    else if (active) label = M.on + (ev ? ' da ' + mgddDur(Date.now() - ev.ts) : '');
+    else if (ev) label = M.off + ' da ' + mgddDur(Date.now() - ev.ts);
+    else label = M.off;
+
+    return {
+      entity: item.entity,
+      name: name,
+      icon: item.icon || M.rowIcon,
+      label: label,
+      time: !avail ? '—' : ev ? mgddWhen(ev.ts) : '—',
+      state: !avail ? 'na' : active ? M.seg : 'off',
+      active: !!active,
+      ts: ev ? ev.ts : 0,
+    };
+  }
+
+  _groups() {
+    const rows = this._items().map((i) => this._mkRow(i));
+    // attivi in cima, poi dall'evento piu' recente: la coda e' quella che non
+    // succede da giorni, e sta bene in fondo
+    rows.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.ts - a.ts);
+    return [{ name: null, rows: rows }];
+  }
+
+  _summary(rows) {
+    const M = this._m;
+    const motion = this.config.mode === 'motion';
+    const title = this.config.title || M.title;
+    const act = rows.filter((r) => r.active);
+    const na = rows.filter((r) => r.state === 'na');
+    const naTail = na.length ? ' · <em>' + mgddEsc(na[0].name) + ' non disponibile</em>' : '';
+
+    if (act.length) {
+      const f = act[0];
+      let sub = M.subOn(mgddEsc(f.name));
+      if (f.ts) sub += ' dalle ' + mgddHHMM(f.ts);
+      if (act.length === 2) sub += ' · e un altro';
+      else if (act.length > 2) sub += ' · e altri ' + (act.length - 1);
+      return {
+        tone: M.tone,
+        icon: M.icon,
+        title: title,
+        sub: sub + naTail,
+        pill: { cls: M.tone, txt: M.alarmPill(act.length) },
+      };
+    }
+
+    // A riposo la frase utile non e' "tutto a posto" ma quando e' successo
+    // l'ultima volta: per il movimento e' l'unico dato che si legge di sfuggita.
+    const ok = rows.filter((r) => r.state !== 'na');
+    const recent = ok.filter((r) => r.ts).sort((a, b) => b.ts - a.ts)[0];
+    let sub;
+    if (motion && recent) {
+      sub = 'Ultimo: ' + mgddEsc(recent.name) + ' ' + mgddDur(Date.now() - recent.ts) + ' fa';
+    } else {
+      sub = ok.length === 1 ? M.idleOne : M.idle(ok.length);
+      if (recent) sub += ' · ultimo evento ' + mgddWhen(recent.ts);
+    }
+
+    return {
+      tone: motion ? 'm' : '',
+      icon: M.icon,
+      title: title,
+      sub: sub + naTail,
+      pill: { cls: motion ? 'n' : '', txt: M.okPill },
+    };
+  }
+}
+
+customElements.define('casa-mgdd-sensors-card', SensorsCard);
+window.customCards.push({
+  type: 'casa-mgdd-sensors-card',
+  name: 'Casa MGDD Sensori (compatta)',
+  description: 'Riga riassuntiva di perdite acqua (mode: water) o movimento (mode: motion), con strip per sensore e dettaglio espandibile. Config via YAML.',
 });
