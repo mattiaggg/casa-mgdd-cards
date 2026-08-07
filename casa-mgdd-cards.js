@@ -7,7 +7,7 @@
  * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
  * casa-mgdd-sensors-card.
  *
- * Version: 1.75.0
+ * Version: 1.76.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -7765,7 +7765,7 @@ class MgddCompactCard extends HTMLElement {
     if (!this._hass) return;
     const ids = this._ids();
     if (!ids.length) return;
-    const hours = (this.config && this.config.history_hours) || 48;
+    const hours = this._hours();
     const start = new Date(now - hours * 3600 * 1000).toISOString();
     try {
       const path = 'history/period/' + start + '?filter_entity_id=' + ids.join(',') + '&minimal_response';
@@ -7800,14 +7800,44 @@ class MgddCompactCard extends HTMLElement {
     return ev[ev.length - 1];
   }
 
-  // Evento piu' recente fra tutte le entita' della card.
+  // Ultima accensione, non ultimo cambio. Per un sensore di movimento sono due
+  // istanti diversi e quello che interessa e' il primo: se alle 11:26:46 e'
+  // passato qualcuno e alle 11:27:02 il sensore e' ricaduto, "ultimo movimento"
+  // sono le 11:26, non le 11:27.
+  _lastOn(entity) {
+    const ev = (this._hist || {})[entity];
+    if (!ev) return null;
+    for (let i = ev.length - 1; i >= 1; i--) {
+      if (ev[i].state === 'on') return ev[i];
+    }
+    return null;
+  }
+
+  // Evento piu' recente fra tutte le entita' della card, con l'entita' che lo
+  // ha prodotto: il riassunto vuole dire anche *chi* si e' mosso per ultimo.
   _lastAny() {
     let best = null;
     this._ids().forEach((id) => {
       const e = this._last(id);
-      if (e && (!best || e.ts > best.ts)) best = e;
+      if (e && (!best || e.ts > best.ts)) best = { ts: e.ts, state: e.state, entity: id };
     });
     return best;
+  }
+
+  // Testo della colonna oraria quando nella finestra non c'e' nessuna
+  // transizione. Un trattino direbbe "non lo so"; questo dice la cosa vera,
+  // cioe' che l'ultimo movimento e' piu' vecchio di quanto la card guardi.
+  _older() {
+    const h = this._hours();
+    return '> ' + (h >= 48 ? Math.floor(h / 24) + ' gg' : h + ' h');
+  }
+
+  _hours() {
+    return (this.config && this.config.history_hours) || this._defaultHours();
+  }
+
+  _defaultHours() {
+    return 48;
   }
 
   // ---------- markup ----------
@@ -8134,11 +8164,19 @@ class OpeningsCard extends MgddCompactCard {
     if (!config || !Array.isArray(config.zones) || !config.zones.length) {
       throw new Error('Config "zones" mancante o vuota');
     }
-    this.config = Object.assign({ title: 'Porte e finestre', history_hours: 48 }, config);
+    this.config = Object.assign({ title: 'Porte e finestre' }, config);
     this._expanded = !!config.expanded;
     this._sig = null;
     this._hist = {};
     this._histAt = 0;
+  }
+
+  // Una finestra che sta chiusa per giorni e' la normalita': con 48 ore meta'
+  // delle righe restavano senza orario, perche' nella finestra c'erano solo i
+  // passaggi da unavailable dei riavvii, che vengono scartati. Sette giorni
+  // costano poco proprio perche' queste entita' cambiano di rado.
+  _defaultHours() {
+    return 168;
   }
 
   static getStubConfig() {
@@ -8174,7 +8212,10 @@ class OpeningsCard extends MgddCompactCard {
     const icon = this._iconOf(item, s);
     const isLock = icon === 'lock';
     const avail = this._avail(s);
-    const active = avail && (isLock ? s.state === 'unlocked' : s.state === 'on');
+    // Una Nuki passa anche per `open` (scrocco tirato) e `opening`: sono stati
+    // in cui la porta NON e' chiusa a chiave, e contarli come "bloccata"
+    // direbbe il falso proprio nel momento in cui conta.
+    const active = avail && (isLock ? s.state !== 'locked' && s.state !== 'locking' : s.state === 'on');
     const L = this._labelsOf(item, icon);
     const ev = this._last(item.entity);
     const name = item.name || (s && s.attributes && s.attributes.friendly_name) || item.entity;
@@ -8189,7 +8230,7 @@ class OpeningsCard extends MgddCompactCard {
       name: name,
       icon: icon,
       label: label,
-      time: !avail ? '—' : ev ? mgddWhen(ev.ts) : '—',
+      time: !avail ? '—' : ev ? mgddWhen(ev.ts) : this._older(),
       state: !avail ? 'na' : active ? 'open' : '',
       active: !!active,
       lock: isLock,
@@ -8216,9 +8257,12 @@ class OpeningsCard extends MgddCompactCard {
     const naTail = na.length ? ' · <em>' + mgddEsc(na[0].name) + ' non disponibile</em>' : '';
 
     if (!act.length) {
+      // Se non c'e' niente di aperto, l'ultimo evento di chiunque e' per forza
+      // una chiusura: fosse un'apertura, quella riga sarebbe fra le attive.
       const ev = this._lastAny();
+      const chi = ev && rows.filter((r) => r.entity === ev.entity)[0];
       let sub = 'Tutte chiuse';
-      if (ev) sub += ' · ultimo movimento ' + mgddWhen(ev.ts);
+      if (chi) sub += ' · ultima ' + mgddEsc(chi.name) + ' ' + mgddWhen(ev.ts);
       return { tone: '', icon: 'shield', title: title, sub: sub + naTail, pill: { cls: '', txt: 'Tutte chiuse' } };
     }
 
@@ -8294,12 +8338,20 @@ class SensorsCard extends MgddCompactCard {
     }
     const mode = config.mode || 'water';
     if (!MGDD_MODES[mode]) throw new Error('mode deve essere "water" oppure "motion"');
-    this.config = Object.assign({ history_hours: 48 }, config, { mode: mode });
+    this.config = Object.assign({}, config, { mode: mode });
     this._m = MGDD_MODES[mode];
     this._expanded = !!config.expanded;
     this._sig = null;
     this._hist = {};
     this._histAt = 0;
+  }
+
+  // Un sensore di movimento fa centinaia di transizioni al giorno e l'ultima e'
+  // quasi sempre di poche ore fa: due giorni bastano e la query resta corta. Un
+  // sensore di allagamento invece, se funziona, non cambia mai: li' serve una
+  // finestra larga per avere qualcosa da mostrare.
+  _defaultHours() {
+    return this.config.mode === 'motion' ? 48 : 168;
   }
 
   static getStubConfig() {
@@ -8320,6 +8372,10 @@ class SensorsCard extends MgddCompactCard {
     const avail = this._avail(s);
     const active = avail && s.state === 'on';
     const ev = this._last(item.entity);
+    // Due istanti diversi: `ev` e' l'ultimo cambio (da quando e' assente),
+    // `on` e' l'ultima accensione (quando e' passato qualcuno). L'etichetta
+    // vuole il primo, la colonna oraria il secondo.
+    const on = this._lastOn(item.entity);
     const name = item.name || (s && s.attributes && s.attributes.friendly_name) || item.entity;
 
     let label;
@@ -8328,15 +8384,19 @@ class SensorsCard extends MgddCompactCard {
     else if (ev) label = M.off + ' da ' + mgddDur(Date.now() - ev.ts);
     else label = M.off;
 
+    const stamp = active ? on || ev : on;
     return {
       entity: item.entity,
       name: name,
       icon: item.icon || M.rowIcon,
       label: label,
-      time: !avail ? '—' : ev ? mgddWhen(ev.ts) : '—',
+      time: !avail ? '—' : stamp ? mgddWhen(stamp.ts) : this._older(),
       state: !avail ? 'na' : active ? M.seg : 'off',
       active: !!active,
       ts: ev ? ev.ts : 0,
+      // istante dell'ultimo evento vero (accensione), quello che il riassunto
+      // chiama "ultimo movimento" / "ultima perdita"
+      onTs: on ? on.ts : 0,
     };
   }
 
@@ -8373,14 +8433,19 @@ class SensorsCard extends MgddCompactCard {
 
     // A riposo la frase utile non e' "tutto a posto" ma quando e' successo
     // l'ultima volta: per il movimento e' l'unico dato che si legge di sfuggita.
+    // Si ordina su onTs, l'ultima accensione, non sull'ultimo cambio: quello
+    // sarebbe l'istante in cui il sensore e' ricaduto, che non dice niente.
     const ok = rows.filter((r) => r.state !== 'na');
-    const recent = ok.filter((r) => r.ts).sort((a, b) => b.ts - a.ts)[0];
+    const recent = ok.filter((r) => r.onTs).sort((a, b) => b.onTs - a.onTs)[0];
     let sub;
     if (motion && recent) {
-      sub = 'Ultimo: ' + mgddEsc(recent.name) + ' ' + mgddDur(Date.now() - recent.ts) + ' fa';
+      // Solo l'orario, non anche "8 min fa": il tempo trascorso e' gia' nella
+      // riga del dettaglio, e qui il sub deve lasciare spazio all'avviso di un
+      // sensore non disponibile.
+      sub = 'Ultimo movimento: ' + mgddEsc(recent.name) + ' ' + mgddWhen(recent.onTs);
     } else {
       sub = ok.length === 1 ? M.idleOne : M.idle(ok.length);
-      if (recent) sub += ' · ultimo evento ' + mgddWhen(recent.ts);
+      if (recent) sub += ' · ultima ' + mgddWhen(recent.onTs);
     }
 
     return {
