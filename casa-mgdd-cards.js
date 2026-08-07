@@ -6,9 +6,10 @@
  * energy-monthly-card, energy-flow-card, energy-summary-card,
  * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
  * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
- * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card.
+ * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
+ * casa-mgdd-presence-card.
  *
- * Version: 1.79.0
+ * Version: 1.80.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -9519,4 +9520,339 @@ window.customCards.push({
   type: 'casa-mgdd-energy-scheme-card',
   name: 'Casa MGDD Energia · schema',
   description: 'Sole, rete, batteria e casa con le tracce che li uniscono e la luce che scorre su quelle attive. Config via YAML.',
+});
+
+// ===== presence-card.js =====
+// Una tessera per persona: chi c'e' e da quanto. Niente mappa, niente batteria,
+// niente indirizzo — quelli stanno gia' nel more-info, e qui toglierebbero
+// spazio alle due sole cose che si guardano di sfuggita: il nome e lo stato.
+//
+// Gerarchia rovesciata di proposito: il nome scende a etichetta da 10,5 px e lo
+// stato sale a 19. Chi apre la Home non cerca "Mattia", cerca "chi c'e'".
+//
+// Il verde e' l'unica tinta e compare solo per chi e' in casa. Chi e' fuori
+// resta col colore del testo normale, non grigio-spento: cosi' la tessera verde
+// salta all'occhio senza che l'altra sembri guasta.
+//
+// Il "da quanto" viene dal recorder, MAI da last_changed: a ogni riavvio di Home
+// Assistant last_changed torna all'istante del riavvio e la card direbbe che sei
+// uscito due minuti fa. Stessa lezione delle card compatte, stessa cura:
+// `end_time` esplicito, altrimenti l'endpoint si ferma a un giorno dopo `start`.
+
+const PR_OK = { light: '#0E9B6C', dark: '#35E0A1' };
+
+class PresenceCard extends HTMLElement {
+  setConfig(config) {
+    if (!config) throw new Error('Configurazione mancante');
+    const people = config.people || config.entities;
+    if (!Array.isArray(people) || !people.length) {
+      throw new Error('Indicare almeno una persona in `people:`');
+    }
+    this.config = Object.assign({ show_since: true, history_hours: 168 }, config);
+    this._sig = null;
+    this._hist = null;
+    this._histAt = 0;
+    this._timeSig = null;
+  }
+
+  static getStubConfig() {
+    return { people: ['person.mattia', 'person.deborah'] };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const sig = mgddStatesSig(hass, this._ids());
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+    this._maybeFetchHistory();
+  }
+
+  // Il tempo trascorso e' la seconda informazione della tessera: senza un battito
+  // proprio resterebbe fermo all'ultimo cambio di stato, cioe' fermo per ore.
+  // Si ridisegna solo quando il testo cambierebbe davvero, non a ogni giro.
+  connectedCallback() {
+    if (!this._tick) this._tick = setInterval(() => this._maybeTick(), 30000);
+  }
+
+  disconnectedCallback() {
+    if (this._tick) {
+      clearInterval(this._tick);
+      this._tick = null;
+    }
+  }
+
+  getCardSize() {
+    return 2;
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 'full', min_columns: 6 };
+  }
+
+  // ---------- dati ----------
+
+  _people() {
+    return (this.config.people || this.config.entities || [])
+      .map((p) => (typeof p === 'string' ? { entity: p } : p || {}))
+      .filter((p) => p.entity);
+  }
+
+  _ids() {
+    return this._people().map((p) => p.entity);
+  }
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  _name(p) {
+    const s = this._hass && this._hass.states[p.entity];
+    if (p.name) return p.name;
+    if (s && s.attributes && s.attributes.friendly_name) return s.attributes.friendly_name;
+    return String(p.entity).split('.')[1] || p.entity;
+  }
+
+  _initials(name) {
+    const w = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!w.length) return '?';
+    return (w[0][0] + (w.length > 1 ? w[1][0] : '')).toUpperCase();
+  }
+
+  // Lo stato di `person` e' `home`, `not_home` oppure il nome della zona in cui
+  // si trova: nell'ultimo caso la parola giusta e' gia' quella, si capitalizza.
+  _word(entity) {
+    const s = this._hass && this._hass.states[entity];
+    if (!s) return 'Sconosciuto';
+    if (s.state === 'home') return 'In casa';
+    if (s.state === 'not_home') return 'Fuori casa';
+    if (s.state === 'unavailable' || s.state === 'unknown' || s.state === 'None') return 'Sconosciuto';
+    return s.state.charAt(0).toUpperCase() + s.state.slice(1);
+  }
+
+  _home(entity) {
+    const s = this._hass && this._hass.states[entity];
+    return !!(s && s.state === 'home');
+  }
+
+  // ---------- cronologia dal recorder ----------
+
+  async _maybeFetchHistory() {
+    const now = Date.now();
+    if (this._histAt && now - this._histAt < 2 * 60 * 1000) return;
+    this._histAt = now;
+    if (!this._hass) return;
+    const ids = this._ids();
+    if (!ids.length) return;
+    const hours = this.config.history_hours || 168;
+    const start = new Date(now - hours * 3600 * 1000).toISOString();
+    try {
+      // `end_time` e' obbligatorio, non un di piu': senza, l'endpoint REST non
+      // arriva a adesso ma si ferma a UN GIORNO dopo `start`.
+      const path = 'history/period/' + start + '?end_time=' + encodeURIComponent(new Date(now).toISOString()) +
+        '&filter_entity_id=' + ids.join(',') + '&minimal_response&no_attributes';
+      const data = await this._hass.callApi('GET', path);
+      const out = {};
+      (data || []).forEach((arr) => {
+        if (!arr || !arr.length) return;
+        const id = arr[0].entity_id;
+        if (!id) return;
+        const ev = [];
+        arr.forEach((s) => {
+          if (s.state === 'unavailable' || s.state === 'unknown' || s.state === 'None') return;
+          const ts = new Date(s.last_changed || s.last_updated).getTime();
+          if (!ts) return;
+          // tratti uguali ricuciti: si tiene il timestamp del cambio vero, non
+          // quello dell'ultimo riavvio che ha solo ripubblicato lo stesso stato
+          if (!ev.length || ev[ev.length - 1].state !== s.state) ev.push({ state: s.state, ts: ts });
+        });
+        out[id] = ev;
+      });
+      this._hist = out;
+      this._render();
+    } catch (e) {
+      /* recorder non disponibile: restano gli stati correnti, senza orari */
+    }
+  }
+
+  // Inizio del tratto in cui la persona si trova ADESSO. Con un solo elemento in
+  // lista non c'e' stata nessuna transizione nella finestra: il vero inizio e'
+  // piu' vecchio di quanto la card guardi, e va detto invece che inventato.
+  _runStart(entity) {
+    const st = this._hass && this._hass.states[entity];
+    const ev = (this._hist || {})[entity];
+    if (!st) return null;
+    if (!ev || !ev.length) return null;
+    const last = ev[ev.length - 1];
+    if (last.state !== st.state) {
+      // il recorder puo' essere indietro di qualche secondo: vince hass
+      const ts = new Date(st.last_changed).getTime();
+      return ts ? { ts: ts, capped: false } : null;
+    }
+    return { ts: last.ts, capped: ev.length < 2 };
+  }
+
+  _dur(ms) {
+    if (ms < 0) ms = 0;
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return 'adesso';
+    if (m < 60) return m + ' min';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ' + (m % 60 < 10 ? '0' : '') + (m % 60) + 'm';
+    const d = Math.floor(h / 24);
+    return d + (d === 1 ? ' giorno' : ' giorni');
+  }
+
+  _sinceText(entity) {
+    if (this.config.show_since === false) return '';
+    // Di uno stato sconosciuto non interessa "da quanto": la colonna sparisce e
+    // lascia la sua larghezza alla parola, che e' la piu' lunga del vocabolario.
+    const s = this._hass && this._hass.states[entity];
+    if (!s || s.state === 'unavailable' || s.state === 'unknown' || s.state === 'None') return '';
+    const r = this._runStart(entity);
+    if (!r) return '';
+    const h = this.config.history_hours || 168;
+    if (r.capped) return '> ' + (h >= 48 ? Math.floor(h / 24) + ' gg' : h + ' h');
+    return this._dur(Date.now() - r.ts);
+  }
+
+  _maybeTick() {
+    if (!this._hass || !this.config) return;
+    const sig = this._ids().map((id) => this._sinceText(id)).join('|');
+    if (sig !== this._timeSig) this._render();
+  }
+
+  // ---------- markup ----------
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    this._timeSig = this._ids().map((id) => this._sinceText(id)).join('|');
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+    // La foto puo' non esserci o non caricare: in quel caso restano le iniziali
+    // gia' presenti sotto. Legato a ogni ridisegno perche' mgddPaint rifa' il
+    // sottoalbero e i listener sui nodi interni sparirebbero.
+    this.querySelectorAll('.pr-av img').forEach((im) => {
+      im.addEventListener('error', () => im.remove());
+    });
+  }
+
+  _html() {
+    const nosince = this.config.show_since === false;
+    const tiles = this._people()
+      .map((p) => {
+        const st = this._hass.states[p.entity];
+        const name = this._name(p);
+        const word = this._word(p.entity);
+        const pic = p.picture || (st && st.attributes && st.attributes.entity_picture) || '';
+        const since = this._sinceText(p.entity);
+        return (
+          '<ha-card class="pr-t' + (this._home(p.entity) ? ' pr-home' : '') + '" ' +
+          'data-more="' + mgddEsc(p.entity) + '" role="button" tabindex="0" ' +
+          'aria-label="' + mgddEsc(name + ', ' + word) + '">' +
+          '<div class="pr-in">' +
+          '<span class="pr-av"><b>' + mgddEsc(this._initials(name)) + '</b>' +
+          (pic ? '<img src="' + mgddEsc(pic) + '" alt="">' : '') + '</span>' +
+          '<span class="pr-bd">' +
+          '<span class="pr-n">' + mgddEsc(name) + '</span>' +
+          '<span class="pr-s">' + mgddEsc(word) + '</span></span>' +
+          (since ? '<span class="pr-since">' + mgddEsc(since) + '</span>' : '') +
+          '</div></ha-card>'
+        );
+      })
+      .join('');
+    return (
+      '<div class="pr' + (this._isDark() ? ' pr-dark' : '') + (nosince ? ' pr-nosince' : '') + '">' +
+      tiles + '</div>'
+    );
+  }
+
+  _wire() {
+    if (this._wired) return;
+    this._wired = true;
+    this.addEventListener('click', (ev) => this._fire(ev));
+    this.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        this._fire(ev);
+      }
+    });
+  }
+
+  _fire(ev) {
+    const el = ev.target && ev.target.closest ? ev.target.closest('[data-more]') : null;
+    const id = el && el.getAttribute('data-more');
+    if (!id) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+  }
+
+  _styles() {
+    // La soglia non e' un numero tondo scelto a occhio: e' la larghezza sotto la
+    // quale "Fuori casa" a 19 px non ci sta piu' accanto al tempo (231 px misurati,
+    // 236 con un margine). Dipende da quante tessere ci sono, quindi si calcola
+    // qui invece di fissarla nel foglio di stile.
+    const n = Math.max(1, this._people().length);
+    const bp = n * 236 + (n - 1) * 12;
+    return (
+      '<style>' +
+      '.pr{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px;' +
+      'container-type:inline-size;' +
+      '--pr-ok:' + PR_OK.light + ';--pr-t1:var(--primary-text-color,#14161a);' +
+      '--pr-t2:var(--secondary-text-color,#70757f);--pr-hair:rgba(16,20,28,.14);' +
+      '--pr-panel:rgba(16,20,28,.05);' +
+      '--pr-bg:var(--ha-card-background,var(--card-background-color,#fff));}' +
+      '.pr.pr-dark{--pr-ok:' + PR_OK.dark + ';--pr-hair:rgba(255,255,255,.16);' +
+      '--pr-panel:rgba(255,255,255,.06);}' +
+      '.pr *{box-sizing:border-box;}' +
+      '.pr .pr-t{cursor:pointer;overflow:hidden;}' +
+      '.pr .pr-t:focus-visible{outline:2px solid var(--pr-ok);outline-offset:2px;}' +
+
+      // Tre colonne: foto, testo, tempo. Il tempo e' spinto in basso dal grid,
+      // non da un margine a occhio, cosi' resta allineato fra tessere diverse.
+      '.pr .pr-in{display:grid;grid-template-columns:auto minmax(0,1fr) auto;' +
+      'grid-template-areas:"av bd tm";align-items:center;gap:14px;padding:16px;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'color:var(--pr-t1);}' +
+      '.pr.pr-nosince .pr-in{grid-template-columns:auto minmax(0,1fr);grid-template-areas:"av bd";}' +
+
+      // L'anello e' 1,5 px con uno stacco del colore della card: si vede che c'e'
+      // anche quando e' neutro, e non sembra un bordo dell'immagine.
+      '.pr .pr-av{grid-area:av;position:relative;width:46px;height:46px;border-radius:50%;' +
+      'flex:none;overflow:hidden;display:grid;place-items:center;background:var(--pr-panel);' +
+      'box-shadow:0 0 0 2px var(--pr-bg),0 0 0 3.5px var(--pr-hair);}' +
+      '.pr .pr-home .pr-av{box-shadow:0 0 0 2px var(--pr-bg),0 0 0 3.5px var(--pr-ok);}' +
+      '.pr .pr-av b{font-size:16px;font-weight:800;letter-spacing:.3px;color:var(--pr-t2);}' +
+      '.pr .pr-av img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;}' +
+
+      '.pr .pr-bd{grid-area:bd;min-width:0;}' +
+      '.pr .pr-n{display:block;font-size:10.5px;font-weight:800;letter-spacing:1.35px;' +
+      'text-transform:uppercase;color:var(--pr-t2);line-height:1;' +
+      'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.pr .pr-s{display:block;font-size:19px;font-weight:700;letter-spacing:-.5px;line-height:1;' +
+      'margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.pr .pr-home .pr-s{color:var(--pr-ok);}' +
+
+      '.pr .pr-since{grid-area:tm;align-self:end;font-size:11.5px;color:var(--pr-t2);' +
+      'font-variant-numeric:tabular-nums;white-space:nowrap;}' +
+
+      // Quando le tessere si stringono, il tempo passa sotto lo stato e la foto
+      // copre entrambe le righe: la parola resta intera invece di troncarsi.
+      '@container (max-width:' + bp + 'px){' +
+      '.pr .pr-in{grid-template-columns:auto minmax(0,1fr);' +
+      'grid-template-areas:"av bd" "av tm";row-gap:4px;column-gap:13px;padding:15px 14px;}' +
+      '.pr.pr-nosince .pr-in{grid-template-areas:"av bd";}' +
+      '.pr .pr-since{align-self:start;justify-self:start;}' +
+      '.pr .pr-s{font-size:17.5px;}' +
+      '.pr .pr-av{width:42px;height:42px;}}' +
+      '</style>'
+    );
+  }
+}
+
+customElements.define('casa-mgdd-presence-card', PresenceCard);
+window.customCards.push({
+  type: 'casa-mgdd-presence-card',
+  name: 'Casa MGDD Presenza',
+  description: 'Una tessera per persona con foto, nome e stato. Il tempo trascorso viene dal recorder, non da last_changed. Config via YAML.',
 });
