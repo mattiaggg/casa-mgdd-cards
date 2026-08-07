@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card.
  *
- * Version: 1.80.1
+ * Version: 1.81.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -9169,9 +9169,9 @@ class EnergyRingCard extends HTMLElement {
       ? Math.max(0, Math.min(100, ((cons - imp) / cons) * 100)) : null;
 
     const segs = [
-      { v: direct || 0, c: 'var(--sun)' },
-      { v: bdis || 0, c: 'var(--bat)' },
-      { v: imp || 0, c: 'var(--grid)' },
+      { v: direct || 0, c: 'var(--sun)', l: 'Sole diretto' },
+      { v: bdis || 0, c: 'var(--bat)', l: 'Dalla batteria' },
+      { v: imp || 0, c: 'var(--grid)', l: 'Dalla rete' },
     ].filter((s) => s.v > 0);
     const tot = segs.reduce((a, s) => a + s.v, 0);
 
@@ -9180,12 +9180,19 @@ class EnergyRingCard extends HTMLElement {
     const SW = 13;
     let ang = -90;
     let arcs = '';
+    let hits = '';
     segs.forEach((s) => {
       // una fetta minuscola (lo 0,1 kWh di rete di una giornata buona) deve
       // restare visibile: sotto i 3,2 gradi non si vedrebbe affatto
       const end = ang + Math.max((s.v / tot) * 360, 3.2);
-      arcs += '<path d="' + engArc(CC, CC, R, ang, end - 2.4) + '" fill="none" stroke="' + s.c +
+      const d = engArc(CC, CC, R, ang, end - 2.4);
+      arcs += '<path d="' + d + '" fill="none" stroke="' + s.c +
         '" stroke-width="' + SW + '" stroke-linecap="butt"/>';
+      // Binario invisibile piu' largo sopra la fetta: il dito non prende 13
+      // unita' di corona, e la fetta della rete in una bella giornata ne vale 3.
+      hits += '<path class="er-seg" d="' + d + '" fill="none" stroke="transparent" stroke-width="30" ' +
+        'pointer-events="stroke" data-l="' + s.l + '" data-v="' + engKwh(s.v) + '" data-c="' + s.c +
+        '" data-p="' + Math.round((s.v / tot) * 100) + '%" data-a="' + ((ang + end) / 2 - 1.2).toFixed(1) + '"/>';
       ang = end;
     });
 
@@ -9212,12 +9219,14 @@ class EnergyRingCard extends HTMLElement {
       '<div class="er-hd"><span class="er-t">' + c.title + '</span>' +
       '<span class="er-st" style="color:' + gs.c + '"><i></i>' + gs.t + '</span></div>' +
 
-      '<div class="er-ring"><svg viewBox="0 0 200 200" role="img" aria-label="Da dove e\' arrivata l\'energia consumata oggi">' +
+      '<div class="er-ring"><div class="er-rw">' +
+      '<svg viewBox="0 0 200 200" role="img" aria-label="Da dove e\' arrivata l\'energia consumata oggi">' +
       '<circle cx="' + CC + '" cy="' + CC + '" r="' + R + '" fill="none" stroke="var(--eng-hair)" stroke-width="' + SW + '"/>' +
-      arcs + '</svg>' +
+      arcs + hits + '</svg>' +
       '<div class="er-c"><b>' + (self === null ? '—' : Math.round(self) + '%') + '</b>' +
       '<span>autosufficienza</span>' +
-      '<em>' + (cons === null ? 'consumo non disponibile' : engKwh(cons) + ' kWh in casa') + '</em></div></div>' +
+      '<em>' + (cons === null ? 'consumo non disponibile' : engKwh(cons) + ' kWh in casa') + '</em></div>' +
+      '<div class="er-tip" hidden></div></div></div>' +
 
       '<div class="er-g">' +
       pill('sun', 'var(--sun)', 'Solare', lbl(fs), c.solar_power) +
@@ -9231,10 +9240,48 @@ class EnergyRingCard extends HTMLElement {
     );
   }
 
+  // Il riquadro della fetta puntata. Posizionato al centro dell'arco e spinto
+  // in fuori lungo il raggio, poi riportato dentro la scatola dell'anello: da
+  // qualunque parte si punti resta leggibile e non esce dalla card.
+  _tip(seg) {
+    const tip = this.querySelector('.er-tip');
+    if (!tip) return;
+    if (!seg) {
+      tip.hidden = true;
+      return;
+    }
+    const at = (k) => seg.getAttribute('data-' + k) || '';
+    tip.innerHTML = '<i><s style="background:' + at('c') + '"></s>' + at('l') + '</i>' +
+      '<b>' + at('v') + '<small>kWh</small></b><em>' + at('p') + '</em>';
+    tip.hidden = false;
+    const box = tip.parentNode;
+    const S = box.clientWidth || 196;
+    const a = (parseFloat(at('a')) || 0) * Math.PI / 180;
+    const w = tip.offsetWidth;
+    const h = tip.offsetHeight;
+    // 0,40 = raggio della corona (80) sul lato del viewBox (200)
+    const x = S / 2 + Math.cos(a) * (S * 0.40 + 30) - w / 2;
+    const y = S / 2 + Math.sin(a) * (S * 0.40 + 30) - h / 2;
+    // Puo' sporgere dalla scatola dell'anello: ai lati c'e' il margine della
+    // card, sopra c'e' l'intestazione. Coprire per un attimo quella e' meglio
+    // che posarsi sulla fetta che si sta indicando.
+    tip.style.left = Math.max(-24, Math.min(S - w + 24, x)) + 'px';
+    tip.style.top = Math.max(-30, Math.min(S - h, y)) + 'px';
+  }
+
   _wire() {
     if (this._wired) return;
     this._wired = true;
     this.addEventListener('click', (ev) => {
+      const seg = ev.target.closest ? ev.target.closest('.er-seg') : null;
+      // Col dito non esiste il passaggio del mouse: il tocco apre il riquadro e
+      // ci pensa il timer a richiuderlo, come nei grafici a barre.
+      if (seg) {
+        this._tip(seg);
+        clearTimeout(this._tipT);
+        this._tipT = setTimeout(() => this._tip(null), 2500);
+        return;
+      }
       const el = ev.target.closest ? ev.target.closest('[data-more]') : null;
       const id = el && el.getAttribute('data-more');
       if (id) {
@@ -9242,6 +9289,10 @@ class EnergyRingCard extends HTMLElement {
           { detail: { entityId: id }, bubbles: true, composed: true }));
       }
     });
+    this.addEventListener('mousemove', (ev) => {
+      this._tip(ev.target.closest ? ev.target.closest('.er-seg') : null);
+    });
+    this.addEventListener('mouseleave', () => this._tip(null));
   }
 
   _styles() {
@@ -9271,8 +9322,10 @@ class EnergyRingCard extends HTMLElement {
       // La corona resta di misura fissa: e' l'unico modo perche' il testo al
       // centro mantenga sempre la stessa aria attorno, anche in una colonna
       // stretta o sul telefono.
-      '.er .er-ring{position:relative;display:flex;justify-content:center;margin:10px 0 2px;}' +
+      '.er .er-ring{display:flex;justify-content:center;margin:10px 0 2px;}' +
+      '.er .er-rw{position:relative;width:196px;height:196px;}' +
       '.er .er-ring svg{width:196px;height:196px;}' +
+      '.er .er-seg{cursor:pointer;}' +
       '.er .er-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;' +
       'justify-content:center;gap:2px;pointer-events:none;}' +
       '.er .er-c b{font-size:38px;font-weight:700;letter-spacing:-1.4px;line-height:1;font-variant-numeric:tabular-nums;}' +
@@ -9286,6 +9339,24 @@ class EnergyRingCard extends HTMLElement {
       '.er .er-px{min-width:0;line-height:1.15;}' +
       '.er .er-px i{display:block;font-style:normal;font-size:10.5px;color:var(--eng-t2);}' +
       '.er .er-px b{display:block;font-size:15.5px;font-weight:640;font-variant-numeric:tabular-nums;}' +
+
+      // Stessa ricetta dei riquadri degli altri grafici della libreria:
+      // superficie della card, bordo del tema e ombra. La pillola invertita
+      // spariva in tema scuro.
+      '.er .er-tip{position:absolute;z-index:3;pointer-events:none;white-space:nowrap;' +
+      'padding:5px 9px 6px;border-radius:10px;line-height:1.25;' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      // ripiego su --eng-hair e non su un nero fisso: quello, in tema scuro,
+      // sarebbe un bordo invisibile su fondo scuro
+      'border:1px solid var(--divider-color,var(--eng-hair));box-shadow:0 6px 18px rgba(0,0,0,.18);}' +
+      '.er .er-tip[hidden]{display:none;}' +
+      '.er .er-tip i{display:block;font-style:normal;font-size:10px;color:var(--eng-t2);}' +
+      '.er .er-tip i s{display:inline-block;width:7px;height:7px;border-radius:50%;' +
+      'margin-right:5px;vertical-align:1px;text-decoration:none;}' +
+      '.er .er-tip b{font-size:12.5px;font-weight:650;font-variant-numeric:tabular-nums;}' +
+      '.er .er-tip b small{font-size:10px;font-weight:600;color:var(--eng-t2);margin-left:3px;}' +
+      '.er .er-tip em{font-style:normal;font-size:11px;color:var(--eng-t2);margin-left:7px;' +
+      'font-variant-numeric:tabular-nums;}' +
       engDailyCss('.er') +
 
       '@container (max-width:330px){' +
@@ -9441,13 +9512,24 @@ class EnergySchemeCard extends HTMLElement {
         '<g transform="translate(-11,-11)" style="color:' + col + '">' +
         '<svg x="0" y="0" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
         'stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' + (EL_ICONS[icon] || '') + '</svg></g>' +
-        '<text y="38" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--eng-t1)" ' +
+        // Pesi allineati al resto della card: il valore come i numeri del
+        // riepilogo (650), il nome come le altre maiuscolette (800). A 9px il
+        // peso normale sembrava un carattere diverso, non un testo piu' tenue.
+        '<text y="38" text-anchor="middle" font-size="12.5" font-weight="650" fill="var(--eng-t1)" ' +
         'style="font-variant-numeric:tabular-nums">' + val + '</text>' +
-        '<text y="50" text-anchor="middle" font-size="9" fill="var(--eng-t2)" ' +
-        'style="letter-spacing:.9px;text-transform:uppercase">' + lab + '</text></g>';
+        '<text y="50" text-anchor="middle" font-size="9" font-weight="800" fill="var(--eng-t2)" ' +
+        'style="letter-spacing:1.05px;text-transform:uppercase">' + lab + '</text></g>';
     };
     const lbl = (f) => f.v + (f.u ? ' ' + f.u : '');
     const gs = engGridState(h, c, gW);
+
+    // La batteria e' l'unico nodo con due grandezze: quanta ne ha e quanta ne
+    // sta scambiando. La freccia segue la convenzione del riepilogo: giu' entra,
+    // su esce. Sotto `battery_min_flow` resta il solo stato di carica.
+    const bf = (chg || dis) ? engFmt(bW) : null;
+    const batVal = (soc === null ? '—' : Math.round(soc) + ' %') +
+      (bf ? '<tspan fill="var(--bat)" font-size="11"> ' + (chg ? '↓' : '↑') +
+        ' ' + bf.v + ' ' + bf.u + '</tspan>' : '');
 
     return (
       '<ha-card class="es' + (dark ? ' es-dark' : '') +
@@ -9460,7 +9542,7 @@ class EnergySchemeCard extends HTMLElement {
       node(SX, SY, 'sun', 'var(--sun)', 'var(--w-sun)', lbl(engFmt(sW)), 'Solare', c.solar_power) +
       node(RX, RY, 'grid', 'var(--grid)', 'var(--w-grid)', lbl(engFmt(gW)), 'Rete', c.grid_power) +
       node(BX, BY, chg ? 'batchg' : 'bat', 'var(--bat)', 'var(--w-bat)',
-        soc === null ? '—' : Math.round(soc) + ' %', 'Batteria', c.battery_soc || c.battery_power) +
+        batVal, 'Batteria', c.battery_soc || c.battery_power) +
       node(HX, HY, 'casa', 'var(--casa)', 'var(--w-casa)', lbl(engFmt(hW)), 'Casa', c.house_power) +
       '</svg>' +
       engDailyHtml(engNum(h, c.solar_today), engNum(h, c.grid_import_today || c.grid_today),
