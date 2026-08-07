@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card.
  *
- * Version: 1.82.0
+ * Version: 1.83.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -9078,15 +9078,101 @@ function engPoly(pts, rad) {
 
 // Riepilogo giornaliero condiviso dalle due card. Sono le tre voci che si
 // leggono in bolletta, non la scomposizione interna: prodotta, presa, resa.
-function engDailyHtml(prod, imp, exp) {
-  const row = (k, col, lab, v) =>
+function engDailyHtml(prod, imp, exp, cons, deltas) {
+  const row = (k, col, lab, v, d) =>
     '<div class="eng-r"><span class="eng-i" style="color:' + col + '">' + elIcon(k, 2) + '</span>' +
-    '<span class="eng-l">' + lab + '</span><b>' + engKwh(v) + '<small>kWh</small></b></div>';
+    '<span class="eng-l">' + lab + '</span><b>' + engKwh(v) + '<small>kWh</small></b>' +
+    (d ? '<span class="eng-d eng-' + d.c + '">' + d.t + '</span>' : '') + '</div>';
+  const D = deltas || {};
   return '<div class="eng-dr"><div class="eng-dh">Oggi</div>' +
-    row('sun', 'var(--sun)', 'Energia prodotta', prod) +
-    row('dn', 'var(--grid)', 'Energia importata dalla rete', imp) +
-    row('up', 'var(--casa)', 'Energia immessa in rete', exp) +
+    (cons === undefined ? '' : row('casa', 'var(--casa)', 'Consumo casa', cons, D.cons)) +
+    row('sun', 'var(--sun)', 'Energia prodotta', prod, D.prod) +
+    row('dn', 'var(--grid)', 'Energia importata dalla rete', imp, D.imp) +
+    row('up', 'var(--casa)', 'Energia immessa in rete', exp, D.exp) +
     '</div>';
+}
+
+// Scarto rispetto a ieri. `pol` dice da che parte sta il bene: +1 se salire e'
+// un miglioramento (produzione), -1 se lo e' scendere (consumo, prelievo),
+// 0 se non ha verso (immissione, che qui non si vende).
+// Sotto il 3% si scrive "come ieri": due decimi di kWh non sono una tendenza.
+function engDelta(t, y, pol) {
+  if (t === null || t === undefined || y === null || y === undefined) return null;
+  if (Math.abs(y) < 0.05) return null;
+  const p = Math.round(((t - y) / y) * 100);
+  if (Math.abs(p) < 3) return { c: 'eq', t: 'come ieri' };
+  const cls = pol === 0 ? 'eq' : (((p > 0) === (pol > 0)) ? 'good' : 'bad');
+  return { c: cls, t: (p > 0 ? '+' : '−') + Math.abs(p) + '%' };
+}
+
+// Confronto onesto con ieri: oggi fino ad adesso contro ieri fino alla STESSA
+// ora. Senza quel taglio, alle 9 del mattino la card direbbe -80% soltanto
+// perche' la giornata non e' ancora finita, e mentirebbe ogni mattina.
+//
+// Entrambi i lati vengono dalle statistiche orarie, cosi' si confrontano due
+// grandezze omogenee (nessuna delle due ha l'ora in corso). Il numero grande
+// resta invece quello vivo del sensore `_today`: l'ora corrente si vede subito.
+// Una sola chiamata per tutti e quattro i contatori cumulativi.
+function engFetchStats(card) {
+  const c = card.config;
+  const ids = [c.house_total, c.solar_total, c.grid_import_total, c.grid_export_total].filter(Boolean);
+  const h = card._hass;
+  if (!ids.length || !h || !h.callWS) return;
+  const now = new Date();
+  const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const y0 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime();
+  const yCut = now.getTime() - 24 * 3600 * 1000;
+  h.callWS({
+    type: 'recorder/statistics_during_period',
+    start_time: new Date(y0).toISOString(),
+    end_time: now.toISOString(),
+    statistic_ids: ids,
+    period: 'hour',
+    types: ['change'],
+  }).then((resp) => {
+    const out = {};
+    ids.forEach((id) => {
+      const rows = (resp && resp[id]) || [];
+      let a = 0;
+      let b = 0;
+      rows.forEach((r) => {
+        const ts = new Date(r.start).getTime();
+        const v = r.change || 0;
+        if (ts >= t0) a += v;
+        else if (ts >= y0 && ts < yCut) b += v;
+      });
+      out[id] = rows.length ? { t: a, y: b } : null;
+    });
+    card._stats = out;
+    card._sig = null;
+    card._render();
+  }).catch(() => {
+    /* il confronto e' facoltativo: senza recorder le righe restano senza scarto */
+  });
+}
+
+// Le statistiche orarie non cambiano piu' spesso di cosi'.
+function engMaybeStats(card) {
+  const now = Date.now();
+  if (card._statsAt && now - card._statsAt < 300000) return;
+  card._statsAt = now;
+  engFetchStats(card);
+}
+
+function engDeltas(card) {
+  const c = card.config;
+  const s = card._stats;
+  if (!s) return null;
+  const d = (id, pol) => {
+    const r = id && s[id];
+    return r ? engDelta(r.t, r.y, pol) : null;
+  };
+  return {
+    cons: d(c.house_total, -1),
+    prod: d(c.solar_total, 1),
+    imp: d(c.grid_import_total, -1),
+    exp: d(c.grid_export_total, 0),
+  };
 }
 
 function engDailyCss(s) {
@@ -9099,20 +9185,74 @@ function engDailyCss(s) {
     s + ' .eng-i svg{width:17px;height:17px;}' +
     s + ' .eng-l{flex:1;min-width:0;font-size:12.5px;color:var(--eng-t2);}' +
     s + ' .eng-r b{font-size:13.5px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap;}' +
-    s + ' .eng-r b small{font-size:10.5px;font-weight:600;color:var(--eng-t2);margin-left:3px;}';
+    s + ' .eng-r b small{font-size:10.5px;font-weight:600;color:var(--eng-t2);margin-left:3px;}' +
+    // lo scarto su ieri: verde se la giornata e' andata meglio, ambra se peggio
+    s + ' .eng-d{flex:none;font-size:10.5px;font-weight:650;font-variant-numeric:tabular-nums;' +
+      'white-space:nowrap;padding:1px 6px;border-radius:99px;margin-left:8px;}' +
+    s + ' .eng-good{color:var(--eng-ok);background:var(--eng-ok-bg);}' +
+    s + ' .eng-bad{color:var(--eng-warn);background:var(--eng-warn-bg);}' +
+    s + ' .eng-eq{color:var(--eng-t2);background:rgba(127,127,127,.12);}';
 }
 
-// Stato della rete a parole. Se c'e' l'entita' del gateway la si crede: solo
-// quella sa distinguere il funzionamento in isola (rete assente, la casa va
-// avanti da sola) dallo scambio a zero, che e' tutt'altra cosa.
-function engGridState(hass, cfg, gW) {
+// Le tinte del confronto e del blackout, uguali per le due card.
+function engStateVars(dark) {
+  return dark
+    ? '--eng-bad:#FF6B5E;--eng-ok:#22E39A;--eng-ok-bg:rgba(34,227,154,.15);' +
+      '--eng-warn:#F5B301;--eng-warn-bg:rgba(245,179,1,.15);'
+    : '--eng-bad:#C7291B;--eng-ok:#0A8F63;--eng-ok-bg:rgba(15,181,126,.14);' +
+      '--eng-warn:#B4551A;--eng-warn-bg:rgba(224,138,0,.14);';
+}
+
+// Lo stato in alto dice l'EVENTO PRINCIPALE, non com'e' messa la rete: si
+// misurano i flussi possibili e si nomina il piu' grande. Prima guardava solo
+// il contatore, e con 17 W di rete scriveva "in prelievo" mentre la batteria
+// ne stava dando 251 dei 252 consumati da casa: l'unica cosa che non contava.
+//
+// L'immissione in rete e' declassata a ULTIMA RISORSA, perche' in questo
+// impianto non si vende: prima di immettere si carica la batteria. Non serve
+// una regola per caso: declassandola escono da soli i due comportamenti giusti.
+// A mezzogiorno il flusso maggiore diventa sole->batteria ("batteria in
+// ricarica"); a batteria piena resta sole->casa ("autoconsumo solare").
+// Con `can_export: true` l'immissione torna a concorrere alla pari.
+//
+// Niente piu' "in isola": senza Backup Gateway questo impianto NON regge il
+// carico a rete assente. Se il gateway dice off e' un blackout, e si scrive in
+// rosso.
+function engRegime(hass, cfg, sW, hW, gW, bW) {
   const st = cfg.grid_status ? hass.states[cfg.grid_status] : null;
-  if (st && st.state === 'off') return { t: 'in isola · rete assente', c: 'var(--sun)' };
-  const th = cfg.threshold;
-  if (gW === null) return { t: 'rete non misurata', c: 'var(--eng-t2)' };
-  if (gW > th) return { t: 'in prelievo', c: 'var(--grid)' };
-  if (gW < -th) return { t: 'in immissione', c: 'var(--grid)' };
-  return { t: 'rete collegata, nessuno scambio', c: 'var(--bat)' };
+  if (st && st.state === 'off') return { t: 'blackout', c: 'var(--eng-bad)', bad: true };
+
+  // Tutto muto e' anche la firma piu' probabile di un blackout vero: senza
+  // corrente il Powerwall smette di rispondere e non fa in tempo a dire off.
+  // Non lo si dichiara comunque: un guasto di rete darebbe lo stesso silenzio,
+  // e gridare "blackout" a ogni disconnessione WiFi sarebbe peggio di tacere.
+  if (sW === null && hW === null && gW === null && bW === null) {
+    return { t: 'impianto non raggiungibile', c: 'var(--eng-t2)' };
+  }
+
+  const TH = cfg.threshold;
+  const TB = cfg.battery_min_flow;
+  const batH = (bW !== null && bW > TB) ? bW : 0;
+  const gridH = (gW !== null && gW > TH) ? gW : 0;
+  const sunH = (sW !== null && sW > TH)
+    ? Math.min(sW, Math.max(0, (hW || 0) - batH - gridH)) : 0;
+  const chg = (bW !== null && bW < -TB) ? -bW : 0;
+  const sunB = chg ? Math.min(chg, Math.max(0, (sW || 0) - sunH)) : 0;
+  const gridB = chg ? Math.max(0, chg - sunB) : 0;
+  const toG = (gW !== null && gW < -TH) ? -gW : 0;
+
+  const f = [
+    { t: 'scarica batteria', v: batH, c: 'var(--bat)' },
+    { t: 'prelievo da rete', v: gridH, c: 'var(--grid)' },
+    { t: 'autoconsumo solare', v: sunH, c: 'var(--sun)' },
+    { t: 'batteria in ricarica', v: sunB, c: 'var(--bat)' },
+    { t: 'carica da rete', v: gridB, c: 'var(--grid)' },
+  ];
+  if (cfg.can_export) f.push({ t: 'immissione in rete', v: toG, c: 'var(--grid)' });
+  f.sort((a, b) => b.v - a.v);
+  if (f[0].v > TH) return { t: f[0].t, c: f[0].c };
+  if (toG > TH) return { t: 'immissione in rete', c: 'var(--grid)' };
+  return { t: 'impianto a riposo', c: 'var(--eng-t2)' };
 }
 
 // ===== energy-ring-card.js =====
@@ -9127,7 +9267,9 @@ class EnergyRingCard extends HTMLElement {
   setConfig(config) {
     if (!config) throw new Error('Configurazione mancante');
     this.config = Object.assign(
-      { title: 'Impianto', threshold: 5, battery_min_flow: 120, soc_scale: false },
+      // can_export: in questo impianto non si immette in rete, quindi
+      // l'immissione e' l'ultima cosa che lo stato in alto nomina. Vedi engRegime.
+      { title: 'Impianto', threshold: 5, battery_min_flow: 120, soc_scale: false, can_export: false },
       config
     );
     this._sig = null;
@@ -9146,6 +9288,11 @@ class EnergyRingCard extends HTMLElement {
       grid_export_today: 'sensor.powerwall3_site_export_today',
       battery_export_today: 'sensor.powerwall3_battery_export_today',
       grid_status: 'binary_sensor.powerwall3_grid_status',
+      // solo per il confronto con ieri: vedi engFetchStats
+      house_total: 'sensor.powerwall3_load_import',
+      solar_total: 'sensor.powerwall3_solar_export',
+      grid_import_total: 'sensor.powerwall3_site_import',
+      grid_export_total: 'sensor.powerwall3_site_export',
     };
   }
 
@@ -9160,6 +9307,7 @@ class EnergyRingCard extends HTMLElement {
       this._sig = sig;
       this._render();
     }
+    engMaybeStats(this);
   }
 
   getCardSize() { return 7; }
@@ -9221,10 +9369,11 @@ class EnergyRingCard extends HTMLElement {
     const sW = engPw(h, c.solar_power);
     const hW = engPw(h, c.house_power);
     const gW = engPw(h, c.grid_power);
+    const bW = engPw(h, c.battery_power);
     const soc0 = engNum(h, c.battery_soc);
     const soc = (soc0 !== null && c.soc_scale)
       ? Math.max(0, Math.min(100, (soc0 - 5) / 0.95)) : soc0;
-    const gs = engGridState(h, c, gW);
+    const gs = engRegime(h, c, sW, hW, gW, bW);
 
     const pill = (icon, col, lab, val, ent) => {
       return '<div class="er-p"' + (ent ? ' data-more="' + ent + '"' : '') + '>' +
@@ -9239,7 +9388,8 @@ class EnergyRingCard extends HTMLElement {
     return (
       '<ha-card class="er' + (dark ? ' er-dark' : '') + '"><div class="er-in">' +
       '<div class="er-hd"><span class="er-t">' + c.title + '</span>' +
-      '<span class="er-st" style="color:' + gs.c + '"><i></i>' + gs.t + '</span></div>' +
+      '<span class="er-st' + (gs.bad ? ' er-alarm' : '') + '" style="color:' + gs.c + '">' +
+      '<i></i>' + gs.t + '</span></div>' +
 
       '<div class="er-ring"><div class="er-rw">' +
       '<svg viewBox="0 0 200 200" role="img" aria-label="Da dove e\' arrivata l\'energia consumata oggi">' +
@@ -9257,7 +9407,7 @@ class EnergyRingCard extends HTMLElement {
       pill('grid', 'var(--grid)', 'Rete', lbl(fg), c.grid_power) +
       '</div>' +
 
-      engDailyHtml(prod, imp, exp) +
+      engDailyHtml(prod, imp, exp, cons, engDeltas(this)) +
       '</div></ha-card>'
     );
   }
@@ -9324,10 +9474,11 @@ class EnergyRingCard extends HTMLElement {
       '<style>' +
       ':host{display:block;}' +
       '.er{--sun:' + L.sun + ';--bat:' + L.bat + ';--grid:' + L.grid + ';--casa:' + L.casa + ';' +
+      engStateVars(false) +
       '--eng-hair:rgba(16,20,28,.11);--eng-t1:var(--primary-text-color,#14161a);' +
       '--eng-t2:var(--secondary-text-color,#70757f);container-type:inline-size;overflow:hidden;}' +
       '.er.er-dark{--sun:' + D.sun + ';--bat:' + D.bat + ';--grid:' + D.grid + ';--casa:' + D.casa + ';' +
-      '--eng-hair:rgba(255,255,255,.13);}' +
+      engStateVars(true) + '--eng-hair:rgba(255,255,255,.13);}' +
       '.er *{box-sizing:border-box;}' +
       '.er svg{display:block;}' +
       // La card prende tutta la sezione, ma il contenuto oltre i 520px si ferma
@@ -9340,6 +9491,7 @@ class EnergyRingCard extends HTMLElement {
       '.er .er-t{font-size:11px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--eng-t2);}' +
       '.er .er-st{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;text-align:right;}' +
       '.er .er-st i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
+      '.er .er-st.er-alarm{font-weight:800;letter-spacing:.09em;text-transform:uppercase;}' +
 
       // La corona resta di misura fissa: e' l'unico modo perche' il testo al
       // centro mantenga sempre la stessa aria attorno, anche in una colonna
@@ -9417,7 +9569,7 @@ class EnergySchemeCard extends HTMLElement {
     if (!config) throw new Error('Configurazione mancante');
     this.config = Object.assign(
       { title: 'Impianto', threshold: 5, battery_min_flow: 120, max_power: 3500,
-        soc_scale: false, animate: true },
+        soc_scale: false, animate: true, can_export: false },
       config
     );
     this._sig = null;
@@ -9433,7 +9585,15 @@ class EnergySchemeCard extends HTMLElement {
       solar_today: 'sensor.powerwall3_solar_export_today',
       grid_import_today: 'sensor.powerwall3_site_import_today',
       grid_export_today: 'sensor.powerwall3_site_export_today',
+      house_today: 'sensor.powerwall3_load_import_today',
       grid_status: 'binary_sensor.powerwall3_grid_status',
+      // contatori cumulativi: servono solo al confronto con ieri, che si legge
+      // dalle statistiche orarie. I sensori `_today` si azzerano a mezzanotte e
+      // non permettono di risalire alla giornata precedente.
+      house_total: 'sensor.powerwall3_load_import',
+      solar_total: 'sensor.powerwall3_solar_export',
+      grid_import_total: 'sensor.powerwall3_site_import',
+      grid_export_total: 'sensor.powerwall3_site_export',
     };
   }
 
@@ -9441,13 +9601,14 @@ class EnergySchemeCard extends HTMLElement {
     this._hass = hass;
     const c = this.config;
     const ids = [c.solar_power, c.house_power, c.grid_power, c.battery_power, c.battery_soc,
-      c.solar_today, c.grid_import_today || c.grid_today, c.grid_export_today,
+      c.solar_today, c.grid_import_today || c.grid_today, c.grid_export_today, c.house_today,
       c.grid_status].filter(Boolean);
     const sig = mgddStatesSig(hass, ids);
     if (sig !== this._sig) {
       this._sig = sig;
       this._render();
     }
+    engMaybeStats(this);
   }
 
   getCardSize() { return 6; }
@@ -9543,7 +9704,7 @@ class EnergySchemeCard extends HTMLElement {
         'style="letter-spacing:1.05px;text-transform:uppercase">' + lab + '</text></g>';
     };
     const lbl = (f) => f.v + (f.u ? ' ' + f.u : '');
-    const gs = engGridState(h, c, gW);
+    const gs = engRegime(h, c, sW, hW, gW, bW);
 
     // La batteria e' l'unico nodo con due grandezze: quanta ne ha e quanta ne
     // sta scambiando. La freccia segue la convenzione del riepilogo: giu' entra,
@@ -9558,7 +9719,8 @@ class EnergySchemeCard extends HTMLElement {
       (c.animate === false ? ' es-still' : '') + (c.animate === 'always' ? ' es-force' : '') +
       '"><div class="es-in">' +
       '<div class="es-hd"><span class="es-t">' + c.title + '</span>' +
-      '<span class="es-st" style="color:' + gs.c + '"><i></i>' + gs.t + '</span></div>' +
+      '<span class="es-st' + (gs.bad ? ' es-alarm' : '') + '" style="color:' + gs.c + '">' +
+      '<i></i>' + gs.t + '</span></div>' +
       '<svg class="es-svg" viewBox="0 0 340 224" role="img" aria-label="Schema dell\'impianto">' +
       lines +
       node(SX, SY, 'sun', 'var(--sun)', 'var(--w-sun)', lbl(engFmt(sW)), 'Solare', c.solar_power) +
@@ -9568,7 +9730,7 @@ class EnergySchemeCard extends HTMLElement {
       node(HX, HY, 'casa', 'var(--casa)', 'var(--w-casa)', lbl(engFmt(hW)), 'Casa', c.house_power) +
       '</svg>' +
       engDailyHtml(engNum(h, c.solar_today), engNum(h, c.grid_import_today || c.grid_today),
-        engNum(h, c.grid_export_today)) +
+        engNum(h, c.grid_export_today), engNum(h, c.house_today), engDeltas(this)) +
       '</div></ha-card>'
     );
   }
@@ -9593,11 +9755,13 @@ class EnergySchemeCard extends HTMLElement {
       '<style>' +
       ':host{display:block;}' +
       '.es{--sun:' + L.sun + ';--bat:' + L.bat + ';--grid:' + L.grid + ';--casa:' + L.casa + ';' +
+      engStateVars(false) +
       '--w-sun:rgba(224,138,0,.13);--w-bat:rgba(15,181,126,.13);--w-grid:rgba(14,165,233,.13);' +
       '--w-casa:rgba(109,90,230,.13);' +
       '--eng-hair:rgba(16,20,28,.11);--eng-t1:var(--primary-text-color,#14161a);' +
       '--eng-t2:var(--secondary-text-color,#70757f);container-type:inline-size;overflow:hidden;}' +
       '.es.es-dark{--sun:' + D.sun + ';--bat:' + D.bat + ';--grid:' + D.grid + ';--casa:' + D.casa + ';' +
+      engStateVars(true) +
       '--w-sun:rgba(245,179,1,.15);--w-bat:rgba(34,227,154,.15);--w-grid:rgba(56,189,248,.15);' +
       '--w-casa:rgba(139,123,255,.15);--eng-hair:rgba(255,255,255,.13);}' +
       '.es *{box-sizing:border-box;}' +
@@ -9607,6 +9771,8 @@ class EnergySchemeCard extends HTMLElement {
       '.es .es-t{font-size:11px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--eng-t2);}' +
       '.es .es-st{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;text-align:right;}' +
       '.es .es-st i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
+      // il blackout non e' uno stato come gli altri: piu' nero e maiuscoletto
+      '.es .es-st.es-alarm{font-weight:800;letter-spacing:.09em;text-transform:uppercase;}' +
       // Lo schema scala con la card, ma oltre una certa larghezza diventerebbe
       // solo alto: sopra i 520px si ferma e resta centrato.
       '.es .es-svg{width:100%;max-width:520px;height:auto;display:block;margin:2px auto;}' +
