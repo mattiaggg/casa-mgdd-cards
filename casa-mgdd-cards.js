@@ -5,9 +5,10 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, energy-summary-card,
  * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
- * casa-mgdd-sensors-card, casa-mgdd-energy-live-card.
+ * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
+ * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card.
  *
- * Version: 1.78.0
+ * Version: 1.79.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -8505,6 +8506,10 @@ const EL_ICONS = {
   grid: '<path d="M6 22 12 2l6 20"/><path d="M9 22 12 2l3 20"/><path d="M6.8 8h10.4M7.7 13h8.6M8.6 18h6.8"/>',
   bat: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M6.5 10.5v3M10 10.5v3"/>',
   batchg: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M11.4 9.6 8.6 12.2h2.2l-.6 2.4 2.8-2.8h-2.2z"/>',
+  // frecce del riepilogo giornaliero: giu' = energia che entra in casa dalla
+  // rete, su = energia che esce verso la rete
+  dn: '<path d="M12 4v12.5"/><path d="m6.6 11.4 5.4 5.6 5.4-5.6"/><path d="M5 20h14"/>',
+  up: '<path d="M12 20V7.5"/><path d="m6.6 12.6 5.4-5.6 5.4 5.6"/><path d="M5 4h14"/>',
 };
 
 // I disegni in EL_ICONS sono gia' markup completo (cerchi e tracciati), non
@@ -8962,4 +8967,556 @@ window.customCards.push({
   type: 'casa-mgdd-energy-live-card',
   name: 'Casa MGDD Energia (Home)',
   description: 'Consumo di oggi, profilo orario per provenienza e stato live di pannelli, casa, batteria e rete. Config via YAML.',
+});
+
+// ===== energia: anello e schema =====
+// Due card per la Home, indipendenti fra loro e dalla energy-live-card: si
+// scelgono in base a cosa deve saltare all'occhio.
+//
+//   casa-mgdd-energy-ring-card     un numero solo: quanto la casa si e' retta
+//                                  da sola oggi, e da dove e' arrivata
+//   casa-mgdd-energy-scheme-card   il quadro dell'impianto: chi sta alimentando
+//                                  chi, adesso
+//
+// Chiudono con lo stesso riepilogo giornaliero (prodotta / importata / immessa)
+// cosi' le due si possono affiancare senza che raccontino cose diverse.
+
+// La palette e' quella della energy-flow-card, non quella della
+// energy-live-card: chi mette lo schema accanto al diagramma di flusso deve
+// vedere lo stesso giallo e lo stesso verde. In chiaro coincidono comunque.
+const ENG_COLORS = {
+  light: { sun: '#E08A00', bat: '#0FB57E', grid: '#0EA5E9', casa: '#6D5AE6' },
+  dark: { sun: '#F5B301', bat: '#22E39A', grid: '#38BDF8', casa: '#8B7BFF' },
+};
+
+function engNum(hass, entity) {
+  if (!entity || !hass) return null;
+  const s = hass.states[entity];
+  if (!s) return null;
+  const v = parseFloat(s.state);
+  return Number.isNaN(v) ? null : v;
+}
+
+// potenza normalizzata a W leggendo l'unita' dell'entita' (kW->W), col segno
+function engPw(hass, entity) {
+  if (!entity || !hass) return null;
+  const s = hass.states[entity];
+  if (!s) return null;
+  const v = parseFloat(s.state);
+  if (Number.isNaN(v)) return null;
+  const u = ((s.attributes && s.attributes.unit_of_measurement) || '').toLowerCase();
+  if (u === 'kw') return v * 1000;
+  if (u === 'mw') return v * 1e6;
+  return v;
+}
+
+function engFmt(w) {
+  if (w === null || w === undefined) return { v: '—', u: '' };
+  const a = Math.abs(w);
+  if (a >= 1000) return { v: (a / 1000).toFixed(2).replace('.', ','), u: 'kW' };
+  return { v: String(Math.round(a)), u: 'W' };
+}
+
+function engKwh(v) {
+  if (v === null || v === undefined) return '—';
+  return v.toFixed(1).replace('.', ',');
+}
+
+// arco di cerchio in coordinate SVG, angoli in gradi con 0 = ore 3
+function engArc(cx, cy, r, a0, a1) {
+  const p = (a) => [cx + r * Math.cos((a * Math.PI) / 180), cy + r * Math.sin((a * Math.PI) / 180)];
+  const s = p(a0);
+  const e = p(a1);
+  return 'M' + s[0].toFixed(2) + ',' + s[1].toFixed(2) +
+    ' A' + r + ',' + r + ' 0 ' + (a1 - a0 > 180 ? 1 : 0) + ' 1 ' + e[0].toFixed(2) + ',' + e[1].toFixed(2);
+}
+
+// spezzata ortogonale con gli angoli raccordati: e' la forma delle tracce
+// dello schema, angoli a 90 gradi ma non taglienti
+function engPoly(pts, rad) {
+  let d = 'M' + pts[0][0] + ',' + pts[0][1];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p = pts[i - 1];
+    const c = pts[i];
+    const n = pts[i + 1];
+    const v1x = c[0] - p[0];
+    const v1y = c[1] - p[1];
+    const v2x = n[0] - c[0];
+    const v2y = n[1] - c[1];
+    const l1 = Math.hypot(v1x, v1y) || 1;
+    const l2 = Math.hypot(v2x, v2y) || 1;
+    const r = Math.min(rad, l1 / 2, l2 / 2);
+    d += ' L' + (c[0] - (v1x / l1) * r).toFixed(1) + ',' + (c[1] - (v1y / l1) * r).toFixed(1) +
+      ' Q' + c[0] + ',' + c[1] + ' ' + (c[0] + (v2x / l2) * r).toFixed(1) + ',' + (c[1] + (v2y / l2) * r).toFixed(1);
+  }
+  const e = pts[pts.length - 1];
+  return d + ' L' + e[0] + ',' + e[1];
+}
+
+// Riepilogo giornaliero condiviso dalle due card. Sono le tre voci che si
+// leggono in bolletta, non la scomposizione interna: prodotta, presa, resa.
+function engDailyHtml(prod, imp, exp) {
+  const row = (k, col, lab, v) =>
+    '<div class="eng-r"><span class="eng-i" style="color:' + col + '">' + elIcon(k, 2) + '</span>' +
+    '<span class="eng-l">' + lab + '</span><b>' + engKwh(v) + '<small>kWh</small></b></div>';
+  return '<div class="eng-dr"><div class="eng-dh">Oggi</div>' +
+    row('sun', 'var(--sun)', 'Energia prodotta', prod) +
+    row('dn', 'var(--grid)', 'Energia importata dalla rete', imp) +
+    row('up', 'var(--casa)', 'Energia immessa in rete', exp) +
+    '</div>';
+}
+
+function engDailyCss(s) {
+  return s + ' .eng-dr{margin-top:12px;padding-top:10px;border-top:1px solid var(--eng-hair);}' +
+    s + ' .eng-dh{font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;' +
+      'color:var(--eng-t2);margin-bottom:1px;}' +
+    s + ' .eng-r{display:flex;align-items:center;gap:9px;padding:7px 0;}' +
+    s + ' .eng-r+.eng-r{border-top:1px solid var(--eng-hair);}' +
+    s + ' .eng-i{flex:none;display:grid;place-items:center;}' +
+    s + ' .eng-i svg{width:17px;height:17px;}' +
+    s + ' .eng-l{flex:1;min-width:0;font-size:12.5px;color:var(--eng-t2);}' +
+    s + ' .eng-r b{font-size:13.5px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap;}' +
+    s + ' .eng-r b small{font-size:10.5px;font-weight:600;color:var(--eng-t2);margin-left:3px;}';
+}
+
+// Stato della rete a parole. Se c'e' l'entita' del gateway la si crede: solo
+// quella sa distinguere il funzionamento in isola (rete assente, la casa va
+// avanti da sola) dallo scambio a zero, che e' tutt'altra cosa.
+function engGridState(hass, cfg, gW) {
+  const st = cfg.grid_status ? hass.states[cfg.grid_status] : null;
+  if (st && st.state === 'off') return { t: 'in isola · rete assente', c: 'var(--sun)' };
+  const th = cfg.threshold;
+  if (gW === null) return { t: 'rete non misurata', c: 'var(--eng-t2)' };
+  if (gW > th) return { t: 'in prelievo', c: 'var(--grid)' };
+  if (gW < -th) return { t: 'in immissione', c: 'var(--grid)' };
+  return { t: 'rete collegata, nessuno scambio', c: 'var(--bat)' };
+}
+
+// ===== energy-ring-card.js =====
+// Un numero grande al centro — l'autosufficienza di oggi — e la corona che dice
+// da dove e' arrivata l'energia che la casa ha consumato: sole diretto,
+// batteria, rete. Sotto, i quattro valori istantanei e il riepilogo del giorno.
+//
+// La scomposizione segue la stessa gerarchia della energy-power-card: quello
+// che non e' venuto dalla batteria ne' dalla rete e' arrivato dal sole.
+
+class EnergyRingCard extends HTMLElement {
+  setConfig(config) {
+    if (!config) throw new Error('Configurazione mancante');
+    this.config = Object.assign(
+      { title: 'Impianto', threshold: 5, battery_min_flow: 120, soc_scale: false },
+      config
+    );
+    this._sig = null;
+  }
+
+  static getStubConfig() {
+    return {
+      solar_power: 'sensor.powerwall3_solar_power',
+      house_power: 'sensor.powerwall3_load_power',
+      grid_power: 'sensor.powerwall3_site_power',
+      battery_power: 'sensor.powerwall3_battery_power',
+      battery_soc: 'sensor.powerwall3_charge',
+      house_today: 'sensor.powerwall3_load_import_today',
+      solar_today: 'sensor.powerwall3_solar_export_today',
+      grid_import_today: 'sensor.powerwall3_site_import_today',
+      grid_export_today: 'sensor.powerwall3_site_export_today',
+      battery_export_today: 'sensor.powerwall3_battery_export_today',
+      grid_status: 'binary_sensor.powerwall3_grid_status',
+    };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const c = this.config;
+    const ids = [c.solar_power, c.house_power, c.grid_power, c.battery_power, c.battery_soc,
+      c.house_today, c.solar_today, c.grid_import_today || c.grid_today, c.grid_export_today,
+      c.battery_export_today, c.grid_status].filter(Boolean);
+    const sig = mgddStatesSig(hass, ids);
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getCardSize() { return 7; }
+
+  getGridOptions() { return { rows: 'auto', columns: 6, min_columns: 6 }; }
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+  }
+
+  _html() {
+    const h = this._hass;
+    const c = this.config;
+    const dark = !!(h.themes && h.themes.darkMode);
+
+    const cons = engNum(h, c.house_today);
+    const prod = engNum(h, c.solar_today);
+    const imp = engNum(h, c.grid_import_today || c.grid_today);
+    const exp = engNum(h, c.grid_export_today);
+    const bdis = engNum(h, c.battery_export_today);
+
+    // quota arrivata dal sole senza passare dalla batteria
+    const direct = cons === null ? null : Math.max(0, cons - (bdis || 0) - (imp || 0));
+    const self = (cons !== null && cons > 0 && imp !== null)
+      ? Math.max(0, Math.min(100, ((cons - imp) / cons) * 100)) : null;
+
+    const segs = [
+      { v: direct || 0, c: 'var(--sun)' },
+      { v: bdis || 0, c: 'var(--bat)' },
+      { v: imp || 0, c: 'var(--grid)' },
+    ].filter((s) => s.v > 0);
+    const tot = segs.reduce((a, s) => a + s.v, 0);
+
+    const R = 80;
+    const CC = 100;
+    const SW = 13;
+    let ang = -90;
+    let arcs = '';
+    segs.forEach((s) => {
+      // una fetta minuscola (lo 0,1 kWh di rete di una giornata buona) deve
+      // restare visibile: sotto i 3,2 gradi non si vedrebbe affatto
+      const end = ang + Math.max((s.v / tot) * 360, 3.2);
+      arcs += '<path d="' + engArc(CC, CC, R, ang, end - 2.4) + '" fill="none" stroke="' + s.c +
+        '" stroke-width="' + SW + '" stroke-linecap="butt"/>';
+      ang = end;
+    });
+
+    const sW = engPw(h, c.solar_power);
+    const hW = engPw(h, c.house_power);
+    const gW = engPw(h, c.grid_power);
+    const soc0 = engNum(h, c.battery_soc);
+    const soc = (soc0 !== null && c.soc_scale)
+      ? Math.max(0, Math.min(100, (soc0 - 5) / 0.95)) : soc0;
+    const gs = engGridState(h, c, gW);
+
+    const pill = (icon, col, lab, val, ent) => {
+      return '<div class="er-p"' + (ent ? ' data-more="' + ent + '"' : '') + '>' +
+        '<span class="er-pi" style="color:' + col + '">' + elIcon(icon, 2) + '</span>' +
+        '<span class="er-px"><i>' + lab + '</i><b>' + val + '</b></span></div>';
+    };
+    const lbl = (f) => f.v + (f.u ? ' ' + f.u : '');
+    const fs = engFmt(sW);
+    const fh = engFmt(hW);
+    const fg = engFmt(gW);
+
+    return (
+      '<ha-card class="er' + (dark ? ' er-dark' : '') + '"><div class="er-in">' +
+      '<div class="er-hd"><span class="er-t">' + c.title + '</span>' +
+      '<span class="er-st" style="color:' + gs.c + '"><i></i>' + gs.t + '</span></div>' +
+
+      '<div class="er-ring"><svg viewBox="0 0 200 200" role="img" aria-label="Da dove e\' arrivata l\'energia consumata oggi">' +
+      '<circle cx="' + CC + '" cy="' + CC + '" r="' + R + '" fill="none" stroke="var(--eng-hair)" stroke-width="' + SW + '"/>' +
+      arcs + '</svg>' +
+      '<div class="er-c"><b>' + (self === null ? '—' : Math.round(self) + '%') + '</b>' +
+      '<span>autosufficienza</span>' +
+      '<em>' + (cons === null ? 'consumo non disponibile' : engKwh(cons) + ' kWh in casa') + '</em></div></div>' +
+
+      '<div class="er-g">' +
+      pill('sun', 'var(--sun)', 'Solare', lbl(fs), c.solar_power) +
+      pill('casa', 'var(--casa)', 'Casa', lbl(fh), c.house_power) +
+      pill('bat', 'var(--bat)', 'Batteria', soc === null ? '—' : Math.round(soc) + '%', c.battery_soc || c.battery_power) +
+      pill('grid', 'var(--grid)', 'Rete', lbl(fg), c.grid_power) +
+      '</div>' +
+
+      engDailyHtml(prod, imp, exp) +
+      '</div></ha-card>'
+    );
+  }
+
+  _wire() {
+    if (this._wired) return;
+    this._wired = true;
+    this.addEventListener('click', (ev) => {
+      const el = ev.target.closest ? ev.target.closest('[data-more]') : null;
+      const id = el && el.getAttribute('data-more');
+      if (id) {
+        this.dispatchEvent(new CustomEvent('hass-more-info',
+          { detail: { entityId: id }, bubbles: true, composed: true }));
+      }
+    });
+  }
+
+  _styles() {
+    const L = ENG_COLORS.light;
+    const D = ENG_COLORS.dark;
+    return (
+      '<style>' +
+      ':host{display:block;}' +
+      '.er{--sun:' + L.sun + ';--bat:' + L.bat + ';--grid:' + L.grid + ';--casa:' + L.casa + ';' +
+      '--eng-hair:rgba(16,20,28,.11);--eng-t1:var(--primary-text-color,#14161a);' +
+      '--eng-t2:var(--secondary-text-color,#70757f);container-type:inline-size;overflow:hidden;}' +
+      '.er.er-dark{--sun:' + D.sun + ';--bat:' + D.bat + ';--grid:' + D.grid + ';--casa:' + D.casa + ';' +
+      '--eng-hair:rgba(255,255,255,.13);}' +
+      '.er *{box-sizing:border-box;}' +
+      '.er svg{display:block;}' +
+      '.er .er-in{padding:14px 15px 13px;color:var(--eng-t1);' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
+
+      '.er .er-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;}' +
+      '.er .er-t{font-size:11px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--eng-t2);}' +
+      '.er .er-st{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;text-align:right;}' +
+      '.er .er-st i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
+
+      // La corona resta di misura fissa: e' l'unico modo perche' il testo al
+      // centro mantenga sempre la stessa aria attorno, anche in una colonna
+      // stretta o sul telefono.
+      '.er .er-ring{position:relative;display:flex;justify-content:center;margin:10px 0 2px;}' +
+      '.er .er-ring svg{width:196px;height:196px;}' +
+      '.er .er-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;' +
+      'justify-content:center;gap:2px;pointer-events:none;}' +
+      '.er .er-c b{font-size:38px;font-weight:700;letter-spacing:-1.4px;line-height:1;font-variant-numeric:tabular-nums;}' +
+      '.er .er-c span{font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--eng-t2);}' +
+      '.er .er-c em{font-size:10px;font-style:normal;color:var(--eng-t2);margin-top:6px;font-variant-numeric:tabular-nums;}' +
+
+      '.er .er-g{display:grid;grid-template-columns:1fr 1fr;gap:0 10px;margin-top:8px;}' +
+      '.er .er-p{display:flex;align-items:center;gap:9px;padding:7px 0;cursor:pointer;border-radius:8px;}' +
+      '.er .er-pi{flex:none;display:grid;place-items:center;}' +
+      '.er .er-pi svg{width:21px;height:21px;}' +
+      '.er .er-px{min-width:0;line-height:1.15;}' +
+      '.er .er-px i{display:block;font-style:normal;font-size:10.5px;color:var(--eng-t2);}' +
+      '.er .er-px b{display:block;font-size:15.5px;font-weight:640;font-variant-numeric:tabular-nums;}' +
+      engDailyCss('.er') +
+
+      '@container (max-width:330px){' +
+      '.er .er-in{padding:12px 12px 11px;}' +
+      '.er .er-g{grid-template-columns:1fr;}' +
+      '}' +
+      '</style>'
+    );
+  }
+}
+
+customElements.define('casa-mgdd-energy-ring-card', EnergyRingCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'casa-mgdd-energy-ring-card',
+  name: 'Casa MGDD Energia · anello',
+  description: 'Autosufficienza di oggi al centro di una corona che ne mostra la provenienza, quattro valori live e il riepilogo del giorno. Config via YAML.',
+});
+
+// ===== energy-scheme-card.js =====
+// Il quadro dell'impianto: quattro nodi e le tracce che li uniscono. Le tracce
+// ci sono sempre tutte, anche spente: cosi' la card non cambia forma quando il
+// sole va via, e si legge subito cosa NON sta succedendo.
+//
+// Ogni traccia attiva e' doppia: un binario fisso, tenue, e sopra una testa
+// luminosa che lo percorre. La durata del giro e' inversamente proporzionale
+// alla potenza, quindi piu' watt = luce piu' veloce, come nella
+// energy-flow-card.
+//
+// Non e' disegnata la rete che carica la batteria: in questo impianto succede
+// per pochi decimi di kWh l'anno e una sesta traccia costerebbe piu' di quanto
+// renda. Se un giorno servisse, va aggiunta qui.
+
+class EnergySchemeCard extends HTMLElement {
+  setConfig(config) {
+    if (!config) throw new Error('Configurazione mancante');
+    this.config = Object.assign(
+      { title: 'Impianto', threshold: 5, battery_min_flow: 120, max_power: 3500,
+        soc_scale: false, animate: true },
+      config
+    );
+    this._sig = null;
+  }
+
+  static getStubConfig() {
+    return {
+      solar_power: 'sensor.powerwall3_solar_power',
+      house_power: 'sensor.powerwall3_load_power',
+      grid_power: 'sensor.powerwall3_site_power',
+      battery_power: 'sensor.powerwall3_battery_power',
+      battery_soc: 'sensor.powerwall3_charge',
+      solar_today: 'sensor.powerwall3_solar_export_today',
+      grid_import_today: 'sensor.powerwall3_site_import_today',
+      grid_export_today: 'sensor.powerwall3_site_export_today',
+      grid_status: 'binary_sensor.powerwall3_grid_status',
+    };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const c = this.config;
+    const ids = [c.solar_power, c.house_power, c.grid_power, c.battery_power, c.battery_soc,
+      c.solar_today, c.grid_import_today || c.grid_today, c.grid_export_today,
+      c.grid_status].filter(Boolean);
+    const sig = mgddStatesSig(hass, ids);
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getCardSize() { return 6; }
+
+  getGridOptions() { return { rows: 'auto', columns: 6, min_columns: 6 }; }
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+  }
+
+  // durata del giro della testa luminosa: piu' potenza, piu' veloce
+  _dur(w) {
+    const f = Math.min(1, Math.abs(w || 0) / (this.config.max_power || 3500));
+    return (3.4 - 2.6 * f).toFixed(2);
+  }
+
+  _html() {
+    const h = this._hass;
+    const c = this.config;
+    const dark = !!(h.themes && h.themes.darkMode);
+    const TH = c.threshold;
+    const TB = c.battery_min_flow;
+
+    const sW = engPw(h, c.solar_power);
+    const hW = engPw(h, c.house_power);
+    const gW = engPw(h, c.grid_power);
+    const bW = engPw(h, c.battery_power);
+    const soc0 = engNum(h, c.battery_soc);
+    const soc = (soc0 !== null && c.soc_scale)
+      ? Math.max(0, Math.min(100, (soc0 - 5) / 0.95)) : soc0;
+
+    const chg = bW !== null && bW < -TB;
+    const dis = bW !== null && bW > TB;
+    const imp = gW !== null && gW > TH;
+    const exp = gW !== null && gW < -TH;
+    const sun = sW !== null && sW > TH;
+    // Quanto del sole finisce davvero in casa: il resto del consumo lo stanno
+    // coprendo batteria e rete. Il tetto e' la produzione: sotto la soglia di
+    // `battery_min_flow` la batteria viene considerata ferma, e senza questo
+    // limite il suo contributo finirebbe attribuito al sole.
+    const solToHouse = (sun && hW !== null)
+      ? Math.min(sW, Math.max(0, hW - (dis ? bW : 0) - (imp ? gW : 0))) : 0;
+
+    const SX = 66; const SY = 46;
+    const RX = 250; const RY = 46;
+    const BX = 66; const BY = 158;
+    const HX = 250; const HY = 158;
+
+    // Le tracce escono dai nodi ad altezze diverse e passano nei corridoi
+    // liberi (margini laterali e canale centrale): cosi' nessuna passa sopra
+    // il valore scritto sotto un nodo.
+    const routes = [
+      { p: [[SX + 30, 34], [RX - 30, 34]], col: 'var(--sun)', on: sun && exp, w: -(gW || 0), d: 0 },
+      { p: [[SX - 30, SY], [12, SY], [12, BY], [SX - 30, BY]], col: 'var(--sun)', on: sun && chg, w: -(bW || 0), d: 0.3 },
+      { p: [[RX + 30, RY], [328, RY], [328, HY], [HX + 30, HY]], col: 'var(--grid)', on: imp, w: gW || 0, d: 0.15 },
+      { p: [[SX + 30, 58], [158, 58], [158, 114], [HX, 114], [HX, HY - 30]], col: 'var(--sun)', on: sun && solToHouse > TH, w: solToHouse, d: 0 },
+      { p: [[BX + 30, BY], [HX - 30, BY]], col: 'var(--bat)', on: dis, w: bW || 0, d: 0.55 },
+    ];
+    let lines = '';
+    routes.forEach((r) => {
+      const d = engPoly(r.p, 11);
+      if (!r.on) {
+        lines += '<path d="' + d + '" fill="none" stroke="' + r.col +
+          '" stroke-width="3" stroke-linecap="round" opacity=".15"/>';
+        return;
+      }
+      lines += '<path d="' + d + '" fill="none" stroke="' + r.col +
+        '" stroke-width="3" stroke-linecap="round" opacity=".26"/>' +
+        '<path class="es-fl" d="' + d + '" fill="none" stroke="currentColor" stroke-width="3" ' +
+        'stroke-linecap="round" pathLength="100" stroke-dasharray="15 85" ' +
+        'style="color:' + r.col + ';animation-duration:' + this._dur(r.w) + 's;animation-delay:' + r.d + 's"/>';
+    });
+
+    const node = (x, y, icon, col, wash, val, lab, ent) => {
+      return '<g transform="translate(' + x + ',' + y + ')"' +
+        (ent ? ' data-more="' + ent + '" class="es-n"' : '') + '>' +
+        // il rettangolo del colore della card cancella la traccia sotto il nodo
+        '<rect x="-30" y="-30" width="60" height="60" rx="19" fill="var(--card-background-color,#fff)"/>' +
+        '<rect x="-22" y="-22" width="44" height="44" rx="13" fill="' + wash + '"/>' +
+        '<g transform="translate(-11,-11)" style="color:' + col + '">' +
+        '<svg x="0" y="0" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' + (EL_ICONS[icon] || '') + '</svg></g>' +
+        '<text y="38" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--eng-t1)" ' +
+        'style="font-variant-numeric:tabular-nums">' + val + '</text>' +
+        '<text y="50" text-anchor="middle" font-size="9" fill="var(--eng-t2)" ' +
+        'style="letter-spacing:.9px;text-transform:uppercase">' + lab + '</text></g>';
+    };
+    const lbl = (f) => f.v + (f.u ? ' ' + f.u : '');
+    const gs = engGridState(h, c, gW);
+
+    return (
+      '<ha-card class="es' + (dark ? ' es-dark' : '') +
+      (c.animate === false ? ' es-still' : '') + (c.animate === 'always' ? ' es-force' : '') +
+      '"><div class="es-in">' +
+      '<div class="es-hd"><span class="es-t">' + c.title + '</span>' +
+      '<span class="es-st" style="color:' + gs.c + '"><i></i>' + gs.t + '</span></div>' +
+      '<svg class="es-svg" viewBox="0 0 340 224" role="img" aria-label="Schema dell\'impianto">' +
+      lines +
+      node(SX, SY, 'sun', 'var(--sun)', 'var(--w-sun)', lbl(engFmt(sW)), 'Solare', c.solar_power) +
+      node(RX, RY, 'grid', 'var(--grid)', 'var(--w-grid)', lbl(engFmt(gW)), 'Rete', c.grid_power) +
+      node(BX, BY, chg ? 'batchg' : 'bat', 'var(--bat)', 'var(--w-bat)',
+        soc === null ? '—' : Math.round(soc) + ' %', 'Batteria', c.battery_soc || c.battery_power) +
+      node(HX, HY, 'casa', 'var(--casa)', 'var(--w-casa)', lbl(engFmt(hW)), 'Casa', c.house_power) +
+      '</svg>' +
+      engDailyHtml(engNum(h, c.solar_today), engNum(h, c.grid_import_today || c.grid_today),
+        engNum(h, c.grid_export_today)) +
+      '</div></ha-card>'
+    );
+  }
+
+  _wire() {
+    if (this._wired) return;
+    this._wired = true;
+    this.addEventListener('click', (ev) => {
+      const el = ev.target.closest ? ev.target.closest('[data-more]') : null;
+      const id = el && el.getAttribute('data-more');
+      if (id) {
+        this.dispatchEvent(new CustomEvent('hass-more-info',
+          { detail: { entityId: id }, bubbles: true, composed: true }));
+      }
+    });
+  }
+
+  _styles() {
+    const L = ENG_COLORS.light;
+    const D = ENG_COLORS.dark;
+    return (
+      '<style>' +
+      ':host{display:block;}' +
+      '.es{--sun:' + L.sun + ';--bat:' + L.bat + ';--grid:' + L.grid + ';--casa:' + L.casa + ';' +
+      '--w-sun:rgba(224,138,0,.13);--w-bat:rgba(15,181,126,.13);--w-grid:rgba(14,165,233,.13);' +
+      '--w-casa:rgba(109,90,230,.13);' +
+      '--eng-hair:rgba(16,20,28,.11);--eng-t1:var(--primary-text-color,#14161a);' +
+      '--eng-t2:var(--secondary-text-color,#70757f);container-type:inline-size;overflow:hidden;}' +
+      '.es.es-dark{--sun:' + D.sun + ';--bat:' + D.bat + ';--grid:' + D.grid + ';--casa:' + D.casa + ';' +
+      '--w-sun:rgba(245,179,1,.15);--w-bat:rgba(34,227,154,.15);--w-grid:rgba(56,189,248,.15);' +
+      '--w-casa:rgba(139,123,255,.15);--eng-hair:rgba(255,255,255,.13);}' +
+      '.es *{box-sizing:border-box;}' +
+      '.es .es-in{padding:13px 14px 12px;color:var(--eng-t1);' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
+      '.es .es-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;}' +
+      '.es .es-t{font-size:11px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--eng-t2);}' +
+      '.es .es-st{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;text-align:right;}' +
+      '.es .es-st i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
+      '.es .es-svg{width:100%;height:auto;display:block;margin:2px 0;}' +
+      '.es .es-n{cursor:pointer;}' +
+
+      // la testa luminosa: pathLength=100 normalizza il tratteggio, cosi' la
+      // luce ha la stessa lunghezza su tracce di lunghezza diversa
+      '@keyframes esrun{from{stroke-dashoffset:0}to{stroke-dashoffset:-100}}' +
+      '.es .es-fl{animation-name:esrun;animation-timing-function:linear;animation-iteration-count:infinite;}' +
+      '.es.es-dark .es-fl{filter:drop-shadow(0 0 3px currentColor);}' +
+      // chi ha chiesto meno movimento al sistema operativo non lo subisce qui:
+      // la luce resta ferma a meta' traccia, che dice comunque il verso
+      '@media (prefers-reduced-motion:reduce){.es .es-fl{animation-name:none;stroke-dashoffset:-50;}}' +
+      '.es.es-still .es-fl{animation-name:none;stroke-dashoffset:-50;}' +
+      '.es.es-force .es-fl{animation-name:esrun;}' +
+      engDailyCss('.es') +
+      '</style>'
+    );
+  }
+}
+
+customElements.define('casa-mgdd-energy-scheme-card', EnergySchemeCard);
+window.customCards.push({
+  type: 'casa-mgdd-energy-scheme-card',
+  name: 'Casa MGDD Energia · schema',
+  description: 'Sole, rete, batteria e casa con le tracce che li uniscono e la luce che scorre su quelle attive. Config via YAML.',
 });
