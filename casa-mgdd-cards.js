@@ -8,7 +8,7 @@
  * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card.
  *
- * Version: 1.79.0
+ * Version: 1.79.1
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -9141,7 +9141,9 @@ class EnergyRingCard extends HTMLElement {
 
   getCardSize() { return 7; }
 
-  getGridOptions() { return { rows: 'auto', columns: 6, min_columns: 6 }; }
+  // A tutta sezione, come la energy-live-card: sono card da guardare, non
+  // tessere da affiancare.
+  getGridOptions() { return { rows: 'auto', columns: 'full', min_columns: 6 }; }
 
   _render() {
     if (!this.config || !this._hass) return;
@@ -9254,7 +9256,10 @@ class EnergyRingCard extends HTMLElement {
       '--eng-hair:rgba(255,255,255,.13);}' +
       '.er *{box-sizing:border-box;}' +
       '.er svg{display:block;}' +
-      '.er .er-in{padding:14px 15px 13px;color:var(--eng-t1);' +
+      // La card prende tutta la sezione, ma il contenuto oltre i 520px si ferma
+      // e resta centrato: la corona e' di misura fissa e, allargando ancora, si
+      // ritroverebbe persa in mezzo al vuoto. Stessa regola dello schema.
+      '.er .er-in{padding:14px 15px 13px;max-width:520px;margin-inline:auto;color:var(--eng-t1);' +
       'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
 
       '.er .er-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;}' +
@@ -9353,7 +9358,9 @@ class EnergySchemeCard extends HTMLElement {
 
   getCardSize() { return 6; }
 
-  getGridOptions() { return { rows: 'auto', columns: 6, min_columns: 6 }; }
+  // A tutta sezione, come la energy-live-card: sono card da guardare, non
+  // tessere da affiancare.
+  getGridOptions() { return { rows: 'auto', columns: 'full', min_columns: 6 }; }
 
   _render() {
     if (!this.config || !this._hass) return;
@@ -9495,7 +9502,9 @@ class EnergySchemeCard extends HTMLElement {
       '.es .es-t{font-size:11px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--eng-t2);}' +
       '.es .es-st{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;text-align:right;}' +
       '.es .es-st i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
-      '.es .es-svg{width:100%;height:auto;display:block;margin:2px 0;}' +
+      // Lo schema scala con la card, ma oltre una certa larghezza diventerebbe
+      // solo alto: sopra i 520px si ferma e resta centrato.
+      '.es .es-svg{width:100%;max-width:520px;height:auto;display:block;margin:2px auto;}' +
       '.es .es-n{cursor:pointer;}' +
 
       // la testa luminosa: pathLength=100 normalizza il tratteggio, cosi' la
