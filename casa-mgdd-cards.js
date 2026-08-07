@@ -5,9 +5,9 @@
  * energy-power-card, energy-controls-card, energy-history-card,
  * energy-monthly-card, energy-flow-card, energy-summary-card,
  * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
- * casa-mgdd-sensors-card.
+ * casa-mgdd-sensors-card, casa-mgdd-energy-live-card.
  *
- * Version: 1.77.0
+ * Version: 1.78.0
  */
 
 // Firma degli stati (state + last_updated) delle entità indicate.
@@ -8475,4 +8475,491 @@ window.customCards.push({
   type: 'casa-mgdd-sensors-card',
   name: 'Casa MGDD Sensori (compatta)',
   description: 'Riga riassuntiva di perdite acqua (mode: water) o movimento (mode: motion), con strip per sensore e dettaglio espandibile. Config via YAML.',
+});
+
+// ===== energy-live-card.js =====
+// La card energia della vista Home. Tre pezzi, dall'alto in basso:
+//
+//   intestazione   stile Horizon come la casa-mgdd-system-card
+//   consuntivo     consumo di casa di oggi + profilo orario a barre impilate
+//   fascia live    pannelli, casa, batteria e rete adesso
+//
+// Il profilo orario e' quello della energy-power-card, stesse misure e stessi
+// colori: chi guarda la vista Energy e poi la Home deve vedere lo stesso
+// grafico, non un parente alla lontana.
+//
+// La scomposizione oraria segue la stessa regola del bilancio della
+// energy-power-card: il solare copre per primo, poi la batteria, e solo il
+// residuo viene dalla rete. Qui manca il correttivo per la batteria caricata da
+// rete (in questo impianto la rete carica la batteria per pochi decimi l'anno),
+// quindi il conto e' piu' semplice ma la gerarchia e' la stessa.
+
+const EL_COLORS = {
+  light: { sun: '#E08A00', bat: '#0FB57E', grid: '#0EA5E9', casa: '#6D5AE6' },
+  dark: { sun: '#D27B00', bat: '#00AE6F', grid: '#0099E4', casa: '#8B7BFF' },
+};
+
+const EL_ICONS = {
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>',
+  casa: '<path d="M4 11 12 4l8 7"/><path d="M6 10v9h12v-9"/>',
+  grid: '<path d="M6 22 12 2l6 20"/><path d="M9 22 12 2l3 20"/><path d="M6.8 8h10.4M7.7 13h8.6M8.6 18h6.8"/>',
+  bat: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M6.5 10.5v3M10 10.5v3"/>',
+  batchg: '<rect x="3" y="8" width="15" height="8" rx="2"/><path d="M21 11v2"/><path d="M11.4 9.6 8.6 12.2h2.2l-.6 2.4 2.8-2.8h-2.2z"/>',
+};
+
+// I disegni in EL_ICONS sono gia' markup completo (cerchi e tracciati), non
+// solo l'attributo `d`: qui si aggiunge soltanto l'involucro.
+function elIcon(k, sw) {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="' + (sw || 1.9) +
+    '" stroke-linecap="round" stroke-linejoin="round">' + (EL_ICONS[k] || '') + '</svg>';
+}
+
+class EnergyLiveCard extends HTMLElement {
+  setConfig(config) {
+    if (!config) throw new Error('Configurazione mancante');
+    this.config = Object.assign(
+      {
+        title: 'Energia',
+        max_power: 3500,
+        soc_scale: false,
+        threshold: 5,
+        battery_min_flow: 120,
+      },
+      config
+    );
+    this._sig = null;
+    this._stats = null;
+    this._statAt = 0;
+  }
+
+  static getStubConfig() {
+    return {
+      solar_power: 'sensor.powerwall3_solar_power',
+      house_power: 'sensor.powerwall3_load_power',
+      grid_power: 'sensor.powerwall3_site_power',
+      battery_power: 'sensor.powerwall3_battery_power',
+      battery_soc: 'sensor.powerwall3_charge',
+      solar_energy: 'sensor.powerwall3_solar_export',
+      house_energy: 'sensor.powerwall3_load_import',
+      grid_import_energy: 'sensor.powerwall3_site_import',
+      battery_export_energy: 'sensor.powerwall3_battery_export',
+    };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const c = this.config;
+    const ids = [c.solar_power, c.house_power, c.grid_power, c.battery_power, c.battery_soc,
+      c.house_today, c.solar_today, c.grid_today].filter(Boolean);
+    const sig = mgddStatesSig(hass, ids);
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+    this._maybeFetchStats();
+  }
+
+  getCardSize() { return 8; }
+
+  getGridOptions() { return { rows: 'auto', columns: 'full', min_columns: 6 }; }
+
+  // ---------- letture ----------
+
+  _num(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  // potenza normalizzata a W leggendo l'unita' dell'entita' (kW->W), col segno
+  _pw(entity) {
+    if (!entity || !this._hass) return null;
+    const s = this._hass.states[entity];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    if (Number.isNaN(v)) return null;
+    const u = ((s.attributes && s.attributes.unit_of_measurement) || '').toLowerCase();
+    if (u === 'kw') return v * 1000;
+    if (u === 'mw') return v * 1e6;
+    return v;
+  }
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  _fmt(w) {
+    if (w === null || w === undefined) return { v: '—', u: '' };
+    const a = Math.abs(w);
+    if (a >= 1000) return { v: (a / 1000).toFixed(2).replace('.', ','), u: 'kW' };
+    return { v: String(Math.round(a)), u: 'W' };
+  }
+
+  _kwh(v) {
+    if (v === null || v === undefined) return '—';
+    return v.toFixed(1).replace('.', ',');
+  }
+
+  // ---------- statistiche orarie ----------
+
+  // Le statistiche a lungo termine, non la cronologia degli stati: qui servono
+  // i kWh consumati in ciascuna ora, che sono la `change` del contatore.
+  async _maybeFetchStats() {
+    const now = Date.now();
+    if (this._statAt && now - this._statAt < 5 * 60 * 1000) return;
+    this._statAt = now;
+    if (!this._hass || !this._hass.callWS) return;
+    const c = this.config;
+    const ids = [c.house_energy, c.solar_energy, c.grid_import_energy, c.battery_export_energy].filter(Boolean);
+    if (!ids.length) return;
+    const mid = new Date();
+    mid.setHours(0, 0, 0, 0);
+    let res = null;
+    const req = {
+      type: 'recorder/statistics_during_period',
+      start_time: mid.toISOString(),
+      statistic_ids: ids,
+      period: 'hour',
+      types: ['change'],
+    };
+    try {
+      res = await this._hass.callWS(req);
+    } catch (e) {
+      delete req.types; // versioni piu' vecchie non accettano `types`
+      try {
+        res = await this._hass.callWS(req);
+      } catch (e2) {
+        res = null;
+      }
+    }
+    if (!res) return;
+    // riga per ora locale: le statistiche arrivano con `start` in epoch ms
+    const bucket = (id) => {
+      const out = new Array(24).fill(null);
+      const rows = res[id];
+      if (!rows) return out;
+      rows.forEach((r) => {
+        const d = new Date(r.start);
+        if (d < mid) return;
+        const h = d.getHours();
+        const v = r.change != null ? r.change : null;
+        if (v == null) return;
+        out[h] = (out[h] || 0) + v;
+      });
+      return out;
+    };
+    this._stats = {
+      house: bucket(c.house_energy),
+      sun: bucket(c.solar_energy),
+      grid: bucket(c.grid_import_energy),
+      dis: bucket(c.battery_export_energy),
+    };
+    this._render();
+  }
+
+  // Scomposizione oraria del consumo di casa: il sole copre per primo, poi la
+  // batteria, il residuo e' rete. Stessa gerarchia del bilancio della
+  // energy-power-card.
+  _profile() {
+    const st = this._stats;
+    if (!st) return null;
+    const rows = [];
+    let scale = 0;
+    const nowH = new Date().getHours();
+    for (let i = 0; i < 24; i++) {
+      if (i > nowH || st.house[i] == null) { rows.push(null); continue; }
+      const house = Math.max(0, st.house[i] || 0);
+      if (house <= 0) { rows.push({ h: i, house: 0, sun: 0, batt: 0, grid: 0 }); continue; }
+      const sun = Math.min(house, Math.max(0, st.sun[i] || 0));
+      const rest = house - sun;
+      const batt = Math.min(rest, Math.max(0, st.dis[i] || 0));
+      const grid = Math.max(0, rest - batt);
+      rows.push({ h: i, house: house, sun: sun, batt: batt, grid: grid });
+      if (house > scale) scale = house;
+    }
+    if (!(scale > 0)) return null;
+    return { rows: rows, scale: scale };
+  }
+
+  // ---------- i quattro nodi live ----------
+
+  _nodes() {
+    const c = this.config;
+    const TH = c.threshold;
+    const TB = c.battery_min_flow;
+    const s = this._pw(c.solar_power);
+    const h = this._pw(c.house_power);
+    const g = this._pw(c.grid_power);
+    const b = this._pw(c.battery_power);
+    const soc0 = this._num(c.battery_soc);
+    const soc = (soc0 !== null && c.soc_scale) ? Math.max(0, Math.min(100, (soc0 - 5) / 0.95)) : soc0;
+    const max = c.max_power || 3500;
+    const chg = b !== null && b < -TB;
+    const sca = b !== null && b > TB;
+    const pren = g !== null && g > TH;
+    const imm = g !== null && g < -TH;
+    // Il colore NON cambia con lo stato: ogni entita' tiene il suo colore della
+    // vista Energy, sempre. A dire se sta lavorando e' l'intensita' della banda,
+    // non la tinta — altrimenti un rosso di prelievo diventerebbe un quinto
+    // colore da imparare.
+    return [
+      { key: 'sun', icon: 'sun', name: 'Pannelli', v: s,
+        state: s !== null && s > TH ? 'in produzione' : 'fermi',
+        on: s !== null && s > TH,
+        frac: s === null ? 0 : Math.min(1, Math.abs(s) / max) },
+      { key: 'casa', icon: 'casa', name: 'Casa', v: h,
+        state: 'in consumo', on: true,
+        frac: h === null ? 0 : Math.min(1, Math.abs(h) / max) },
+      { key: 'bat', icon: chg ? 'batchg' : 'bat', name: 'Batteria', v: b,
+        state: (soc === null ? '' : Math.round(soc) + '% · ') +
+          (chg ? 'in carica' : sca ? 'in scarica' : 'ferma'),
+        on: chg || sca,
+        frac: soc === null ? 0 : soc / 100 },
+      { key: 'grid', icon: 'grid', name: 'Rete', v: g,
+        state: pren ? 'in prelievo' : imm ? 'in immissione' : 'nessuno scambio',
+        on: pren || imm,
+        frac: g === null ? 0 : Math.min(1, Math.abs(g) / max) },
+    ];
+  }
+
+  // ---------- markup ----------
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+  }
+
+  _html() {
+    const c = this.config;
+    const dark = this._isDark();
+    const cons = this._num(c.house_today);
+    const prod = this._num(c.solar_today);
+    const fromGrid = this._num(c.grid_today);
+    // autosufficienza di oggi: quanto del consumo NON e' venuto dalla rete
+    let self = null;
+    if (cons !== null && cons > 0 && fromGrid !== null) {
+      self = Math.max(0, Math.min(100, ((cons - fromGrid) / cons) * 100));
+    }
+
+    const pill = self === null
+      ? ''
+      : '<span class="el-pill">' + Math.round(self) + '% dal sole</span>';
+
+    let note = '';
+    if (fromGrid !== null) {
+      note = 'di cui <b class="el-cg">' + this._kwh(fromGrid) + ' kWh</b> dalla rete';
+      if (prod !== null) note += ' · prodotti ' + this._kwh(prod) + ' kWh';
+    } else if (prod !== null) {
+      note = 'prodotti ' + this._kwh(prod) + ' kWh';
+    }
+
+    return (
+      '<ha-card class="el' + (dark ? ' el-dark' : '') + '"><div class="el-in">' +
+      // intestazione
+      '<div class="el-hd"><span class="el-hdi">' + elIcon('sun') + '</span>' +
+      '<div class="el-hdx"><div class="el-hdt">' + c.title + '</div>' +
+      '<div class="el-hds">Da dove è arrivata, ora per ora</div></div>' + pill + '</div>' +
+      // consuntivo + profilo
+      '<div class="el-p"><div class="el-k">Consumo di casa oggi</div>' +
+      '<div class="el-big">' + this._kwh(cons) + '<small>kWh</small></div>' +
+      (note ? '<div class="el-note">' + note + '</div>' : '') +
+      this._chart() +
+      '</div>' +
+      // fascia live
+      this._live() +
+      '</div></ha-card>'
+    );
+  }
+
+  _chart() {
+    const p = this._profile();
+    if (!p) {
+      return '<div class="el-chempty">profilo orario non ancora disponibile</div>';
+    }
+    const nowH = new Date().getHours();
+    let bars = '';
+    for (let i = 0; i < 24; i++) {
+      const r = p.rows[i];
+      if (!r || r.house <= 0) {
+        bars += '<div class="el-hb"><span class="el-fut"></span></div>';
+        continue;
+      }
+      const segs = [[r.grid, 'el-c-grid'], [r.batt, 'el-c-bat'], [r.sun, 'el-c-sun']]
+        .filter((x) => x[0] > p.scale / 250);
+      const tot = segs.reduce((a, x) => a + x[0], 0);
+      let inner = '';
+      if (tot > 0) {
+        segs.forEach((x) => {
+          inner += '<i class="' + x[1] + '" style="flex:' + (x[0] / tot).toFixed(4) + '"></i>';
+        });
+      }
+      const hh = Math.max(1.5, (r.house / p.scale) * 100);
+      bars += '<div class="el-hb" title="' + (i < 10 ? '0' : '') + i + ':00 · ' +
+        r.house.toFixed(2).replace('.', ',') + ' kWh">' +
+        '<div class="el-hb-in' + (hh < 7 ? ' el-tight' : '') + '" style="height:' + hh.toFixed(1) + '%">' +
+        inner + '</div></div>';
+    }
+    return (
+      '<div class="el-hr">' +
+      '<div class="el-hr-hd"><span>Profilo orario</span><b>max ' +
+      p.scale.toFixed(2).replace('.', ',') + ' kWh/h</b></div>' +
+      '<div class="el-hr-wrap"><div class="el-hr-y"><span>' +
+      p.scale.toFixed(2).replace('.', ',') + '</span><span>0</span></div>' +
+      '<div class="el-hr-plot">' + bars + '</div></div>' +
+      '<div class="el-hr-axw"><div class="el-hr-ax"><span>00</span><span>06</span>' +
+      '<span>12</span><span>18</span><span>23</span></div></div>' +
+      '<div class="el-lgd"><span><i class="el-c-sun"></i>Sole</span>' +
+      '<span><i class="el-c-bat"></i>Batteria</span>' +
+      '<span><i class="el-c-grid"></i>Rete</span></div></div>'
+    );
+  }
+
+  _live() {
+    const cells = this._nodes().map((n) => {
+      const f = this._fmt(n.v);
+      const ent = this._entityOf(n.key);
+      return (
+        '<div class="el-lc el-' + n.key + (n.on ? '' : ' el-off') + '"' +
+        (ent ? ' data-more="' + ent + '"' : '') + '>' +
+        '<div class="el-li">' + elIcon(n.icon, 2) + n.name + '</div>' +
+        '<div class="el-lv">' + f.v + '<small> ' + f.u + '</small></div>' +
+        '<div class="el-ls">' + n.state + '</div>' +
+        '<div class="el-lb"><i style="width:' + Math.round(n.frac * 100) + '%"></i></div>' +
+        '</div>'
+      );
+    });
+    return '<div class="el-live">' + cells.join('') + '</div>';
+  }
+
+  _entityOf(key) {
+    const c = this.config;
+    return key === 'sun' ? c.solar_power
+      : key === 'casa' ? c.house_power
+      : key === 'bat' ? (c.battery_soc || c.battery_power)
+      : c.grid_power;
+  }
+
+  _wire() {
+    if (this._wired) return;
+    this._wired = true;
+    this.addEventListener('click', (ev) => {
+      const el = ev.target.closest ? ev.target.closest('[data-more]') : null;
+      const id = el && el.getAttribute('data-more');
+      if (id) {
+        this.dispatchEvent(new CustomEvent('hass-more-info',
+          { detail: { entityId: id }, bubbles: true, composed: true }));
+      }
+    });
+  }
+
+  _styles() {
+    const L = EL_COLORS.light;
+    const D = EL_COLORS.dark;
+    return (
+      '<style>' +
+      ':host{display:block;}' +
+      // Fondo e testo dal tema, come nella system-card: la card non si porta
+      // dietro un colore proprio. I quattro colori delle entita' sono quelli
+      // della vista Energy, identici.
+      '.el{--sun:' + L.sun + ';--bat:' + L.bat + ';--grid:' + L.grid + ';--casa:' + L.casa + ';' +
+      '--el-ok:#0E9B6C;--el-panel:rgba(16,20,28,.045);--el-hair:rgba(16,20,28,.10);' +
+      '--el-t1:var(--primary-text-color,#14161a);--el-t2:var(--secondary-text-color,#70757f);' +
+      'container-type:inline-size;overflow:hidden;}' +
+      '.el.el-dark{--sun:' + D.sun + ';--bat:' + D.bat + ';--grid:' + D.grid + ';--casa:' + D.casa + ';' +
+      '--el-ok:#35E0A1;--el-panel:rgba(255,255,255,.045);--el-hair:rgba(255,255,255,.10);}' +
+      '.el *{box-sizing:border-box;}' +
+      '.el svg{display:block;}' +
+      '.el .el-in{padding:14px 15px 15px;display:flex;flex-direction:column;gap:10px;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--el-t1);}' +
+
+      // intestazione
+      '.el .el-hd{display:flex;align-items:center;gap:12px;}' +
+      '.el .el-hdi{width:36px;height:36px;flex:none;border-radius:11px;display:grid;place-items:center;' +
+      'color:var(--sun);background:color-mix(in srgb,var(--sun) 13%,transparent);}' +
+      '.el .el-hdi svg{width:19px;height:19px;}' +
+      '.el .el-hdx{min-width:0;flex:1;}' +
+      '.el .el-hdt{font-size:13px;font-weight:800;letter-spacing:.9px;text-transform:uppercase;}' +
+      '.el .el-hds{font-size:11.5px;color:var(--el-t2);margin-top:2px;}' +
+      '.el .el-pill{flex:none;font-size:11.5px;font-weight:700;border-radius:10px;padding:5px 10px;' +
+      'color:var(--el-ok);background:color-mix(in srgb,var(--el-ok) 14%,transparent);white-space:nowrap;}' +
+
+      // riquadro del consuntivo
+      '.el .el-p{background:var(--el-panel);border-radius:15px;padding:12px 14px 13px;min-width:0;}' +
+      '.el .el-k{font-size:11px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;color:var(--el-t2);}' +
+      '.el .el-big{font-size:33px;font-weight:700;letter-spacing:-1.5px;line-height:1.1;margin-top:3px;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.el .el-big small{font-size:15px;font-weight:600;letter-spacing:0;color:var(--el-t2);margin-left:5px;}' +
+      '.el .el-note{font-size:12.5px;color:var(--el-t2);margin-top:5px;line-height:1.45;}' +
+      '.el .el-note b{font-weight:640;}' +
+      '.el .el-cg{color:var(--grid);}' +
+
+      // profilo orario: misure e forme della energy-power-card
+      '.el .el-hr{margin-top:11px;}' +
+      '.el .el-hr-hd{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;' +
+      'letter-spacing:.5px;text-transform:uppercase;color:var(--el-t2);margin-bottom:8px;}' +
+      '.el .el-hr-hd b{font-size:11px;letter-spacing:0;text-transform:none;font-weight:550;opacity:.85;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.el .el-hr-wrap{display:flex;gap:7px;}' +
+      '.el .el-hr-y{width:26px;flex:none;display:flex;flex-direction:column;justify-content:space-between;' +
+      'font-size:9.5px;color:var(--el-t2);opacity:.8;font-variant-numeric:tabular-nums;text-align:right;}' +
+      '.el .el-hr-plot{position:relative;display:flex;align-items:flex-end;gap:2px;height:116px;flex:1;min-width:0;}' +
+      '.el .el-hb{flex:1;height:100%;display:flex;align-items:flex-end;justify-content:center;min-width:0;}' +
+      '.el .el-hb-in{width:100%;display:flex;flex-direction:column-reverse;gap:2px;' +
+      'border-radius:4px 4px 0 0;overflow:hidden;}' +
+      '.el .el-hb-in i{display:block;width:100%;}' +
+      '.el .el-tight{gap:0;}' +
+      // ora non ancora trascorsa: filo sulla linea di base, non una barra a zero
+      '.el .el-fut{width:100%;height:1px;background:var(--el-hair);}' +
+      '.el .el-c-sun{background:var(--sun);}' +
+      '.el .el-c-bat{background:var(--bat);}' +
+      '.el .el-c-grid{background:var(--grid);}' +
+      '.el .el-hr-axw{margin-left:33px;}' +
+      '.el .el-hr-ax{display:flex;justify-content:space-between;font-size:9.5px;color:var(--el-t2);' +
+      'margin-top:6px;opacity:.8;font-variant-numeric:tabular-nums;}' +
+      '.el .el-lgd{display:flex;flex-wrap:wrap;gap:13px;font-size:11px;color:var(--el-t2);margin-top:9px;}' +
+      '.el .el-lgd i{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:5px;}' +
+      '.el .el-chempty{font-size:12px;color:var(--el-t2);margin-top:11px;padding:14px 0;text-align:center;' +
+      'border:1px dashed var(--el-hair);border-radius:10px;}' +
+
+      // fascia live: quattro riquadri con la banda di stato
+      '.el .el-live{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;}' +
+      '.el .el-lc{background:var(--el-panel);border-radius:14px;padding:11px 11px 12px;' +
+      'position:relative;overflow:hidden;cursor:pointer;}' +
+      '.el .el-lc::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:currentColor;}' +
+      // il colore resta quello dell'entita': a dire che il nodo e' fermo e'
+      // l'opacita', non una tinta diversa
+      '.el .el-lc.el-off{opacity:.62;}' +
+      '.el .el-sun{color:var(--sun);}.el .el-casa{color:var(--casa);}' +
+      '.el .el-bat{color:var(--bat);}.el .el-grid{color:var(--grid);}' +
+      '.el .el-li{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:800;' +
+      'letter-spacing:.9px;text-transform:uppercase;}' +
+      '.el .el-li svg{width:14px;height:14px;flex:none;}' +
+      '.el .el-lv{font-size:23px;font-weight:700;letter-spacing:-1.1px;line-height:1;margin-top:9px;' +
+      'color:var(--el-t1);font-variant-numeric:tabular-nums;}' +
+      '.el .el-lv small{font-size:11px;font-weight:600;color:var(--el-t2);letter-spacing:0;}' +
+      '.el .el-ls{font-size:11px;margin-top:5px;font-weight:600;}' +
+      '.el .el-lb{height:4px;border-radius:99px;background:var(--el-hair);margin-top:8px;overflow:hidden;}' +
+      '.el .el-lb i{display:block;height:100%;border-radius:99px;background:currentColor;}' +
+
+      // stretto: due colonne per la fascia, numeri piu' piccoli
+      '@container (max-width:430px){' +
+      '.el .el-in{padding:12px 12px 13px;gap:9px;}' +
+      '.el .el-big{font-size:29px;letter-spacing:-1.2px;}' +
+      '.el .el-live{grid-template-columns:repeat(2,minmax(0,1fr));}' +
+      '.el .el-hr-plot{height:96px;}' +
+      '}' +
+      '</style>'
+    );
+  }
+}
+
+customElements.define('casa-mgdd-energy-live-card', EnergyLiveCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'casa-mgdd-energy-live-card',
+  name: 'Casa MGDD Energia (Home)',
+  description: 'Consumo di oggi, profilo orario per provenienza e stato live di pannelli, casa, batteria e rete. Config via YAML.',
 });
