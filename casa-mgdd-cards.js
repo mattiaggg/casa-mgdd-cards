@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card.
  *
- * Version: 1.83.2
+ * Version: 1.84.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -9076,33 +9076,69 @@ function engPoly(pts, rad) {
   return d + ' L' + e[0] + ',' + e[1];
 }
 
+// Il triangolo dello scarto e' disegnato, non preso dal carattere: le frecce
+// tipografiche arrivano da font di ripiego diversi su Windows e su iOS e
+// cambierebbero dimensione e appoggio tra i due.
+function engTri(dir) {
+  return '<svg viewBox="0 0 8 6" aria-hidden="true"><path d="' +
+    (dir === 'up' ? 'M4 0 8 6H0z' : 'M4 6 0 0h8z') + '" fill="currentColor"/></svg>';
+}
+
 // Riepilogo giornaliero condiviso dalle due card. Sono le tre voci che si
 // leggono in bolletta, non la scomposizione interna: prodotta, presa, resa.
+//
+// Le quattro righe stanno in UNA sola griglia, non una per riga: cosi' ogni
+// colonna e' larga quanto la sua voce piu' larga e i numeri restano
+// incolonnati. Prima erano quattro righe flex indipendenti, con l'etichetta a
+// `flex:1`, e il bordo destro del numero finiva a "larghezza meno pastiglia":
+// bastava che uno scarto fosse piu' largo degli altri perche' quella riga
+// incolonnasse il numero altrove.
 function engDailyHtml(prod, imp, exp, cons, deltas) {
-  const row = (k, col, lab, v, d) =>
-    '<div class="eng-r"><span class="eng-i" style="color:' + col + '">' + elIcon(k, 2) + '</span>' +
-    '<span class="eng-l">' + lab + '</span><b>' + engKwh(v) + '<small>kWh</small></b>' +
-    (d ? '<span class="eng-d eng-' + d.c + '">' + d.t + '</span>' : '') + '</div>';
+  let n = 0;
+  const row = (k, col, lab, v, d) => {
+    // Il filetto e' un elemento che attraversa tutte le colonne: messo come
+    // bordo sulle singole celle si spezzerebbe a ogni spazio tra colonne.
+    const sep = n++ ? '<div class="eng-sep"></div>' : '';
+    const dl = d
+      ? '<span class="eng-d eng-' + d.c + '">' + (d.dir ? engTri(d.dir) : '') +
+        '<span>' + d.t + '</span></span>'
+      : '';
+    return sep +
+      '<div class="eng-ri" style="color:' + col + '">' + elIcon(k, 2) + '</div>' +
+      '<div class="eng-rl">' + lab + '</div>' +
+      '<div class="eng-rn">' + engKwh(v) + '<small>kWh</small></div>' +
+      '<div class="eng-rd">' + dl + '</div>';
+  };
   const D = deltas || {};
-  return '<div class="eng-dr"><div class="eng-dh">Oggi</div>' +
+  return '<div class="eng-dr"><div class="eng-dh">Oggi</div><div class="eng-dg">' +
     (cons === undefined ? '' : row('casa', 'var(--casa)', 'Consumo casa', cons, D.cons)) +
     row('sun', 'var(--sun)', 'Energia prodotta', prod, D.prod) +
     row('dn', 'var(--grid)', 'Energia importata dalla rete', imp, D.imp) +
     row('up', 'var(--casa)', 'Energia immessa in rete', exp, D.exp) +
-    '</div>';
+    '</div></div>';
 }
 
-// Scarto rispetto a ieri. `pol` dice da che parte sta il bene: +1 se salire e'
-// un miglioramento (produzione), -1 se lo e' scendere (consumo, prelievo),
-// 0 se non ha verso (immissione, che qui non si vende).
-// Sotto il 3% si scrive "come ieri": due decimi di kWh non sono una tendenza.
+// Scarto rispetto a ieri, detto in kWh e non in percentuale: su una voce da
+// bolletta "un chilowattora in piu'" si capisce, "+12%" va ricalcolato a mente.
+// La freccia dice il verso, il colore dice se e' un bene: `pol` vale +1 se
+// salire e' un miglioramento (produzione), -1 se lo e' scendere (consumo,
+// prelievo), 0 se non ha verso (immissione, che qui non si vende) — cosi'
+// consumare di piu' resta ambra anche se la freccia sale.
+//
+// Sotto i 0,05 kWh la differenza si arrotonderebbe a "0,0": una freccia
+// direbbe un movimento che non c'e', quindi resta scritto "come ieri".
+// Nessuna divisione, quindi un ieri a zero non e' piu' un caso da scartare:
+// oggi 3,2 contro ieri 0 ora si legge, prima spariva.
 function engDelta(t, y, pol) {
   if (t === null || t === undefined || y === null || y === undefined) return null;
-  if (Math.abs(y) < 0.05) return null;
-  const p = Math.round(((t - y) / y) * 100);
-  if (Math.abs(p) < 3) return { c: 'eq', t: 'come ieri' };
-  const cls = pol === 0 ? 'eq' : (((p > 0) === (pol > 0)) ? 'good' : 'bad');
-  return { c: cls, t: (p > 0 ? '+' : '−') + Math.abs(p) + '%' };
+  const d = t - y;
+  if (Math.abs(d) < 0.05) return { c: 'eq', t: 'come ieri' };
+  const bene = pol === 0 ? null : ((d > 0) === (pol > 0));
+  return {
+    c: bene === null ? 'eq' : (bene ? 'good' : 'bad'),
+    dir: d > 0 ? 'up' : 'dn',
+    t: engKwh(Math.abs(d)),
+  };
 }
 
 // Confronto onesto con ieri: oggi fino ad adesso contro ieri fino alla STESSA
@@ -9212,16 +9248,27 @@ function engDailyCss(s) {
   return s + ' .eng-dr{margin-top:12px;padding-top:10px;border-top:1px solid var(--eng-hair);}' +
     s + ' .eng-dh{font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;' +
       'color:var(--eng-t2);margin-bottom:1px;}' +
-    s + ' .eng-r{display:flex;align-items:center;gap:9px;padding:7px 0;}' +
-    s + ' .eng-r+.eng-r{border-top:1px solid var(--eng-hair);}' +
-    s + ' .eng-i{flex:none;display:grid;place-items:center;}' +
-    s + ' .eng-i svg{width:17px;height:17px;}' +
-    s + ' .eng-l{flex:1;min-width:0;font-size:12.5px;color:var(--eng-t2);}' +
-    s + ' .eng-r b{font-size:13.5px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap;}' +
-    s + ' .eng-r b small{font-size:10.5px;font-weight:600;color:var(--eng-t2);margin-left:3px;}' +
+    s + ' .eng-dg{display:grid;grid-template-columns:17px minmax(0,1fr) auto auto;' +
+      'align-items:center;column-gap:7px;}' +
+    s + ' .eng-dg>div{padding:7px 0;min-width:0;}' +
+    s + ' .eng-sep{grid-column:1/-1;height:1px;padding:0;background:var(--eng-hair);}' +
+    s + ' .eng-ri{display:grid;place-items:center;}' +
+    s + ' .eng-ri svg{width:17px;height:17px;}' +
+    s + ' .eng-rl{font-size:12.5px;color:var(--eng-t2);overflow:hidden;text-overflow:ellipsis;' +
+      'white-space:nowrap;}' +
+    // Valore e unita' stanno nella STESSA cella, allineata a destra. "kWh" e'
+    // identico su ogni riga, quindi i numeri si incolonnano lo stesso e si
+    // risparmia una colonna: su una card da 340px (l'iPhone) sono i pixel che
+    // permettono a "Energia importata dalla rete" di restare intera invece che
+    // venire troncata.
+    s + ' .eng-rn{font-size:13.5px;font-weight:650;font-variant-numeric:tabular-nums;' +
+      'text-align:right;white-space:nowrap;}' +
+    s + ' .eng-rn small{font-size:10.5px;font-weight:600;color:var(--eng-t2);margin-left:3px;}' +
+    s + ' .eng-rd{justify-self:end;}' +
     // lo scarto su ieri: verde se la giornata e' andata meglio, ambra se peggio
-    s + ' .eng-d{flex:none;font-size:10.5px;font-weight:650;font-variant-numeric:tabular-nums;' +
-      'white-space:nowrap;padding:1px 6px;border-radius:99px;margin-left:8px;}' +
+    s + ' .eng-d{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:650;' +
+      'font-variant-numeric:tabular-nums;white-space:nowrap;padding:1.5px 7px;border-radius:99px;}' +
+    s + ' .eng-d svg{display:block;width:7px;height:5px;flex:none;}' +
     s + ' .eng-good{color:var(--eng-ok);background:var(--eng-ok-bg);}' +
     s + ' .eng-bad{color:var(--eng-warn);background:var(--eng-warn-bg);}' +
     s + ' .eng-eq{color:var(--eng-t2);background:rgba(127,127,127,.12);}';
