@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card.
  *
- * Version: 1.83.1
+ * Version: 1.83.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -9764,9 +9764,11 @@ class EnergySchemeCard extends HTMLElement {
       '</svg>' +
       engDailyHtml(engNum(h, c.solar_today), engNum(h, c.grid_import_today || c.grid_today),
         engNum(h, c.grid_export_today),
-        // senza `house_today` la riga non compare affatto, invece di restare
-        // a "—" per sempre: un trattino fisso e' peggio di una riga in meno
-        c.house_today ? engNum(h, c.house_today) : undefined, engDeltas(this)) +
+        // La riga del consumo c'e' SEMPRE, anche senza `house_today`: nasconderla
+        // faceva sparire una voce del riepilogo quando il browser aveva in cache
+        // una configurazione Lovelace vecchia, e sembrava una funzione tolta.
+        // Un trattino dice "manca un dato"; una riga assente non dice niente.
+        engNum(h, c.house_today), engDeltas(this)) +
       '</div></ha-card>'
     );
   }
