@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card.
  *
- * Version: 1.84.0
+ * Version: 1.84.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -9251,7 +9251,12 @@ function engDailyCss(s) {
     s + ' .eng-dg{display:grid;grid-template-columns:17px minmax(0,1fr) auto auto;' +
       'align-items:center;column-gap:7px;}' +
     s + ' .eng-dg>div{padding:7px 0;min-width:0;}' +
-    s + ' .eng-sep{grid-column:1/-1;height:1px;padding:0;background:var(--eng-hair);}' +
+    // Il selettore del filetto deve avere specificita' MAGGIORE della riga
+    // sopra, non solo venire dopo: `.xx .eng-dg>div` sono due classi piu' un
+    // tipo, `.xx .eng-sep` due classi soltanto, e il padding generale vinceva.
+    // Il fondo si dipinge anche sul padding, quindi il filetto da 1px veniva
+    // fuori come una fascia da 15.
+    s + ' .eng-dg>.eng-sep{grid-column:1/-1;height:1px;padding:0;background:var(--eng-hair);}' +
     s + ' .eng-ri{display:grid;place-items:center;}' +
     s + ' .eng-ri svg{width:17px;height:17px;}' +
     s + ' .eng-rl{font-size:12.5px;color:var(--eng-t2);overflow:hidden;text-overflow:ellipsis;' +
