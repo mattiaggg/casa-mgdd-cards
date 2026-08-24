@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card.
  *
- * Version: 1.84.1
+ * Version: 1.84.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -9863,9 +9863,13 @@ class EnergySchemeCard extends HTMLElement {
       '.es .es-st i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
       // il blackout non e' uno stato come gli altri: piu' nero e maiuscoletto
       '.es .es-st.es-alarm{font-weight:800;letter-spacing:.09em;text-transform:uppercase;}' +
-      // Lo schema scala con la card, ma oltre una certa larghezza diventerebbe
-      // solo alto: sopra i 520px si ferma e resta centrato.
-      '.es .es-svg{width:100%;max-width:520px;height:auto;display:block;margin:2px auto;}' +
+      // Lo schema non scala mai oltre la sua misura nativa (340x224). Su
+      // desktop la colonna della sezione e' larga ~440px e prima lo schema la
+      // riempiva tutta: essendo ad aspect-ratio fisso cresceva anche in
+      // altezza (269px) e con lui icone e numeri dei nodi, mentre le tessere
+      // accanto restano alte 56px. Fermandolo a 340px il disegno resta
+      // centrato e la card pesa quanto il resto della colonna.
+      '.es .es-svg{width:100%;max-width:340px;height:auto;display:block;margin:2px auto;}' +
       '.es .es-n{cursor:pointer;}' +
 
       // la testa luminosa: pathLength=100 normalizza il tratteggio, cosi' la
