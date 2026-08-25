@@ -7,9 +7,9 @@
  * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
  * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
- * casa-mgdd-presence-card.
+ * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.84.2
+ * Version: 1.85.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10228,4 +10228,351 @@ window.customCards.push({
   type: 'casa-mgdd-presence-card',
   name: 'Casa MGDD Presenza',
   description: 'Una tessera per persona con foto, nome e stato. Il tempo trascorso viene dal recorder, non da last_changed. Config via YAML.',
+});
+
+// ===== air-card.js =====
+// I due purificatori sulla Home: un quadrante per stanza e nient'altro. Niente
+// intestazione fissa, niente tabella di filtri e velocita' sotto — quelle cose
+// stanno nel more-info, e qui toglierebbero spazio alle due sole che si guardano
+// di sfuggita: quanto e' pulita l'aria e se c'e' qualcosa da fare.
+//
+// L'anello NON si riempie in proporzione. A 1 µg/m³, che in questa casa e' il
+// valore di tutti i giorni, una corona proporzionale sarebbe un trattino
+// invisibile: direbbe "poco" e nient'altro. Qui la corona E' la scala, dipinta a
+// fasce, e il valore e' una lancetta. Si legge quanto sei lontano dal guaio, non
+// solo che va bene.
+//
+// Le soglie sono quelle che la Home usa da sempre — 10 / 20 / 35 — e non le
+// 5 / 15 / 35 dell'OMS che usa la casa-mgdd-doors-card: chi apre la Home non
+// deve reimparare una scala. Restano in `bands:` per cambiarle senza toccare il
+// codice. Conseguenza da sapere: per gli stessi microgrammi la vista Porte puo'
+// dire una parola diversa.
+//
+// La parola viene SEMPRE calcolata dal PM2.5, anche per la Camera che avrebbe la
+// sua (`sensor.core_300s_series_qualita_dell_aria` = excellent): due quadranti
+// affiancati devono essere confrontabili, e con due sorgenti diverse potrebbero
+// dire parole diverse per lo stesso numero.
+//
+// Gli avvisi stanno in alto e SOLO quando ce n'e' uno: la card cresce di 26 px
+// il giorno che c'e' un pre-filtro da lavare, e negli altri giorni quei pixel
+// non li prende nessuno. Il pallino ambra accanto al nome dice in quale stanza.
+// `alerts:` sceglie fra riga + pallino (`row`), solo pallino (`dot`), niente
+// (`off`).
+
+const AIR_WORDS = ['Eccellente', 'Buona', 'Moderata', 'Scarsa'];
+// La corona e' un grafico: i colori restano fissi nei due temi, come le barre
+// della doors-card. Il testo invece e' testo, e cambia col tema.
+const AIR_TRACK = ['#22B573', '#8CC63F', '#E8A33D', '#DC4B48'];
+const AIR_TEXT = {
+  light: ['#0E9B6C', '#5E9B1E', '#C07C15', '#C93F3C'],
+  dark: ['#35E0A1', '#A6DB4F', '#F0B457', '#F0605C'],
+};
+const AIR_AMBER = { light: '#C07C15', dark: '#F0B457' };
+
+// Geometria del quadrante: 270 gradi da 135 a 405 su una corona di raggio 42
+// dentro un viewBox 110. I punti si calcolano invece di scriverli a mano: le
+// soglie sono configurabili, e con `bands` diverse i tagli delle fasce cambiano.
+function airPt(deg) {
+  const rad = (deg * Math.PI) / 180;
+  return [(55 + 42 * Math.cos(rad)).toFixed(2), (55 + 42 * Math.sin(rad)).toFixed(2)];
+}
+
+function airArc(a0, a1) {
+  const p0 = airPt(a0);
+  const p1 = airPt(a1);
+  return 'M' + p0[0] + ' ' + p0[1] + ' A42 42 0 ' + (a1 - a0 > 180 ? 1 : 0) + ' 1 ' + p1[0] + ' ' + p1[1];
+}
+
+function airAng(v, max) {
+  const t = Math.max(0, Math.min(1, v / max));
+  return 135 + 270 * t;
+}
+
+class AirCard extends HTMLElement {
+  setConfig(config) {
+    if (!config) throw new Error('Configurazione mancante');
+    const rooms = config.rooms || config.entities;
+    if (!Array.isArray(rooms) || !rooms.length) {
+      throw new Error('Indicare almeno una stanza in `rooms:`');
+    }
+    if (!rooms.every((r) => r && r.pm)) {
+      throw new Error('Ogni stanza deve avere `pm:` (il sensore PM2.5)');
+    }
+    const bands = config.bands || [10, 20, 35];
+    if (bands.length !== 3 || bands.some((b, i) => typeof b !== 'number' || (i && b <= bands[i - 1]))) {
+      throw new Error('`bands:` vuole tre soglie crescenti, es. [10, 20, 35]');
+    }
+    const alerts = ['row', 'dot', 'off'].indexOf(config.alerts) >= 0 ? config.alerts : 'row';
+    this.config = Object.assign({}, config, {
+      rooms: rooms,
+      bands: bands,
+      alerts: alerts,
+      max: typeof config.max === 'number' && config.max > bands[2] ? config.max : 50,
+      filter_warn: typeof config.filter_warn === 'number' ? config.filter_warn : 5,
+    });
+    this._sig = null;
+  }
+
+  static getStubConfig() {
+    return {
+      rooms: [{ name: 'Soggiorno', fan: 'fan.purificatore_soggiorno', pm: 'sensor.purificatore_soggiorno_pm2_5' }],
+    };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const sig = mgddStatesSig(hass, this._ids());
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getCardSize() {
+    return 3;
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 'full', min_columns: 6 };
+  }
+
+  // ---------- dati ----------
+
+  _rooms() {
+    return this.config.rooms;
+  }
+
+  _ids() {
+    const out = [];
+    this._rooms().forEach((r) => {
+      ['pm', 'fan', 'filter', 'prefilter'].forEach((k) => {
+        if (r[k]) out.push(r[k]);
+      });
+    });
+    return out;
+  }
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  _st(entity) {
+    return entity && this._hass ? this._hass.states[entity] : null;
+  }
+
+  _num(entity) {
+    const s = this._st(entity);
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  // Un'entita' che non risponde non e' uno zero: va detto, non disegnato.
+  _unav(entity) {
+    const s = this._st(entity);
+    return !s || s.state === 'unavailable' || s.state === 'unknown' || s.state === 'None';
+  }
+
+  _name(r) {
+    if (r.name) return r.name;
+    const s = this._st(r.fan) || this._st(r.pm);
+    if (s && s.attributes && s.attributes.friendly_name) return s.attributes.friendly_name;
+    return String(r.pm || '').split('.')[1] || 'Stanza';
+  }
+
+  _bandIdx(v) {
+    const b = this.config.bands;
+    if (v <= b[0]) return 0;
+    if (v <= b[1]) return 1;
+    if (v <= b[2]) return 2;
+    return 3;
+  }
+
+  // Un avviso e' una cosa da FARE, non uno stato: il purificatore spento non e'
+  // un avviso (lo dice il nome, sotto il quadrante), un pre-filtro da lavare si'.
+  // Formato "Stanza: cosa fare" per non incespicare negli articoli: "del
+  // Soggiorno" funziona, "del Camera matrimoniale" no.
+  _alerts() {
+    const out = [];
+    if (this.config.alerts === 'off') return out;
+    this._rooms().forEach((r) => {
+      const nm = this._name(r);
+      if (r.fan && this._unav(r.fan)) {
+        out.push({ room: r, ent: r.fan, text: nm + ': purificatore non raggiungibile' });
+      } else if (this._unav(r.pm)) {
+        out.push({ room: r, ent: r.pm, text: nm + ': nessuna misura' });
+      }
+      const pre = this._num(r.prefilter);
+      if (pre !== null && pre <= 0) {
+        out.push({ room: r, ent: r.prefilter, text: nm + ': pulire il pre-filtro' });
+      }
+      const fil = this._num(r.filter);
+      if (fil !== null && fil <= this.config.filter_warn) {
+        out.push({ room: r, ent: r.filter, text: nm + ': sostituire il filtro' });
+      }
+    });
+    return out;
+  }
+
+  // ---------- markup ----------
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+  }
+
+  _ring(r) {
+    const max = this.config.max;
+    const cuts = [0].concat(this.config.bands, [max]);
+    let track = '';
+    for (let i = 0; i < cuts.length - 1; i++) {
+      track += '<path d="' + airArc(airAng(cuts[i], max), airAng(cuts[i + 1], max)) +
+        '" stroke="' + AIR_TRACK[i] + '"/>';
+    }
+    const v = this._num(r.pm);
+    const idx = v === null ? -1 : this._bandIdx(v);
+    const txt = AIR_TEXT[this._isDark() ? 'dark' : 'light'];
+    let knob = '';
+    if (v !== null) {
+      const p = airPt(airAng(v, max));
+      knob = '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="5.2" fill="' + AIR_TRACK[idx] +
+        '" stroke="var(--air-bg)" stroke-width="2.5"/>';
+    }
+    const num = v === null ? '—' : String(Math.round(v));
+    const word = idx < 0 ? 'Sconosciuta' : AIR_WORDS[idx];
+    const ent = r.fan || r.pm;
+    return (
+      '<div class="air-rw" data-more="' + mgddEsc(ent) + '" role="button" tabindex="0" ' +
+      'aria-label="' + mgddEsc(this._name(r) + ', ' + num + ' microgrammi per metro cubo, aria ' + word.toLowerCase()) + '">' +
+      '<svg viewBox="0 0 110 110" aria-hidden="true">' +
+      '<g fill="none" stroke-width="8" stroke-linecap="butt" class="air-tr">' + track + '</g>' +
+      knob + '</svg>' +
+      '<div class="air-c"><b>' + num + '</b><span>µg/m³</span>' +
+      '<em style="color:' + (idx < 0 ? 'var(--air-t2)' : txt[idx]) + '">' + word + '</em></div></div>'
+    );
+  }
+
+  _html() {
+    const al = this._alerts();
+    const flagged = {};
+    al.forEach((a) => {
+      flagged[a.room.pm] = true;
+    });
+    const cells = this._rooms()
+      .map((r) => {
+        const off = r.fan && this._st(r.fan) && this._st(r.fan).state === 'off';
+        const dot = this.config.alerts !== 'off' && flagged[r.pm]
+          ? '<span class="air-dot" title="da controllare"></span>' : '';
+        return (
+          '<div class="air-cell">' + this._ring(r) +
+          '<div class="air-nm">' + mgddEsc(this._name(r)) +
+          (off ? '<i> · spento</i>' : '') + dot + '</div></div>'
+        );
+      })
+      .join('');
+    const warn = this.config.alerts === 'row' && al.length
+      ? '<div class="air-warn"><i></i><span>' +
+        al.map((a) => '<b data-more="' + mgddEsc(a.ent) + '">' + mgddEsc(a.text) + '</b>').join(' · ') +
+        '</span></div>'
+      : '';
+    return (
+      '<ha-card class="air' + (this._isDark() ? ' air-dark' : '') + '"><div class="air-in">' +
+      warn + '<div class="air-g">' + cells + '</div></div></ha-card>'
+    );
+  }
+
+  _wire() {
+    if (this._wired) return;
+    this._wired = true;
+    this.addEventListener('click', (ev) => this._fire(ev));
+    this.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        this._fire(ev);
+      }
+    });
+  }
+
+  _fire(ev) {
+    const el = ev.target && ev.target.closest ? ev.target.closest('[data-more]') : null;
+    const id = el && el.getAttribute('data-more');
+    if (!id) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      '.air{container-type:inline-size;overflow:hidden;' +
+      '--air-t1:var(--primary-text-color,#14161a);--air-t2:var(--secondary-text-color,#70757f);' +
+      '--air-amber:' + AIR_AMBER.light + ';--air-track-op:.30;' +
+      '--air-bg:var(--ha-card-background,var(--card-background-color,#fff));}' +
+      '.air.air-dark{--air-amber:' + AIR_AMBER.dark + ';--air-track-op:.34;}' +
+      '.air *{box-sizing:border-box;}' +
+      '.air svg{display:block;}' +
+      // come l'anello dell'energia e lo schema: oltre i 520px il contenuto si
+      // ferma e resta centrato, i quadranti sono di misura fissa e allargando
+      // ancora si ritroverebbero persi in mezzo al vuoto
+      '.air .air-in{padding:14px 15px 13px;max-width:520px;margin-inline:auto;color:var(--air-t1);' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
+
+      // la riga degli avvisi: stessa ricetta della riga di regime dell'anello
+      // dell'energia, pallino e testo, ma in ambra e solo quando c'e' qualcosa
+      '.air .air-warn{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:600;' +
+      'color:var(--air-amber);padding:0 0 11px;line-height:1.3;}' +
+      '.air .air-warn i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
+      '.air .air-warn b{font-weight:600;cursor:pointer;}' +
+
+      '.air .air-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(126px,1fr));gap:6px;}' +
+      '.air .air-cell{display:flex;flex-direction:column;align-items:center;gap:8px;}' +
+
+      // `min()` e non una misura fissa: con tre stanze in una card larga la cella
+      // scende sotto i 156px e un quadrante di misura fissa sborderebbe.
+      '.air .air-rw{position:relative;width:min(156px,100%);aspect-ratio:1;cursor:pointer;border-radius:50%;}' +
+      '.air .air-rw:focus-visible{outline:2px solid var(--air-t2);outline-offset:2px;}' +
+      '.air .air-rw svg{width:100%;height:100%;}' +
+      '.air .air-tr{opacity:var(--air-track-op);}' +
+
+      // Lo spostamento verso l'alto tiene la parola lontana dalla lancetta
+      // quando il valore e' basso (la lancetta parte in basso a sinistra), ma va
+      // tenuto piccolo: ogni pixel qui lo paga lo stacco fra numero e corona,
+      // che misurato agli angoli e' di 11px.
+      '.air .air-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;' +
+      'justify-content:center;gap:2px;padding-bottom:7px;pointer-events:none;}' +
+      '.air .air-c b{font-size:33px;font-weight:700;letter-spacing:-1.5px;line-height:1;' +
+      'font-variant-numeric:tabular-nums;}' +
+      '.air .air-c span{font-size:9.5px;color:var(--air-t2);margin-top:1px;}' +
+      '.air .air-c em{font-style:normal;font-size:9px;font-weight:800;letter-spacing:.85px;' +
+      'text-transform:uppercase;margin-top:8px;}' +
+
+      '.air .air-nm{font-size:10.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;' +
+      'color:var(--air-t2);text-align:center;}' +
+      '.air .air-nm i{font-style:normal;font-weight:600;letter-spacing:.6px;}' +
+      // il pallino dice QUALE stanza, la riga in alto dice COSA fare
+      '.air .air-dot{display:inline-block;width:6px;height:6px;border-radius:50%;' +
+      'background:var(--air-amber);margin-left:6px;vertical-align:1px;}' +
+
+      // Sul telefono la corona e' piu' piccola ma la parola resta la stessa:
+      // scende di mezzo punto e stringe il tracking, altrimenti "ECCELLENTE"
+      // arriva a sfiorare la traccia e la lancetta.
+      '@container (max-width:360px){' +
+      '.air .air-in{padding:13px 12px 12px;}' +
+      '.air .air-g{gap:2px;}' +
+      '.air .air-rw{width:min(144px,100%);}' +
+      '.air .air-c{padding-bottom:5px;}' +
+      '.air .air-c b{font-size:30px;}' +
+      '.air .air-c span{font-size:9px;}' +
+      '.air .air-c em{font-size:8.5px;letter-spacing:.55px;margin-top:6px;}' +
+      '}' +
+      '</style>'
+    );
+  }
+}
+
+customElements.define('casa-mgdd-air-card', AirCard);
+window.customCards.push({
+  type: 'casa-mgdd-air-card',
+  name: 'Casa MGDD Aria',
+  description: 'Un quadrante per stanza: il PM2.5 come lancetta su una scala a fasce, e una riga di avvisi in alto solo quando un filtro chiede attenzione. Config via YAML.',
 });
