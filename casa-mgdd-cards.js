@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.85.2
+ * Version: 1.86.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -67,15 +67,114 @@ function mgddStatesSig(hass, ids) {
 // quando e' il browser a spostare la posizione da solo: e' proprio quel caso che
 // la rete di sicurezza in mgddPaint deve poter distinguere e annullare.
 let mgddLastInput = 0;
+// Ultimo istante in cui la pagina si stava DAVVERO muovendo: dito che trascina,
+// rotella, oppure un evento di scorrimento -- che su iOS continua ad arrivare
+// per un secondo o due dopo che il dito si e' alzato, per inerzia. Serve a non
+// scambiare il contenuto in mezzo a un gesto, che e' il momento in cui la
+// pagina salta.
+let mgddLastMove = 0;
 function mgddScrollGuard() {
   if (mgddScrollGuard._on) return;
   mgddScrollGuard._on = true;
   const input = () => {
     mgddLastInput = Date.now();
   };
-  ['touchstart', 'touchmove', 'touchend', 'wheel', 'keydown'].forEach((ev) =>
+  const move = () => {
+    mgddLastInput = Date.now();
+    mgddLastMove = Date.now();
+  };
+  ['touchstart', 'touchend', 'keydown'].forEach((ev) =>
     window.addEventListener(ev, input, { capture: true, passive: true })
   );
+  ['touchmove', 'wheel'].forEach((ev) =>
+    window.addEventListener(ev, move, { capture: true, passive: true })
+  );
+  // `scroll` resta fuori da mgddLastInput -- la rete di ripristino piu' sotto
+  // deve poter distinguere lo spostamento voluto da quello del browser -- ma
+  // per RIMANDARE un ridisegno va benissimo: basta sapere che la pagina si sta
+  // muovendo, non perche'.
+  window.addEventListener('scroll', () => {
+    mgddLastMove = Date.now();
+  }, { capture: true, passive: true });
+}
+
+// Quiete richiesta prima di scambiare il contenuto, e tetto oltre il quale si
+// scambia comunque: su una pagina che si muove sempre, la card non puo' restare
+// indietro per sempre.
+const MGDD_QUIET = 350;
+const MGDD_MAX_WAIT = 2000;
+
+// Ritocco chirurgico invece di ricostruzione.
+//
+// Il lampeggio che si vedeva su iPhone -- una card che sfarfalla ogni due o tre
+// secondi -- non era un ridisegno a vuoto: sulla vista ha-monitor la sezione
+// `network` mostra la portata del router e il round-trip del ping, che cambiano
+// valore per davvero ogni pochi secondi. La scritta cambia, quindi la card
+// ANDAVA aggiornata; il problema era COME. Ricreare il sottoalbero con
+// `innerHTML` butta via i nodi vivi e ne crea di nuovi: il browser rifa'
+// impaginazione e disegno di tutto, e su iOS si vede come un flash. Peggio: per
+// un istante la pagina e' piu' corta, ed e' da li' che nasce anche il salto
+// dello scorrimento.
+//
+// Qui invece si confronta il nuovo contenuto con quello che c'e' gia': se la
+// STRUTTURA combacia -- stessi tag, stesso numero di figli -- si riscrivono
+// soltanto i testi e gli attributi diversi, e i nodi restano gli stessi. Niente
+// da ricreare, niente flash, e l'altezza della card non passa mai da zero.
+//
+// Se la struttura non combacia (una riga in piu', una sezione che appare) la
+// funzione si arrende e chi chiama fa lo scambio pieno, con le protezioni di
+// sempre. Meglio arrendersi presto che tenere in piedi un diff furbo e fragile.
+function mgddPatchNode(vecchio, nuovo) {
+  if (vecchio.nodeType !== nuovo.nodeType) return false;
+  // testo e commenti: si copia il contenuto se e' cambiato
+  if (vecchio.nodeType === 3 || vecchio.nodeType === 8) {
+    if (vecchio.data !== nuovo.data) vecchio.data = nuovo.data;
+    return true;
+  }
+  if (vecchio.nodeType !== 1) return true;
+  if (vecchio.tagName !== nuovo.tagName) return false;
+  const vf = vecchio.childNodes;
+  const nf = nuovo.childNodes;
+  if (vf.length !== nf.length) return false;
+
+  // attributi: si aggiornano quelli diversi e si togliono quelli scomparsi.
+  // Vale anche per l'SVG (coordinate della lancetta, colori delle fasce).
+  const na = nuovo.attributes;
+  for (let i = 0; i < na.length; i++) {
+    if (vecchio.getAttribute(na[i].name) !== na[i].value) {
+      vecchio.setAttribute(na[i].name, na[i].value);
+    }
+  }
+  const va = vecchio.attributes;
+  for (let i = va.length - 1; i >= 0; i--) {
+    if (!nuovo.hasAttribute(va[i].name)) vecchio.removeAttribute(va[i].name);
+  }
+
+  for (let i = 0; i < vf.length; i++) {
+    if (!mgddPatchNode(vf[i], nf[i])) return false;
+  }
+  return true;
+}
+
+// Prova il ritocco sul corpo della card. Ritorna true se e' andata a buon fine.
+// Nota: se si arrende a meta' strada il DOM resta con qualche testo gia'
+// aggiornato -- non e' un problema, perche' chi chiama sovrascrive tutto con lo
+// scambio pieno subito dopo.
+function mgddTryPatch(body, html) {
+  let tpl;
+  try {
+    tpl = document.createElement('template');
+    tpl.innerHTML = html;
+  } catch (e) {
+    return false;
+  }
+  const nf = tpl.content.childNodes;
+  const vf = body.childNodes;
+  if (!vf.length || vf.length !== nf.length) return false;
+  for (let i = 0; i < vf.length; i++) {
+    if (!mgddPatchNode(vf[i], nf[i])) return false;
+  }
+  return true;
 }
 
 // Riscrivere il contenuto svuota e ricrea il sottoalbero. Se in quell'istante
@@ -91,19 +190,16 @@ function mgddScrollGuard() {
 // quando il nuovo contenuto e' gia' impaginato.
 function mgddPaint(el, styles, html) {
   mgddScrollGuard();
+
   // Un custom element senza shadow DOM e senza una regola di stile sul proprio
   // nome e' un box INLINE. E su un box inline `min-height` NON HA EFFETTO: la
-  // rete di sicurezza qui sotto, che tiene l'altezza della card durante lo
-  // scambio del contenuto, e' quindi rimasta inerte dalla v1.39 in avanti per
-  // tutte le card della libreria. I `:host{display:block}` sparsi nel file non
-  // servono a niente: `:host` esiste solo dentro uno shadow root, e qui non se
-  // ne apre mai uno.
+  // rete di sicurezza qui sotto e' quindi rimasta inerte dalla v1.39 in avanti
+  // per tutte le card della libreria. I `:host{display:block}` sparsi nel file
+  // non servono a niente: `:host` esiste solo dentro uno shadow root, e qui non
+  // se ne apre mai uno.
   //
   // Misurato: su host inline, min-height 383px lascia l'altezza a 183; con
-  // display:block la stessa richiesta da' 383. Ecco perche' su iPhone la
-  // videata continuava a saltare in alto scorrendo: durante il ridisegno la
-  // card si accorciava davvero, la pagina con lei, e Safari riagganciava lo
-  // scorrimento al massimo momentaneo.
+  // display:block la stessa richiesta da' 383.
   if (!el._mgddBlock) {
     el._mgddBlock = true;
     try {
@@ -112,10 +208,62 @@ function mgddPaint(el, styles, html) {
       el.style.display = 'block';
     }
   }
-  if (!el._mgddBody || el._mgddBody.parentNode !== el) {
+
+  // Il foglio di stile viene inserito una volta sola per elemento: a ogni
+  // aggiornamento si riscrive solo il contenuto. Reinserire lo <style> forzava
+  // un ricalcolo di stile dell'intero sottoalbero a ogni refresh e su iOS Safari
+  // bastava a far risalire lo scroll della vista. Se il foglio cambia davvero
+  // (un cambio di tema) si rifa' tutto, ma e' un caso raro.
+  // Il contenitore e' display:contents, quindi non introduce una scatola in piu'
+  // e non altera ne' il layout ne' i selettori fra fratelli.
+  if (!el._mgddBody || el._mgddBody.parentNode !== el || el._mgddStyles !== styles) {
     el.innerHTML = styles + '<div class="mgdd-body" style="display:contents"></div>';
     el._mgddBody = el.querySelector('.mgdd-body');
+    el._mgddStyles = styles;
+    el._mgddHtml = null;
   }
+
+  // NIENTE DA FARE: il contenuto ricalcolato e' identico a quello che c'e' gia'
+  // sullo schermo. E' il caso piu' frequente di tutti, perche' le firme di
+  // aggiornamento delle card guardano gli stati GREZZI: un sensore che passa da
+  // 3,1 a 3,2 cambia lo stato ma non la scritta "3%". Riscrivere il sottoalbero
+  // per nulla e' il lampeggio che si vedeva ogni due o tre secondi sulla vista
+  // ha-monitor.
+  if (el._mgddHtml === html) return;
+
+  // Durante un gesto di scorrimento non si tocca il DOM: si tiene da parte
+  // l'ultimo contenuto e si riprova appena la pagina e' ferma. Su iOS lo scambio
+  // in mezzo allo scorrimento e' esattamente il momento in cui la videata salta.
+  if (Date.now() - mgddLastMove < MGDD_QUIET) {
+    if (!el._mgddWait) el._mgddWait = Date.now();
+    if (Date.now() - el._mgddWait < MGDD_MAX_WAIT) {
+      el._mgddNext = { s: styles, h: html };
+      if (!el._mgddTimer) {
+        el._mgddTimer = setInterval(() => {
+          const quiet = Date.now() - mgddLastMove >= MGDD_QUIET;
+          const scaduto = Date.now() - el._mgddWait >= MGDD_MAX_WAIT;
+          if (el.isConnected && !quiet && !scaduto) return;
+          clearInterval(el._mgddTimer);
+          el._mgddTimer = null;
+          el._mgddWait = 0;
+          const n = el._mgddNext;
+          el._mgddNext = null;
+          if (n && el.isConnected) mgddPaint(el, n.s, n.h);
+        }, 120);
+      }
+      return;
+    }
+  }
+  el._mgddWait = 0;
+
+  // Prima si prova a ritoccare: se la struttura combacia si cambiano solo i
+  // testi, i nodi restano quelli e non c'e' niente da proteggere -- ne' flash,
+  // ne' altezza che sparisce, ne' scorrimento da rimettere a posto.
+  if (mgddTryPatch(el._mgddBody, html)) {
+    el._mgddHtml = html;
+    return;
+  }
+
   let h = 0;
   try {
     h = el.offsetHeight || 0;
@@ -139,6 +287,7 @@ function mgddPaint(el, styles, html) {
   const top0 = sc ? sc.scrollTop : 0;
   const inputStamp = mgddLastInput;
   el._mgddBody.innerHTML = html;
+  el._mgddHtml = html;
   if (sc && top0 > 0) {
     // La correzione del browser non arriva sempre nello stesso frame dello
     // scambio: si ricontrolla per qualche frame. Soglia bassa, perche' anche uno
