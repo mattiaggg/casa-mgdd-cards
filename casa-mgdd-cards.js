@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.90.7
+ * Version: 1.90.8
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -8313,11 +8313,12 @@ class MgddCompactCard extends HTMLElement {
       'border-radius:10px;padding:5px 9px;font-size:11px;font-weight:500;white-space:nowrap;' +
       'opacity:0;pointer-events:none;transition:opacity .1s;z-index:3;}' +
       '.mc-tip.on{opacity:1;}' +
-      // Fuori dal grassetto: a 11px, dentro un riquadrino stretto, il 600 del
-      // contenitore piu' il 700 che il browser da' da solo a <b> impastavano le
-      // lettere. Il nome resta appena piu' pieno dello stato (550 contro 500); a
-      // separarli bastano il colore piu' tenue dello stato e il punto in mezzo.
-      '.mc-tip b{font-weight:550;}' +
+      // Fuori dal grassetto, senza mezze misure: a 11px, dentro un riquadrino
+      // stretto, il 600 del contenitore piu' il 700 che il browser da' da solo a
+      // <b> impastavano le lettere. Nome e stato ora hanno lo STESSO peso, 500:
+      // a separarli bastano il colore piu' tenue dello stato e il punto in mezzo.
+      // Il 550 provato nella v1.90.7 era un compromesso che nessuno aveva chiesto.
+      '.mc-tip b{font-weight:500;}' +
       '.mc-tip s{text-decoration:none;font-weight:500;color:var(--mc-t2);}' +
       '.mc-tip s::before{content:" \\00b7 ";}' +
 
