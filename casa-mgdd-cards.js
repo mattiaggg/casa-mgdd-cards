@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.90.4
+ * Version: 1.90.5
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10678,9 +10678,15 @@ class AirCard extends HTMLElement {
     // nessuna catena di ereditarieta', da nessuna variabile che potrebbe non
     // arrivare dentro lo shadow DOM di `ha-card`, e da nessun tema: se resta
     // chiaro, non e' un problema di CSS ma di file vecchio in cache.
+    // Nero e bianco puri, e con `!important`: fra le risorse Lovelace di questa
+    // casa c'e' card-mod, che inietta CSS in ogni card, e i temi installati sono
+    // i minimalist, che ne portano di loro. Uno stile inline batte qualunque
+    // regola esterna senza `!important`; con `!important` non lo batte piu'
+    // niente. Brutto da vedere nel codice, ma questo avviso e' stato segnalato
+    // quattro volte come illeggibile e la discussione finisce qui.
     const tinta = this._isDark()
-      ? { testo: '#E7E8EA', pallino: '#F0B457' }
-      : { testo: '#14161A', pallino: '#B26F0F' };
+      ? { testo: '#FFFFFF', pallino: '#F0B457' }
+      : { testo: '#000000', pallino: '#B26F0F' };
     const perStanza = {};
     this._alerts().forEach((x) => {
       if (!perStanza[x.room.pm]) perStanza[x.room.pm] = [];
@@ -10698,8 +10704,10 @@ class AirCard extends HTMLElement {
           ? '<span class="air-dot" role="button" tabindex="0" ' +
             'aria-label="' + mgddEsc(mie.map((x) => x.text).join('. ')) + '"><i></i></span>' +
             '<div class="air-tip" hidden>' +
-            mie.map((x) => '<div class="air-tr"><i style="background:' + tinta.pallino + '"></i>' +
-              '<b style="color:' + tinta.testo + '">' + mgddEsc(x.text) + '</b></div>').join('') +
+            mie.map((x) => '<div class="air-tr">' +
+              '<i style="background:' + tinta.pallino + ' !important"></i>' +
+              '<b style="color:' + tinta.testo + ' !important;opacity:1 !important">' +
+              mgddEsc(x.text) + '</b></div>').join('') +
             '</div>'
           : '';
         const v = this._num(r.pm);
@@ -10847,6 +10855,7 @@ class AirCard extends HTMLElement {
       // problema non c'era (9:1), ma un colore che regge in un tema solo non e' un
       // colore. L'ambra resta al pallino, che e' una forma e non una parola.
       '.air .air-tip{position:absolute;top:27px;right:6px;z-index:3;pointer-events:none;' +
+      'opacity:1;' +
       'max-width:calc(100% - 12px);padding:8px 10px;border-radius:11px;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));' +
       'border:1px solid var(--divider-color,rgba(16,20,28,.14));' +
