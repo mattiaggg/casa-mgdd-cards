@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.90.3
+ * Version: 1.90.4
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10670,6 +10670,17 @@ class AirCard extends HTMLElement {
   }
 
   _html() {
+    // Il colore del messaggio e del suo marcatore sono scritti DENTRO l'elemento,
+    // in esadecimale, e non presi da una variabile del tema ne' ereditati.
+    // Motivo: l'avviso e' finito tre volte di seguito "chiaro, non si legge" in
+    // produzione mentre al banco misurava 18:1 di contrasto, e non si riusciva a
+    // riprodurlo. Un colore letterale nell'attributo `style` non dipende da
+    // nessuna catena di ereditarieta', da nessuna variabile che potrebbe non
+    // arrivare dentro lo shadow DOM di `ha-card`, e da nessun tema: se resta
+    // chiaro, non e' un problema di CSS ma di file vecchio in cache.
+    const tinta = this._isDark()
+      ? { testo: '#E7E8EA', pallino: '#F0B457' }
+      : { testo: '#14161A', pallino: '#B26F0F' };
     const perStanza = {};
     this._alerts().forEach((x) => {
       if (!perStanza[x.room.pm]) perStanza[x.room.pm] = [];
@@ -10687,7 +10698,8 @@ class AirCard extends HTMLElement {
           ? '<span class="air-dot" role="button" tabindex="0" ' +
             'aria-label="' + mgddEsc(mie.map((x) => x.text).join('. ')) + '"><i></i></span>' +
             '<div class="air-tip" hidden>' +
-            mie.map((x) => '<div class="air-tr"><i></i><b>' + mgddEsc(x.text) + '</b></div>').join('') +
+            mie.map((x) => '<div class="air-tr"><i style="background:' + tinta.pallino + '"></i>' +
+              '<b style="color:' + tinta.testo + '">' + mgddEsc(x.text) + '</b></div>').join('') +
             '</div>'
           : '';
         const v = this._num(r.pm);
@@ -10844,10 +10856,12 @@ class AirCard extends HTMLElement {
       // marcatore QUADRATO da 9px con raggio 3 -- non un cerchio -- testo 11,5px,
       // e il contenuto in peso 650 col colore del testo normale, come i valori
       // la' dentro.
-      '.air .air-tr{display:flex;align-items:center;gap:7px;font-size:11.5px;padding:1.5px 0;}' +
-      '.air .air-tr i{width:9px;height:9px;border-radius:3px;background:var(--air-amber);' +
-      'flex:0 0 auto;}' +
-      '.air .air-tr b{font-weight:650;line-height:1.35;color:var(--air-t1);}' +
+      '.air .air-tr{display:flex;align-items:center;gap:7px;font-size:12px;padding:1.5px 0;}' +
+      '.air .air-tr i{width:9px;height:9px;border-radius:3px;flex:0 0 auto;}' +
+      // 700 e non 650: e' una frase d'avviso, non un numero incolonnato, e a 12px
+      // il peso in piu' si legge. Sulla parita' col tooltip dell'energia si
+      // perde un capello, sulla leggibilita' si guadagna.
+      '.air .air-tr b{font-weight:700;line-height:1.35;}' +
       '.air .air-dot i{width:6px;height:6px;border-radius:50%;background:var(--air-amber);}' +
       '.air .air-dot:focus-visible{outline:2px solid var(--air-amber);outline-offset:-2px;' +
       'border-radius:50%;}' +
