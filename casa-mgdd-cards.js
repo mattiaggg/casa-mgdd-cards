@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.87.0
+ * Version: 1.88.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10429,15 +10429,23 @@ window.customCards.push({
 // `alerts:` sceglie fra riga + pallino (`row`), solo pallino (`dot`), niente
 // (`off`).
 //
-// MISURA (v1.87.0). Terza e ultima: la corona e' 66 px con il testo a lato,
-// come una tile. La card sta in 90 px, 114 quando c'e' un avviso, cioe' meno di
-// due righe di tile in una colonna che ne e' fatta: entra nel ritmo della
-// sezione invece di spezzarlo. Le due misure precedenti stavano in 210 px
-// (corona 156) e 159 (corona 104), entrambe troppo per due numeri.
+// UNA TESSERA PER STANZA (v1.88.0). L'elemento emette una `ha-card` per ogni
+// voce di `rooms:`, come fa la card delle presenze: la configurazione resta una,
+// ma a schermo sono tessere separate, col loro fondo e il loro bordo, allineate
+// alle altre tile della sezione. Prima erano due quadranti dentro un unico
+// riquadro.
 //
-// Il prezzo, dichiarato: a 66 px le quattro fasce si leggono come colore, non
-// come tacche da misurare. La corona qui non insegna piu' la scala, dice a
-// occhio "sei nel verde"; il numero, la parola e la lancetta fanno il resto.
+// L'avviso sta DENTRO la tessera che riguarda, in fondo, e per questo ha perso
+// il nome della stanza: la tessera dice gia' di chi si parla. "Pulire il
+// pre-filtro" e basta. Le tessere restano della stessa altezza -- le celle della
+// griglia si distendono -- quindi quando una ha un avviso l'altra le tiene il
+// passo invece di sembrare disallineata.
+//
+// MISURA. Corona 66 px col numero dentro, testo a lato su tre righe: nome,
+// parola grossa col colore della fascia, valore con l'unita'. Tessera 88 px, 112
+// con l'avviso. Le misure bocciate: corona 156 (236 px, "troppo grande, non
+// uniforme con le altre tile") e corona 104 (183). Il prezzo, dichiarato: a 66 px
+// le quattro fasce si leggono come colore, non come tacche da misurare.
 //
 // Lo stato del ventilatore non compare: sulla Home le due tile dei purificatori
 // stanno subito sopra e lo dicono gia'. Questa card parla dell'aria.
@@ -10579,19 +10587,18 @@ class AirCard extends HTMLElement {
     const out = [];
     if (this.config.alerts === 'off') return out;
     this._rooms().forEach((r) => {
-      const nm = this._name(r);
       if (r.fan && this._unav(r.fan)) {
-        out.push({ room: r, ent: r.fan, text: nm + ': purificatore non raggiungibile' });
+        out.push({ room: r, ent: r.fan, text: 'Purificatore non raggiungibile' });
       } else if (this._unav(r.pm)) {
-        out.push({ room: r, ent: r.pm, text: nm + ': nessuna misura' });
+        out.push({ room: r, ent: r.pm, text: 'Nessuna misura dal sensore' });
       }
       const pre = this._num(r.prefilter);
       if (pre !== null && pre <= 0) {
-        out.push({ room: r, ent: r.prefilter, text: nm + ': pulire il pre-filtro' });
+        out.push({ room: r, ent: r.prefilter, text: 'Pulire il pre-filtro' });
       }
       const fil = this._num(r.filter);
       if (fil !== null && fil <= this.config.filter_warn) {
-        out.push({ room: r, ent: r.filter, text: nm + ': sostituire il filtro' });
+        out.push({ room: r, ent: r.filter, text: 'Sostituire il filtro' });
       }
     });
     return out;
@@ -10650,38 +10657,41 @@ class AirCard extends HTMLElement {
   }
 
   _html() {
-    const al = this._alerts();
-    const flagged = {};
-    al.forEach((a) => {
-      flagged[a.room.pm] = true;
+    const perStanza = {};
+    this._alerts().forEach((x) => {
+      if (!perStanza[x.room.pm]) perStanza[x.room.pm] = [];
+      perStanza[x.room.pm].push(x);
     });
-    const cells = this._rooms()
+    const conRiga = this.config.alerts === 'row';
+    const tiles = this._rooms()
       .map((r) => {
-        const dot = this.config.alerts !== 'off' && flagged[r.pm]
+        const mie = perStanza[r.pm] || [];
+        // Il pallino serve solo quando la riga non c'e': con la riga dentro la
+        // tessera, segnare "questa stanza" sarebbe dirlo due volte.
+        const dot = this.config.alerts === 'dot' && mie.length
           ? '<span class="air-dot" title="da controllare"></span>' : '';
         const v = this._num(r.pm);
         const nm = this._name(r);
         const num = v === null ? '—' : String(Math.round(v));
+        const warn = conRiga && mie.length
+          ? '<div class="air-warn"><i></i><span>' +
+            mie.map((x) => '<b data-more="' + mgddEsc(x.ent) + '">' + mgddEsc(x.text) + '</b>').join(' · ') +
+            '</span></div>'
+          : '';
         return (
-          '<div class="air-cell" data-more="' + mgddEsc(r.fan || r.pm) + '" role="button" tabindex="0" ' +
+          '<ha-card class="air-t" data-more="' + mgddEsc(r.fan || r.pm) + '" role="button" tabindex="0" ' +
           'aria-label="' + mgddEsc(nm + ', ' + num + ' microgrammi per metro cubo, aria ' +
             this._wordText(r).toLowerCase()) + '">' +
-          this._ring(r) +
-          '<div class="air-tx"><span class="air-nm">' + mgddEsc(nm) + dot + '</span>' +
+          dot +
+          '<div class="air-in"><div class="air-cell">' + this._ring(r) +
+          '<div class="air-tx"><span class="air-nm">' + mgddEsc(nm) + '</span>' +
           this._word(r) +
-          '<span class="air-un">' + num + ' µg/m³</span></div></div>'
+          '<span class="air-un">' + num + ' µg/m³</span></div></div>' +
+          warn + '</div></ha-card>'
         );
       })
       .join('');
-    const warn = this.config.alerts === 'row' && al.length
-      ? '<div class="air-warn"><i></i><span>' +
-        al.map((a) => '<b data-more="' + mgddEsc(a.ent) + '">' + mgddEsc(a.text) + '</b>').join(' · ') +
-        '</span></div>'
-      : '';
-    return (
-      '<ha-card class="air' + (this._isDark() ? ' air-dark' : '') + '"><div class="air-in">' +
-      warn + '<div class="air-g">' + cells + '</div></div></ha-card>'
-    );
+    return '<div class="air' + (this._isDark() ? ' air-dark' : '') + '">' + tiles + '</div>';
   }
 
   _wire() {
@@ -10706,34 +10716,28 @@ class AirCard extends HTMLElement {
   _styles() {
     return (
       '<style>' +
-      '.air{container-type:inline-size;overflow:hidden;' +
+      // Il contenitore non e' piu' una card: e' la griglia delle tessere, una per
+      // stanza. 152px e' la larghezza sotto la quale "Eccellente" a 15px non ci
+      // sta accanto a una corona da 66, e allora si perde una colonna invece di
+      // troncare la parola.
+      '.air{display:grid;grid-template-columns:repeat(auto-fit,minmax(152px,1fr));gap:8px;' +
+      'container-type:inline-size;' +
       '--air-t1:var(--primary-text-color,#14161a);--air-t2:var(--secondary-text-color,#70757f);' +
       '--air-amber:' + AIR_AMBER.light + ';--air-track-op:.30;' +
       '--air-bg:var(--ha-card-background,var(--card-background-color,#fff));}' +
       '.air.air-dark{--air-amber:' + AIR_AMBER.dark + ';--air-track-op:.34;}' +
       '.air *{box-sizing:border-box;}' +
       '.air svg{display:block;}' +
-      // come l'anello dell'energia e lo schema: oltre i 520px il contenuto si
-      // ferma e resta centrato, i quadranti sono di misura fissa e allargando
-      // ancora si ritroverebbero persi in mezzo al vuoto
-      '.air .air-in{padding:11px 12px 10px;max-width:520px;margin-inline:auto;color:var(--air-t1);' +
-      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
 
-      // la riga degli avvisi: stessa ricetta della riga di regime dell'anello
-      // dell'energia, pallino e testo, ma in ambra e solo quando c'e' qualcosa
-      '.air .air-warn{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:600;' +
-      'color:var(--air-amber);padding:0 0 9px;line-height:1.3;}' +
-      '.air .air-warn i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
-      '.air .air-warn b{font-weight:600;cursor:pointer;}' +
+      // Le tessere si distendono all'altezza della piu' alta: quando una ha un
+      // avviso l'altra le tiene il passo invece di sembrare disallineata.
+      '.air .air-t{position:relative;display:flex;flex-direction:column;cursor:pointer;overflow:hidden;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'color:var(--air-t1);}' +
+      '.air .air-t:focus-visible{outline:2px solid var(--air-t2);outline-offset:2px;}' +
+      '.air .air-in{padding:11px 12px;display:flex;flex-direction:column;flex:1;}' +
 
-      // Una cella per stanza, quadrante a sinistra e testo a lato. 152px e' la
-      // larghezza sotto la quale "Eccellente" a 15px non ci sta accanto a una
-      // corona da 66: sotto quella soglia la griglia perde una colonna invece di
-      // troncare la parola.
-      '.air .air-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(152px,1fr));gap:8px;}' +
-      '.air .air-cell{display:flex;align-items:center;gap:11px;cursor:pointer;border-radius:12px;}' +
-      '.air .air-cell:focus-visible{outline:2px solid var(--air-t2);outline-offset:2px;}' +
-
+      '.air .air-cell{display:flex;align-items:center;gap:11px;}' +
       '.air .air-rw{position:relative;width:66px;aspect-ratio:1;flex:none;}' +
       '.air .air-rw svg{width:100%;height:100%;}' +
       '.air .air-tr{opacity:var(--air-track-op);}' +
@@ -10746,8 +10750,8 @@ class AirCard extends HTMLElement {
       'font-variant-numeric:tabular-nums;}' +
 
       // Tre righe: nome piccolo, parola grossa, numero con l'unita'. La parola e'
-      // la riga che si legge di sfuggita, quindi e' lei ad avere il corpo grande
-      // e il colore della fascia.
+      // quella che si legge di sfuggita, quindi e' lei ad avere il corpo grande e
+      // il colore della fascia.
       '.air .air-tx{min-width:0;}' +
       '.air .air-nm{display:block;font-size:10px;font-weight:800;letter-spacing:1.15px;' +
       'text-transform:uppercase;color:var(--air-t2);line-height:1;' +
@@ -10756,14 +10760,18 @@ class AirCard extends HTMLElement {
       'margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
       '.air .air-un{display:block;font-size:10.5px;color:var(--air-t2);margin-top:4px;' +
       'font-variant-numeric:tabular-nums;}' +
-      // il pallino dice QUALE stanza, la riga in alto dice COSA fare
-      '.air .air-dot{display:inline-block;width:6px;height:6px;border-radius:50%;' +
-      'background:var(--air-amber);margin-left:6px;vertical-align:1px;}' +
+      '.air .air-dot{position:absolute;top:10px;right:11px;width:6px;height:6px;border-radius:50%;' +
+      'background:var(--air-amber);}' +
 
-      '@container (max-width:360px){' +
-      '.air .air-in{padding:10px 11px;}' +
-      '.air .air-g{gap:6px;}' +
-      '}' +
+      // L'avviso in fondo alla tessera che riguarda. `margin-top:auto` lo spinge
+      // in basso, cosi' resta appoggiato al bordo anche nella tessera che si e'
+      // distesa per stare al passo con la vicina.
+      '.air .air-warn{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:600;' +
+      'color:var(--air-amber);line-height:1.3;margin-top:auto;padding-top:9px;}' +
+      '.air .air-warn i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
+      '.air .air-warn b{font-weight:600;}' +
+
+      '@container (max-width:360px){.air{gap:6px;}}' +
 
       '</style>'
     );
