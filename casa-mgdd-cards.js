@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.90.2
+ * Version: 1.90.3
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10840,10 +10840,14 @@ class AirCard extends HTMLElement {
       'border:1px solid var(--divider-color,rgba(16,20,28,.14));' +
       'box-shadow:0 6px 20px rgba(0,0,0,.13);}' +
       '.air .air-tip[hidden]{display:none;}' +
-      '.air .air-tr{display:flex;align-items:flex-start;gap:7px;padding:1px 0;}' +
-      '.air .air-tr i{width:7px;height:7px;border-radius:50%;background:var(--air-amber);' +
-      'flex:none;margin-top:4px;}' +
-      '.air .air-tr b{font-size:12.5px;font-weight:650;line-height:1.3;color:var(--air-t1);}' +
+      // Riga identica a quelle del tooltip del profilo orario (.epb-tr/.epb-dot):
+      // marcatore QUADRATO da 9px con raggio 3 -- non un cerchio -- testo 11,5px,
+      // e il contenuto in peso 650 col colore del testo normale, come i valori
+      // la' dentro.
+      '.air .air-tr{display:flex;align-items:center;gap:7px;font-size:11.5px;padding:1.5px 0;}' +
+      '.air .air-tr i{width:9px;height:9px;border-radius:3px;background:var(--air-amber);' +
+      'flex:0 0 auto;}' +
+      '.air .air-tr b{font-weight:650;line-height:1.35;color:var(--air-t1);}' +
       '.air .air-dot i{width:6px;height:6px;border-radius:50%;background:var(--air-amber);}' +
       '.air .air-dot:focus-visible{outline:2px solid var(--air-amber);outline-offset:-2px;' +
       'border-radius:50%;}' +
