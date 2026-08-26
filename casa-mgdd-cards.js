@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.85.1
+ * Version: 1.85.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -91,6 +91,27 @@ function mgddScrollGuard() {
 // quando il nuovo contenuto e' gia' impaginato.
 function mgddPaint(el, styles, html) {
   mgddScrollGuard();
+  // Un custom element senza shadow DOM e senza una regola di stile sul proprio
+  // nome e' un box INLINE. E su un box inline `min-height` NON HA EFFETTO: la
+  // rete di sicurezza qui sotto, che tiene l'altezza della card durante lo
+  // scambio del contenuto, e' quindi rimasta inerte dalla v1.39 in avanti per
+  // tutte le card della libreria. I `:host{display:block}` sparsi nel file non
+  // servono a niente: `:host` esiste solo dentro uno shadow root, e qui non se
+  // ne apre mai uno.
+  //
+  // Misurato: su host inline, min-height 383px lascia l'altezza a 183; con
+  // display:block la stessa richiesta da' 383. Ecco perche' su iPhone la
+  // videata continuava a saltare in alto scorrendo: durante il ridisegno la
+  // card si accorciava davvero, la pagina con lei, e Safari riagganciava lo
+  // scorrimento al massimo momentaneo.
+  if (!el._mgddBlock) {
+    el._mgddBlock = true;
+    try {
+      if (getComputedStyle(el).display === 'inline') el.style.display = 'block';
+    } catch (e) {
+      el.style.display = 'block';
+    }
+  }
   if (!el._mgddBody || el._mgddBody.parentNode !== el) {
     el.innerHTML = styles + '<div class="mgdd-body" style="display:contents"></div>';
     el._mgddBody = el.querySelector('.mgdd-body');
