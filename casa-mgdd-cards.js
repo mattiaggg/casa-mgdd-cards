@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.90.1
+ * Version: 1.90.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10440,7 +10440,9 @@ window.customCards.push({
 // giorni non c'e'. Resta un pallino ambra nell'angolo in alto a destra, e il
 // messaggio compare in un riquadro nello stesso stile dei tooltip dei grafici
 // dell'energia (`.epb-tip`): fondo della card, filo del divider, ombra. Una riga
-// per avviso, col pallino e il testo in ambra. Nessuna intestazione col nome
+// per avviso, col pallino ambra e il testo nel colore normale (l'ambra su fondo
+// bianco non arriva al contrasto minimo per un testo di 12,5px). Nessuna
+// intestazione col nome
 // della stanza: il riquadro esce dalla tessera di quella stanza, ripeterlo
 // allargava la scatola per una riga grigia.
 //
@@ -10825,9 +10827,13 @@ class AirCard extends HTMLElement {
       // dell'energia mostrano numeri e stanno su una riga, qui sono frasi.
       // Niente intestazione col nome della stanza: il riquadro esce dalla tessera
       // di quella stanza, dirlo di nuovo e' fiato sprecato e allargava la scatola
-      // per una riga grigia. Resta una riga per avviso, e il testo e' AMBRA come
-      // il pallino: e' un avviso, non un dato, e in ambra non si puo' confondere
-      // con un testo spento. Senza `min-width` la scatola sta a misura del testo.
+      // per una riga grigia. Senza `min-width` la scatola sta a misura del testo.
+      //
+      // Il testo del messaggio e' nel colore del testo NORMALE, non in ambra:
+      // l'ambra chiara (#C07C15) su fondo bianco da' 3,4:1 di contrasto, sotto il
+      // minimo di 4,5:1 per un testo di 12,5px, e si legge male. Su fondo scuro il
+      // problema non c'era (9:1), ma un colore che regge in un tema solo non e' un
+      // colore. L'ambra resta al pallino, che e' una forma e non una parola.
       '.air .air-tip{position:absolute;top:27px;right:6px;z-index:3;pointer-events:none;' +
       'max-width:calc(100% - 12px);padding:8px 10px;border-radius:11px;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));' +
@@ -10837,7 +10843,7 @@ class AirCard extends HTMLElement {
       '.air .air-tr{display:flex;align-items:flex-start;gap:7px;padding:1px 0;}' +
       '.air .air-tr i{width:7px;height:7px;border-radius:50%;background:var(--air-amber);' +
       'flex:none;margin-top:4px;}' +
-      '.air .air-tr b{font-size:12.5px;font-weight:650;line-height:1.3;color:var(--air-amber);}' +
+      '.air .air-tr b{font-size:12.5px;font-weight:650;line-height:1.3;color:var(--air-t1);}' +
       '.air .air-dot i{width:6px;height:6px;border-radius:50%;background:var(--air-amber);}' +
       '.air .air-dot:focus-visible{outline:2px solid var(--air-amber);outline-offset:-2px;' +
       'border-radius:50%;}' +
