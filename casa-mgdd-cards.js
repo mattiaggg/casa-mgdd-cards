@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.90.5
+ * Version: 1.90.6
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10648,7 +10648,7 @@ class AirCard extends HTMLElement {
     return (
       '<div class="air-rw">' +
       '<svg viewBox="0 0 110 110" aria-hidden="true">' +
-      '<g fill="none" stroke-width="9" stroke-linecap="butt" class="air-tr">' + track + '</g>' +
+      '<g fill="none" stroke-width="9" stroke-linecap="butt" class="air-arc">' + track + '</g>' +
       knob + '</svg>' +
       '<div class="air-c"><b>' + num + '</b></div></div>'
     );
@@ -10704,9 +10704,9 @@ class AirCard extends HTMLElement {
           ? '<span class="air-dot" role="button" tabindex="0" ' +
             'aria-label="' + mgddEsc(mie.map((x) => x.text).join('. ')) + '"><i></i></span>' +
             '<div class="air-tip" hidden>' +
-            mie.map((x) => '<div class="air-tr">' +
+            mie.map((x) => '<div class="air-msg">' +
               '<i style="background:' + tinta.pallino + ' !important"></i>' +
-              '<b style="color:' + tinta.testo + ' !important;opacity:1 !important">' +
+              '<b style="color:' + tinta.testo + ' !important">' +
               mgddEsc(x.text) + '</b></div>').join('') +
             '</div>'
           : '';
@@ -10815,7 +10815,14 @@ class AirCard extends HTMLElement {
       '.air .air-cell{display:flex;align-items:center;gap:11px;}' +
       '.air .air-rw{position:relative;width:66px;aspect-ratio:1;flex:none;}' +
       '.air .air-rw svg{width:100%;height:100%;}' +
-      '.air .air-tr{opacity:var(--air-track-op);}' +
+      // La traccia del quadrante e' tenue: e' una scala, non un dato. NB: questa
+      // classe si chiamava `air-tr` (track) e la riga del riquadro del messaggio
+      // pure (table row, copiata da .epb-tr dell'energia). Due cose diverse con
+      // lo stesso nome: la riga del messaggio si prendeva questo `opacity:.3` e
+      // il testo risultava sbiadito in modo non aggirabile -- l'opacita' di un
+      // antenato non si annulla da un figlio, nemmeno con `!important`. Quattro
+      // versioni spese a cambiare colore per niente. Nomi distinti, adesso.
+      '.air .air-arc{opacity:var(--air-track-op);}' +
 
       // Dentro la corona resta il solo numero, spinto in alto di 3px perche' la
       // lancetta a valori bassi parte in basso a sinistra.
@@ -10865,12 +10872,12 @@ class AirCard extends HTMLElement {
       // marcatore QUADRATO da 9px con raggio 3 -- non un cerchio -- testo 11,5px,
       // e il contenuto in peso 650 col colore del testo normale, come i valori
       // la' dentro.
-      '.air .air-tr{display:flex;align-items:center;gap:7px;font-size:12px;padding:1.5px 0;}' +
-      '.air .air-tr i{width:9px;height:9px;border-radius:3px;flex:0 0 auto;}' +
+      '.air .air-msg{display:flex;align-items:center;gap:7px;font-size:12px;padding:1.5px 0;}' +
+      '.air .air-msg i{width:9px;height:9px;border-radius:3px;flex:0 0 auto;}' +
       // 700 e non 650: e' una frase d'avviso, non un numero incolonnato, e a 12px
       // il peso in piu' si legge. Sulla parita' col tooltip dell'energia si
       // perde un capello, sulla leggibilita' si guadagna.
-      '.air .air-tr b{font-weight:700;line-height:1.35;}' +
+      '.air .air-msg b{font-weight:700;line-height:1.35;}' +
       '.air .air-dot i{width:6px;height:6px;border-radius:50%;background:var(--air-amber);}' +
       '.air .air-dot:focus-visible{outline:2px solid var(--air-amber);outline-offset:-2px;' +
       'border-radius:50%;}' +
