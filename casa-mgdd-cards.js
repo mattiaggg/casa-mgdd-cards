@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.89.0
+ * Version: 1.90.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10434,16 +10434,20 @@ window.customCards.push({
 // ma a schermo sono tessere separate, col loro fondo e il loro bordo, allineate
 // alle altre tile della sezione.
 //
-// GLI AVVISI SONO UN PALLINO, NON UNA RIGA (v1.89.0). La riga di testo in fondo
-// alla tessera faceva crescere TUTTE le tessere di 24 px -- si distendono alla
-// stessa altezza -- per una frase che nel 99% dei giorni non c'e'. Ora resta un
-// pallino ambra nell'angolo in alto a destra: il messaggio sta nel tooltip
-// (`title`), e siccome sul telefono il passaggio del mouse non esiste, il
-// pallino e' anche toccabile e apre il more-info dell'entita' che si lamenta --
-// il sensore del pre-filtro, non il ventilatore. Bersaglio di 26 px attorno a un
-// punto di 6, cosi' si prende col dito senza pesare a schermo.
-// `alerts:` vale `dot` (predefinito) oppure `off`. Il vecchio valore `row` viene
-// letto come `dot`, per non rompere le configurazioni gia' in dashboard.
+// GLI AVVISI SONO UN PALLINO CON IL RIQUADRO DI CASA (v1.90.0). La riga di testo
+// in fondo alla tessera faceva crescere TUTTE le tessere di 24 px -- si
+// distendono alla stessa altezza -- per una frase che nella maggior parte dei
+// giorni non c'e'. Resta un pallino ambra nell'angolo in alto a destra, e il
+// messaggio compare in un riquadro nello stesso stile dei tooltip dei grafici
+// dell'energia (`.epb-tip`): fondo della card, filo del divider, ombra,
+// intestazione col nome della stanza e filetto sotto, poi una riga per avviso col
+// suo pallino.
+//
+// Col mouse si apre passando sopra il pallino. Sul telefono il passaggio del
+// mouse non esiste, quindi si apre al tocco e si richiude da sola dopo 2,5 s,
+// come i tooltip dei grafici dell'energia. Il tocco sul pallino NON apre il
+// more-info: aprirebbe due cose con un dito solo. Il resto della tessera apre il
+// purificatore, come prima.
 //
 // MISURA. Corona 66 px col numero dentro, testo a lato su tre righe: nome,
 // parola grossa col colore della fascia, valore con l'unita'. Tessera 90 px,
@@ -10673,10 +10677,15 @@ class AirCard extends HTMLElement {
         const mie = perStanza[r.pm] || [];
         // Il pallino porta il messaggio nel tooltip e, al tocco, apre l'entita'
         // che si lamenta: il pre-filtro o il filtro, non il ventilatore.
+        // Il pallino apre il riquadro, non il more-info: due azioni sullo stesso
+        // punto con un dito solo non si distinguono. `aria-label` porta il
+        // messaggio a chi usa il lettore di schermo, che il riquadro non lo vede.
         const dot = mie.length
-          ? '<span class="air-dot" data-more="' + mgddEsc(mie[0].ent) + '" role="button" tabindex="0" ' +
-            'title="' + mgddEsc(mie.map((x) => x.text).join('\n')) + '" ' +
-            'aria-label="' + mgddEsc(mie.map((x) => x.text).join('. ')) + '"><i></i></span>'
+          ? '<span class="air-dot" role="button" tabindex="0" ' +
+            'aria-label="' + mgddEsc(mie.map((x) => x.text).join('. ')) + '"><i></i></span>' +
+            '<div class="air-tip" hidden><div class="air-tt">' + mgddEsc(this._name(r)) + '</div>' +
+            mie.map((x) => '<div class="air-tr"><i></i><b>' + mgddEsc(x.text) + '</b></div>').join('') +
+            '</div>'
           : '';
         const v = this._num(r.pm);
         const nm = this._name(r);
@@ -10706,9 +10715,49 @@ class AirCard extends HTMLElement {
         this._fire(ev);
       }
     });
+    // Col mouse il riquadro segue il passaggio sopra il pallino. Al tocco si
+    // apre e si richiude da sola dopo 2,5 s, come i tooltip dei grafici
+    // dell'energia: sul telefono non esiste un "uscire dal sopra".
+    this.addEventListener('mouseover', (ev) => {
+      const d = ev.target.closest ? ev.target.closest('.air-dot') : null;
+      if (d) this._tip(d, true);
+    });
+    this.addEventListener('mouseout', (ev) => {
+      const d = ev.target.closest ? ev.target.closest('.air-dot') : null;
+      if (d) this._tip(d, false);
+    });
+    this.addEventListener('focusin', (ev) => {
+      const d = ev.target.closest ? ev.target.closest('.air-dot') : null;
+      if (d) this._tip(d, true);
+    });
+    this.addEventListener('focusout', (ev) => {
+      const d = ev.target.closest ? ev.target.closest('.air-dot') : null;
+      if (d) this._tip(d, false);
+    });
+  }
+
+  _tip(dot, mostra) {
+    const tip = dot.parentNode ? dot.parentNode.querySelector('.air-tip') : null;
+    if (!tip) return;
+    clearTimeout(this._tipT);
+    tip.hidden = !mostra;
   }
 
   _fire(ev) {
+    // Un tocco sul pallino mostra il messaggio e non apre altro: il more-info
+    // resta sul resto della tessera.
+    const dot = ev.target && ev.target.closest ? ev.target.closest('.air-dot') : null;
+    if (dot) {
+      const tip = dot.parentNode ? dot.parentNode.querySelector('.air-tip') : null;
+      if (tip) {
+        tip.hidden = false;
+        clearTimeout(this._tipT);
+        this._tipT = setTimeout(() => {
+          tip.hidden = true;
+        }, 2500);
+      }
+      return;
+    }
     const el = ev.target && ev.target.closest ? ev.target.closest('[data-more]') : null;
     const id = el && el.getAttribute('data-more');
     if (!id) return;
@@ -10733,7 +10782,8 @@ class AirCard extends HTMLElement {
 
       // Le tessere si distendono all'altezza della piu' alta: quando una ha un
       // avviso l'altra le tiene il passo invece di sembrare disallineata.
-      '.air .air-t{position:relative;display:flex;flex-direction:column;cursor:pointer;overflow:hidden;' +
+      // niente `overflow:hidden`: taglierebbe l'ombra del riquadro del messaggio
+      '.air .air-t{position:relative;display:flex;flex-direction:column;cursor:pointer;' +
       'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
       'color:var(--air-t1);}' +
       '.air .air-t:focus-visible{outline:2px solid var(--air-t2);outline-offset:2px;}' +
@@ -10763,9 +10813,27 @@ class AirCard extends HTMLElement {
       '.air .air-un{display:block;font-size:10.5px;color:var(--air-t2);margin-top:4px;' +
       'font-variant-numeric:tabular-nums;}' +
       // Bersaglio da 26px attorno a un punto da 6: si prende col dito senza
-      // pesare a schermo. `cursor:help` annuncia il tooltip col mouse.
+      // pesare a schermo. `cursor:help` annuncia il riquadro col mouse.
       '.air .air-dot{position:absolute;top:1px;right:1px;width:26px;height:26px;' +
-      'display:grid;place-items:center;cursor:help;z-index:1;}' +
+      'display:grid;place-items:center;cursor:help;z-index:2;}' +
+
+      // Il riquadro del messaggio: stessa ricetta dei tooltip dei grafici
+      // dell'energia (.epb-tip). Ancorato sotto il pallino e allineato a destra,
+      // con `max-width` dentro la tessera: cosi' non sporge mai sulla tessera
+      // vicina e non serve calcolare posizioni. Il testo va a capo -- i tooltip
+      // dell'energia mostrano numeri e stanno su una riga, qui sono frasi.
+      '.air .air-tip{position:absolute;top:27px;right:6px;z-index:3;pointer-events:none;' +
+      'min-width:150px;max-width:calc(100% - 12px);padding:9px 11px 8px;border-radius:11px;' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));' +
+      'border:1px solid var(--divider-color,rgba(16,20,28,.14));' +
+      'box-shadow:0 6px 20px rgba(0,0,0,.13);}' +
+      '.air .air-tip[hidden]{display:none;}' +
+      '.air .air-tt{font-size:11px;color:var(--air-t2);padding-bottom:6px;margin-bottom:5px;' +
+      'border-bottom:1px solid var(--divider-color,rgba(16,20,28,.14));}' +
+      '.air .air-tr{display:flex;align-items:flex-start;gap:7px;padding:1.5px 0;}' +
+      '.air .air-tr i{width:7px;height:7px;border-radius:50%;background:var(--air-amber);' +
+      'flex:none;margin-top:4px;}' +
+      '.air .air-tr b{font-size:12.5px;font-weight:650;line-height:1.3;}' +
       '.air .air-dot i{width:6px;height:6px;border-radius:50%;background:var(--air-amber);}' +
       '.air .air-dot:focus-visible{outline:2px solid var(--air-amber);outline-offset:-2px;' +
       'border-radius:50%;}' +
