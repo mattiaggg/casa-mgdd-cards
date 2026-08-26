@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.86.0
+ * Version: 1.87.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10429,16 +10429,15 @@ window.customCards.push({
 // `alerts:` sceglie fra riga + pallino (`row`), solo pallino (`dot`), niente
 // (`off`).
 //
-// MISURA (v1.85.1). La prima versione aveva la corona a 156 px: in una colonna
-// da 448 px fatta di tile alte 54 la card ne occupava 236, quasi quattro, e
-// spezzava il ritmo della sezione. Ora la corona e' 104 e la card sta in 176 px
-// con l'avviso, 152 senza: un quarto in meno, e il numero a 23 px resta comunque
-// il testo piu' grande della colonna.
+// MISURA (v1.87.0). Terza e ultima: la corona e' 66 px con il testo a lato,
+// come una tile. La card sta in 90 px, 114 quando c'e' un avviso, cioe' meno di
+// due righe di tile in una colonna che ne e' fatta: entra nel ritmo della
+// sezione invece di spezzarlo. Le due misure precedenti stavano in 210 px
+// (corona 156) e 159 (corona 104), entrambe troppo per due numeri.
 //
-// La parola sta FUORI dalla corona, accanto al nome. Non e' una scelta di stile:
-// a 104 px, misurato agli angoli, "ECCELLENTE" entrava di 2 px nella traccia e al
-// numero restavano 4 px d'aria. Spostandola, il numero ne ha 14 sopra e sotto.
-// Dentro la corona restano solo il numero e l'unita'.
+// Il prezzo, dichiarato: a 66 px le quattro fasce si leggono come colore, non
+// come tacche da misurare. La corona qui non insegna piu' la scala, dice a
+// occhio "sei nel verde"; il numero, la parola e la lancetta fanno il resto.
 //
 // Lo stato del ventilatore non compare: sulla Home le due tile dei purificatori
 // stanno subito sopra e lo dicono gia'. Questa card parla dell'aria.
@@ -10620,29 +10619,34 @@ class AirCard extends HTMLElement {
     let knob = '';
     if (v !== null) {
       const p = airPt(airAng(v, max));
-      knob = '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="5.8" fill="' + AIR_TRACK[idx] +
-        '" stroke="var(--air-bg)" stroke-width="2.8"/>';
+      knob = '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="6.4" fill="' + AIR_TRACK[idx] +
+        '" stroke="var(--air-bg)" stroke-width="3.2"/>';
     }
     const num = v === null ? '—' : String(Math.round(v));
     const word = idx < 0 ? 'Sconosciuta' : AIR_WORDS[idx];
     const ent = r.fan || r.pm;
     return (
-      '<div class="air-rw" data-more="' + mgddEsc(ent) + '" role="button" tabindex="0" ' +
-      'aria-label="' + mgddEsc(this._name(r) + ', ' + num + ' microgrammi per metro cubo, aria ' + word.toLowerCase()) + '">' +
+      '<div class="air-rw">' +
       '<svg viewBox="0 0 110 110" aria-hidden="true">' +
       '<g fill="none" stroke-width="9" stroke-linecap="butt" class="air-tr">' + track + '</g>' +
       knob + '</svg>' +
-      '<div class="air-c"><b>' + num + '</b><span>µg/m³</span></div></div>'
+      '<div class="air-c"><b>' + num + '</b></div></div>'
     );
   }
 
-  // La parola con il suo colore, per la riga sotto la corona.
+  _wordText(r) {
+    const v = this._num(r.pm);
+    if (v === null) return 'Sconosciuta';
+    return AIR_WORDS[this._bandIdx(v)];
+  }
+
+  // La parola col colore della sua fascia: e' la riga grossa del testo a lato.
   _word(r) {
     const v = this._num(r.pm);
     const idx = v === null ? -1 : this._bandIdx(v);
     const txt = AIR_TEXT[this._isDark() ? 'dark' : 'light'];
-    return '<u style="color:' + (idx < 0 ? 'var(--air-t2)' : txt[idx]) + '">' +
-      (idx < 0 ? 'Sconosciuta' : AIR_WORDS[idx]) + '</u>';
+    return '<span class="air-wd" style="color:' + (idx < 0 ? 'var(--air-t2)' : txt[idx]) + '">' +
+      this._wordText(r) + '</span>';
   }
 
   _html() {
@@ -10655,9 +10659,17 @@ class AirCard extends HTMLElement {
       .map((r) => {
         const dot = this.config.alerts !== 'off' && flagged[r.pm]
           ? '<span class="air-dot" title="da controllare"></span>' : '';
+        const v = this._num(r.pm);
+        const nm = this._name(r);
+        const num = v === null ? '—' : String(Math.round(v));
         return (
-          '<div class="air-cell">' + this._ring(r) +
-          '<div class="air-nm">' + mgddEsc(this._name(r)) + dot + this._word(r) + '</div></div>'
+          '<div class="air-cell" data-more="' + mgddEsc(r.fan || r.pm) + '" role="button" tabindex="0" ' +
+          'aria-label="' + mgddEsc(nm + ', ' + num + ' microgrammi per metro cubo, aria ' +
+            this._wordText(r).toLowerCase()) + '">' +
+          this._ring(r) +
+          '<div class="air-tx"><span class="air-nm">' + mgddEsc(nm) + dot + '</span>' +
+          this._word(r) +
+          '<span class="air-un">' + num + ' µg/m³</span></div></div>'
         );
       })
       .join('');
@@ -10714,42 +10726,44 @@ class AirCard extends HTMLElement {
       '.air .air-warn i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
       '.air .air-warn b{font-weight:600;cursor:pointer;}' +
 
-      '.air .air-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:6px;}' +
-      '.air .air-cell{display:flex;flex-direction:column;align-items:center;gap:6px;}' +
+      // Una cella per stanza, quadrante a sinistra e testo a lato. 152px e' la
+      // larghezza sotto la quale "Eccellente" a 15px non ci sta accanto a una
+      // corona da 66: sotto quella soglia la griglia perde una colonna invece di
+      // troncare la parola.
+      '.air .air-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(152px,1fr));gap:8px;}' +
+      '.air .air-cell{display:flex;align-items:center;gap:11px;cursor:pointer;border-radius:12px;}' +
+      '.air .air-cell:focus-visible{outline:2px solid var(--air-t2);outline-offset:2px;}' +
 
-      // `min()` e non una misura fissa: con quattro stanze in una card stretta la
-      // cella scende sotto i 104px e un quadrante di misura fissa sborderebbe.
-      '.air .air-rw{position:relative;width:min(104px,100%);aspect-ratio:1;cursor:pointer;border-radius:50%;}' +
-      '.air .air-rw:focus-visible{outline:2px solid var(--air-t2);outline-offset:2px;}' +
+      '.air .air-rw{position:relative;width:66px;aspect-ratio:1;flex:none;}' +
       '.air .air-rw svg{width:100%;height:100%;}' +
       '.air .air-tr{opacity:var(--air-track-op);}' +
 
-      // Dentro la corona restano numero e unita'. Lo spostamento verso l'alto e'
-      // di 3px, quanto basta a non far sedere l'unita' sulla lancetta quando il
-      // valore e' basso: misurato agli angoli, al numero restano 14px d'aria
-      // sopra e sotto.
-      '.air .air-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;' +
-      'justify-content:center;gap:2px;padding-bottom:3px;pointer-events:none;}' +
-      '.air .air-c b{font-size:23px;font-weight:700;letter-spacing:-.9px;line-height:1;' +
+      // Dentro la corona resta il solo numero, spinto in alto di 3px perche' la
+      // lancetta a valori bassi parte in basso a sinistra.
+      '.air .air-c{position:absolute;inset:0;display:grid;place-items:center;' +
+      'padding-bottom:3px;pointer-events:none;}' +
+      '.air .air-c b{font-size:19px;font-weight:700;letter-spacing:-.7px;line-height:1;' +
       'font-variant-numeric:tabular-nums;}' +
-      '.air .air-c span{font-size:8.5px;color:var(--air-t2);margin-top:1px;}' +
 
-      // Nome e parola sulla stessa riga sotto la corona: "SOGGIORNO · ECCELLENTE".
-      // La parola sta qui e non dentro la corona perche' a 104px non ci sta —
-      // misurato, entrava di 2px nella traccia.
-      // Nome e parola su DUE righe, sempre. Misurate le etichette vere:
-      // "Camera matr. · Sconosciuta" e' larga 211px in una cella da 208, quindi
-      // una riga sola andava a capo da sola in un punto qualsiasi, lasciando il
-      // separatore appeso a inizio riga. Due righe costano 14px e non si rompono
-      // mai, con qualunque nome di stanza.
-      '.air .air-nm{font-size:10.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;' +
-      'color:var(--air-t2);text-align:center;line-height:1.25;}' +
-      '.air .air-nm u{display:block;text-decoration:none;}' +
+      // Tre righe: nome piccolo, parola grossa, numero con l'unita'. La parola e'
+      // la riga che si legge di sfuggita, quindi e' lei ad avere il corpo grande
+      // e il colore della fascia.
+      '.air .air-tx{min-width:0;}' +
+      '.air .air-nm{display:block;font-size:10px;font-weight:800;letter-spacing:1.15px;' +
+      'text-transform:uppercase;color:var(--air-t2);line-height:1;' +
+      'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.air .air-wd{display:block;font-size:15px;font-weight:700;letter-spacing:-.3px;line-height:1;' +
+      'margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.air .air-un{display:block;font-size:10.5px;color:var(--air-t2);margin-top:4px;' +
+      'font-variant-numeric:tabular-nums;}' +
       // il pallino dice QUALE stanza, la riga in alto dice COSA fare
       '.air .air-dot{display:inline-block;width:6px;height:6px;border-radius:50%;' +
       'background:var(--air-amber);margin-left:6px;vertical-align:1px;}' +
 
-      '@container (max-width:360px){.air .air-g{gap:2px;}}' +
+      '@container (max-width:360px){' +
+      '.air .air-in{padding:10px 11px;}' +
+      '.air .air-g{gap:6px;}' +
+      '}' +
 
       '</style>'
     );
