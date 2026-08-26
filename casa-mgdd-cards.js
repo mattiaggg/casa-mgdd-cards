@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.90.0
+ * Version: 1.90.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10439,9 +10439,10 @@ window.customCards.push({
 // distendono alla stessa altezza -- per una frase che nella maggior parte dei
 // giorni non c'e'. Resta un pallino ambra nell'angolo in alto a destra, e il
 // messaggio compare in un riquadro nello stesso stile dei tooltip dei grafici
-// dell'energia (`.epb-tip`): fondo della card, filo del divider, ombra,
-// intestazione col nome della stanza e filetto sotto, poi una riga per avviso col
-// suo pallino.
+// dell'energia (`.epb-tip`): fondo della card, filo del divider, ombra. Una riga
+// per avviso, col pallino e il testo in ambra. Nessuna intestazione col nome
+// della stanza: il riquadro esce dalla tessera di quella stanza, ripeterlo
+// allargava la scatola per una riga grigia.
 //
 // Col mouse si apre passando sopra il pallino. Sul telefono il passaggio del
 // mouse non esiste, quindi si apre al tocco e si richiude da sola dopo 2,5 s,
@@ -10683,7 +10684,7 @@ class AirCard extends HTMLElement {
         const dot = mie.length
           ? '<span class="air-dot" role="button" tabindex="0" ' +
             'aria-label="' + mgddEsc(mie.map((x) => x.text).join('. ')) + '"><i></i></span>' +
-            '<div class="air-tip" hidden><div class="air-tt">' + mgddEsc(this._name(r)) + '</div>' +
+            '<div class="air-tip" hidden>' +
             mie.map((x) => '<div class="air-tr"><i></i><b>' + mgddEsc(x.text) + '</b></div>').join('') +
             '</div>'
           : '';
@@ -10822,18 +10823,21 @@ class AirCard extends HTMLElement {
       // con `max-width` dentro la tessera: cosi' non sporge mai sulla tessera
       // vicina e non serve calcolare posizioni. Il testo va a capo -- i tooltip
       // dell'energia mostrano numeri e stanno su una riga, qui sono frasi.
+      // Niente intestazione col nome della stanza: il riquadro esce dalla tessera
+      // di quella stanza, dirlo di nuovo e' fiato sprecato e allargava la scatola
+      // per una riga grigia. Resta una riga per avviso, e il testo e' AMBRA come
+      // il pallino: e' un avviso, non un dato, e in ambra non si puo' confondere
+      // con un testo spento. Senza `min-width` la scatola sta a misura del testo.
       '.air .air-tip{position:absolute;top:27px;right:6px;z-index:3;pointer-events:none;' +
-      'min-width:150px;max-width:calc(100% - 12px);padding:9px 11px 8px;border-radius:11px;' +
+      'max-width:calc(100% - 12px);padding:8px 10px;border-radius:11px;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));' +
       'border:1px solid var(--divider-color,rgba(16,20,28,.14));' +
       'box-shadow:0 6px 20px rgba(0,0,0,.13);}' +
       '.air .air-tip[hidden]{display:none;}' +
-      '.air .air-tt{font-size:11px;color:var(--air-t2);padding-bottom:6px;margin-bottom:5px;' +
-      'border-bottom:1px solid var(--divider-color,rgba(16,20,28,.14));}' +
-      '.air .air-tr{display:flex;align-items:flex-start;gap:7px;padding:1.5px 0;}' +
+      '.air .air-tr{display:flex;align-items:flex-start;gap:7px;padding:1px 0;}' +
       '.air .air-tr i{width:7px;height:7px;border-radius:50%;background:var(--air-amber);' +
       'flex:none;margin-top:4px;}' +
-      '.air .air-tr b{font-size:12.5px;font-weight:650;line-height:1.3;}' +
+      '.air .air-tr b{font-size:12.5px;font-weight:650;line-height:1.3;color:var(--air-amber);}' +
       '.air .air-dot i{width:6px;height:6px;border-radius:50%;background:var(--air-amber);}' +
       '.air .air-dot:focus-visible{outline:2px solid var(--air-amber);outline-offset:-2px;' +
       'border-radius:50%;}' +
