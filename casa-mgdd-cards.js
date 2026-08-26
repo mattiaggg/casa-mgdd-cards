@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card.
  *
- * Version: 1.90.6
+ * Version: 1.90.7
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -8310,9 +8310,14 @@ class MgddCompactCard extends HTMLElement {
       '.mc-tip{position:absolute;bottom:20px;transform:translateX(-50%);' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--mc-t1);' +
       'border:1px solid var(--divider-color,rgba(0,0,0,.1));box-shadow:0 6px 18px rgba(0,0,0,.18);' +
-      'border-radius:10px;padding:5px 9px;font-size:11px;font-weight:600;white-space:nowrap;' +
+      'border-radius:10px;padding:5px 9px;font-size:11px;font-weight:500;white-space:nowrap;' +
       'opacity:0;pointer-events:none;transition:opacity .1s;z-index:3;}' +
       '.mc-tip.on{opacity:1;}' +
+      // Fuori dal grassetto: a 11px, dentro un riquadrino stretto, il 600 del
+      // contenitore piu' il 700 che il browser da' da solo a <b> impastavano le
+      // lettere. Il nome resta appena piu' pieno dello stato (550 contro 500); a
+      // separarli bastano il colore piu' tenue dello stato e il punto in mezzo.
+      '.mc-tip b{font-weight:550;}' +
       '.mc-tip s{text-decoration:none;font-weight:500;color:var(--mc-t2);}' +
       '.mc-tip s::before{content:" \\00b7 ";}' +
 
@@ -10874,10 +10879,11 @@ class AirCard extends HTMLElement {
       // la' dentro.
       '.air .air-msg{display:flex;align-items:center;gap:7px;font-size:12px;padding:1.5px 0;}' +
       '.air .air-msg i{width:9px;height:9px;border-radius:3px;flex:0 0 auto;}' +
-      // 700 e non 650: e' una frase d'avviso, non un numero incolonnato, e a 12px
-      // il peso in piu' si legge. Sulla parita' col tooltip dell'energia si
-      // perde un capello, sulla leggibilita' si guadagna.
-      '.air .air-msg b{font-weight:700;line-height:1.35;}' +
+      // 500 e non 700: il grassetto su una frase intera, a 12px e nel colore del
+      // testo pieno, impasta le lettere invece di aiutare. Il messaggio si stacca
+      // gia' da solo -- riquadro, pallino colorato, colore pieno -- e non ha
+      // bisogno anche del peso.
+      '.air .air-msg b{font-weight:500;line-height:1.35;}' +
       '.air .air-dot i{width:6px;height:6px;border-radius:50%;background:var(--air-amber);}' +
       '.air .air-dot:focus-visible{outline:2px solid var(--air-amber);outline-offset:-2px;' +
       'border-radius:50%;}' +
