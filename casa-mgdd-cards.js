@@ -7,9 +7,9 @@
  * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
  * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
- * casa-mgdd-presence-card, casa-mgdd-air-card.
+ * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card.
  *
- * Version: 1.90.8
+ * Version: 1.91.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10901,4 +10901,347 @@ window.customCards.push({
   type: 'casa-mgdd-air-card',
   name: 'Casa MGDD Aria',
   description: 'Un quadrante per stanza: il PM2.5 come lancetta su una scala a fasce, e una riga di avvisi in alto solo quando un filtro chiede attenzione. Config via YAML.',
+});
+
+// ===== vmc-card.js =====
+// Le due VMC sulla Home: una tessera per macchina, la corona della air-card a
+// sinistra e i due comandi sotto. Stessa grammatica della card dei purificatori
+// -- griglia di `ha-card` con `minmax(152px,1fr)`, corona da 66, blocco di testo
+// a tre righe -- perche' le due sezioni stanno spesso nella stessa colonna e
+// devono allinearsi.
+//
+// PERCHE' UNA CARD E NON LA TILE NATIVA. La tile con la feature
+// `fan-preset-modes` monta un `ha-control-select`: se l'opzione premuta e' gia'
+// quella selezionata NON emette nulla, e il comando non riparte. Qui la VMC e'
+// un `fan` template comandato a infrarossi dal Broadlink: nessun ritorno dalla
+// macchina, lo stato e' solo quello che crede l'`input_select`, e ricapita di
+// dover rimandare lo stesso comando (la macchina non ha ricevuto, qualcuno ha
+// premuto il telecomando a muro, il led del Broadlink era coperto). I due
+// pulsanti di questa card chiamano il servizio a OGNI pressione, anche sulla
+// velocita' gia' in corso: il pulsante attivo e' marcato, non disattivato.
+//
+// COSA CHIAMANO. `min:` e `max:` sono gli script della casa
+// (`script.vmc_soggiorno_min` e compagni), che fanno gia' la coppia giusta:
+// `input_select.select_option` + `remote.send_command`. Se non si indicano, la
+// card ripiega su `fan.set_preset_mode`, che sul fan template esegue le stesse
+// due azioni. Gli script restano il default perche' sono la strada che la
+// dashboard usa da sempre e si testano da soli in Strumenti per sviluppatori.
+//
+// LA CORONA E' LA SCALA DELLA PORTATA, non una barra che si riempie: settore
+// basso fino al 35% per MIN, il resto per MAX, e la lancetta sulla posizione in
+// corso. Stessa geometria della air-card (raggio 42 in un viewBox 110, 270 gradi
+// da 135 a 405) tramite le stesse funzioni `airPt`/`airArc`: se un giorno si
+// cambia la corona la' , qui segue.
+//
+// IL NOME DELLA STANZA E' NEL COLORE PIENO DEL TESTO, non nel grigio della
+// air-card: la' la riga colorata e' la parola sulla qualita' dell'aria, qui e'
+// lo stato, e il nome deve reggere il confronto.
+//
+// MISURE. Su iPhone la tessera sta in 174px: 24 di padding, 66 di corona, 10 di
+// gap, restano 74px per il testo. "SOGGIORNO" a 10px peso 800 ne chiede 71 con
+// letter-spacing 1,02 -- con l'1,15 della air-card ne chiederebbe 72 e finirebbe
+// sotto i puntini. I due pulsanti misurano 70px l'uno e tengono icona e parola.
+//
+// L'INVIO SI CONFERMA A SCHERMO. La macchina non risponde, quindi la terza riga
+// passa a "inviato" per due secondi e poi torna all'orario: dice inviato, non
+// fatto. L'orario e' il `last_changed` dell'`input_select` quando e' indicato in
+// `mode:`, altrimenti il `last_updated` del fan (il `last_changed` del fan non
+// serve: cambia solo fra on e off, e il preset e' un attributo).
+
+const VMC_LOW = 0.35; // dove sta MIN sulla scala della portata
+
+// La girandola dentro la corona: la stessa forma dell'icona delle VMC in
+// dashboard, disegnata qui perche' dentro un SVG non si puo' innestare `ha-icon`.
+const VMC_FAN =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><g>' +
+  '<ellipse cx="12" cy="7.2" rx="2.5" ry="4.6"/>' +
+  '<ellipse cx="12" cy="7.2" rx="2.5" ry="4.6" transform="rotate(120 12 12)"/>' +
+  '<ellipse cx="12" cy="7.2" rx="2.5" ry="4.6" transform="rotate(240 12 12)"/>' +
+  '<circle cx="12" cy="12" r="2.4"/></g></svg>';
+
+class VmcCard extends HTMLElement {
+  setConfig(config) {
+    if (!config) throw new Error('Configurazione mancante');
+    const rooms = config.rooms;
+    if (!Array.isArray(rooms) || !rooms.length) {
+      throw new Error('Indicare almeno una macchina in `rooms:`');
+    }
+    if (!rooms.every((r) => r && r.fan)) {
+      throw new Error('Ogni voce di `rooms:` deve avere `fan:` (l\'entita\' fan)');
+    }
+    const bad = [];
+    rooms.forEach((r) => {
+      ['min', 'max'].forEach((k) => {
+        if (r[k] && !/^script\./.test(r[k])) bad.push(r[k]);
+      });
+    });
+    if (bad.length) {
+      throw new Error('`min:` e `max:` vogliono uno script (script.xxx), non ' + bad.join(', '));
+    }
+    this.config = Object.assign({}, config, { rooms: rooms });
+    this._sent = {};
+    this._sig = null;
+  }
+
+  static getStubConfig() {
+    return {
+      rooms: [
+        {
+          name: 'Soggiorno',
+          fan: 'fan.vmc_soggiorno',
+          min: 'script.vmc_soggiorno_min',
+          max: 'script.vmc_soggiorno_max',
+        },
+      ],
+    };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const sig = this._sig2();
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getCardSize() {
+    return 2;
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 'full', min_columns: 6 };
+  }
+
+  // ---------- dati ----------
+
+  // Firma propria e non `mgddStatesSig`: quella guarda il solo `state`, e qui il
+  // dato che cambia e' il preset, che e' un ATTRIBUTO. Passando da MIN a MAX lo
+  // stato del fan resta `on` e la tessera non si ridisegnerebbe mai.
+  _sig2() {
+    if (!this._hass) return '';
+    let out = '';
+    this.config.rooms.forEach((r) => {
+      const f = this._hass.states[r.fan];
+      out += r.fan + '=' + (f ? f.state + ':' + ((f.attributes && f.attributes.preset_mode) || '') : 'x') + ';';
+      const m = r.mode && this._hass.states[r.mode];
+      if (m) out += r.mode + '=' + m.state + ':' + m.last_changed + ';';
+      else if (f) out += 'u=' + f.last_updated + ';';
+    });
+    return out;
+  }
+
+  _mode(r) {
+    const s = this._hass && this._hass.states[r.fan];
+    if (!s || s.state === 'unavailable' || s.state === 'unknown') return null;
+    const p = s.attributes && s.attributes.preset_mode;
+    return p === 'MIN' || p === 'MAX' ? p : null;
+  }
+
+  _name(r) {
+    if (r.name) return r.name;
+    const s = this._hass && this._hass.states[r.fan];
+    if (s && s.attributes && s.attributes.friendly_name) return s.attributes.friendly_name;
+    return String(r.fan || '').split('.')[1] || 'VMC';
+  }
+
+  // "dalle 13:54" quando la velocita' e' stata impostata oggi, "dal 3/9" prima:
+  // in 74px una data intera non ci sta, e a distanza di giorni l'ora non serve.
+  _when(r) {
+    const src = (r.mode && this._hass.states[r.mode]) || this._hass.states[r.fan];
+    if (!src) return '';
+    const iso = r.mode && this._hass.states[r.mode] ? src.last_changed : src.last_updated;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    const oggi = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    if (oggi) {
+      return 'dalle ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+    return 'dal ' + d.getDate() + '/' + (d.getMonth() + 1);
+  }
+
+  // ---------- comandi ----------
+
+  _press(idx, mode) {
+    const r = this.config.rooms[idx];
+    if (!r || !this._hass) return;
+    const script = mode === 'MIN' ? r.min : r.max;
+    if (script) {
+      this._hass.callService('script', 'turn_on', { entity_id: script });
+    } else {
+      this._hass.callService('fan', 'set_preset_mode', { entity_id: r.fan, preset_mode: mode });
+    }
+    // La conferma vive nel modello e non in una classe appiccicata al DOM: il
+    // nodo viene riscritto a ogni aggiornamento di hass e la classe sparirebbe.
+    this._sent[idx] = Date.now() + 2000;
+    this._render();
+    clearTimeout(this._sentT);
+    this._sentT = setTimeout(() => this._render(), 2100);
+  }
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  // ---------- markup ----------
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+  }
+
+  _ring(mode) {
+    const a0 = 135;
+    const am = 135 + 270 * VMC_LOW;
+    const a1 = 405;
+    let knob = '';
+    if (mode) {
+      const p = airPt(mode === 'MIN' ? am : a1);
+      knob = '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="6.4" fill="' +
+        (mode === 'MIN' ? 'var(--vmc-lo)' : 'var(--vmc-air)') +
+        '" stroke="var(--vmc-sfc)" stroke-width="3.2"/>';
+    }
+    return (
+      '<span class="vmc-rw"><svg viewBox="0 0 110 110" aria-hidden="true">' +
+      '<g class="vmc-arc" fill="none" stroke-width="9" stroke-linecap="butt">' +
+      '<path d="' + airArc(a0, am) + '" stroke="var(--vmc-lo)"/>' +
+      '<path d="' + airArc(am, a1) + '" stroke="var(--vmc-air)"/>' +
+      '</g>' + knob + '</svg>' +
+      '<span class="vmc-c">' + VMC_FAN + '</span></span>'
+    );
+  }
+
+  _tile(r, idx) {
+    const mode = this._mode(r);
+    const nm = this._name(r);
+    const inviato = (this._sent[idx] || 0) > Date.now();
+    const terza = inviato ? 'inviato' : this._when(r);
+    const cls = mode === 'MIN' ? ' vmc-min' : mode === 'MAX' ? ' vmc-max' : ' vmc-na';
+    const btn = (m, icona) =>
+      '<button class="vmc-b vmc-b-' + m.toLowerCase() + '" data-cmd="' + m + '" data-idx="' + idx + '" ' +
+      'title="Manda ' + m + ' a ' + mgddEsc(nm) + '">' +
+      '<ha-icon icon="' + icona + '"></ha-icon><span class="vmc-lbl">' + m + '</span></button>';
+    return (
+      '<ha-card class="vmc-t' + cls + (inviato ? ' vmc-sent' : '') + '">' +
+      '<div class="vmc-cell" data-more="' + mgddEsc(r.fan) + '" role="button" tabindex="0" ' +
+      'aria-label="' + mgddEsc(nm + ', velocita\' ' + (mode || 'sconosciuta')) + '">' +
+      this._ring(mode) +
+      '<div class="vmc-tx"><span class="vmc-nm">' + mgddEsc(nm) + '</span>' +
+      '<span class="vmc-wd">' + (mode || '—') + '</span>' +
+      '<span class="vmc-un">' + mgddEsc(terza) + '</span></div></div>' +
+      '<div class="vmc-cmds">' + btn('MIN', 'mdi:fan-speed-1') + btn('MAX', 'mdi:fan-speed-3') + '</div>' +
+      '</ha-card>'
+    );
+  }
+
+  _html() {
+    return (
+      '<div class="vmcq' + (this._isDark() ? ' vmc-dark' : '') + '">' +
+      this.config.rooms.map((r, i) => this._tile(r, i)).join('') +
+      '</div>'
+    );
+  }
+
+  _wire() {
+    if (this._wired) return;
+    this._wired = true;
+    this.addEventListener('click', (ev) => this._fire(ev));
+    this.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        this._fire(ev);
+      }
+    });
+  }
+
+  _fire(ev) {
+    const b = ev.target && ev.target.closest ? ev.target.closest('[data-cmd]') : null;
+    if (b) {
+      ev.stopPropagation();
+      this._press(parseInt(b.getAttribute('data-idx'), 10), b.getAttribute('data-cmd'));
+      return;
+    }
+    const el = ev.target && ev.target.closest ? ev.target.closest('[data-more]') : null;
+    const id = el && el.getAttribute('data-more');
+    if (!id) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      '.vmcq{display:grid;grid-template-columns:repeat(auto-fit,minmax(152px,1fr));gap:8px;' +
+      '--vmc-t1:var(--primary-text-color,#14161a);--vmc-t2:var(--secondary-text-color,#70757f);' +
+      '--vmc-div:var(--divider-color,rgba(16,20,28,.11));' +
+      '--vmc-sfc:var(--ha-card-background,var(--card-background-color,#fff));' +
+      '--vmc-air:#0EA5E9;--vmc-lo:#6BB8D6;--vmc-hi-t:#0A7FB5;--vmc-lo-t:#4C7E92;' +
+      '--vmc-neutral:rgba(16,20,28,.055);}' +
+      // La corona e' un grafico: i colori restano quelli scelti per il tema, ma
+      // sul fondo scuro il ciano chiaro e' l'unico che si veda davvero.
+      '.vmcq.vmc-dark{--vmc-air:#38BDF8;--vmc-lo:#4E8FA8;--vmc-hi-t:#4FC3F7;--vmc-lo-t:#8FB6C6;' +
+      '--vmc-neutral:rgba(255,255,255,.07);}' +
+      '.vmcq *{box-sizing:border-box;}' +
+      '.vmcq svg{display:block;}' +
+
+      '.vmcq .vmc-t{display:flex;flex-direction:column;padding:11px 12px;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'color:var(--vmc-t1);container-type:inline-size;}' +
+      '.vmcq .vmc-cell{display:flex;align-items:center;gap:10px;cursor:pointer;width:100%;}' +
+      '.vmcq .vmc-cell:focus-visible{outline:2px solid var(--vmc-t2);outline-offset:2px;border-radius:10px;}' +
+      '.vmcq .vmc-rw{position:relative;width:66px;aspect-ratio:1;flex:none;}' +
+      '.vmcq .vmc-rw svg{width:100%;height:100%;}' +
+      // la traccia e' la scala, non il dato: resta tenue come nella air-card
+      '.vmcq .vmc-arc{opacity:.30;}' +
+      '.vmcq .vmc-c{position:absolute;inset:0;display:grid;place-items:center;padding-bottom:3px;' +
+      'pointer-events:none;color:var(--vmc-hi-t);}' +
+      '.vmcq .vmc-c svg{width:23px;height:23px;fill:currentColor;}' +
+      '.vmcq .vmc-min .vmc-c{color:var(--vmc-lo-t);}' +
+      '.vmcq .vmc-na .vmc-c{color:var(--vmc-t2);}' +
+
+      '.vmcq .vmc-tx{min-width:0;}' +
+      // 1,02 di letter-spacing e non 1,15: a 174px di tessera "SOGGIORNO"
+      // chiederebbe 72px sui 71 disponibili e finirebbe sotto i puntini
+      '.vmcq .vmc-nm{display:block;font-size:10px;font-weight:800;letter-spacing:1.02px;' +
+      'text-transform:uppercase;color:var(--vmc-t1);line-height:1;' +
+      'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.vmcq .vmc-wd{display:block;font-size:15px;font-weight:700;letter-spacing:-.3px;line-height:1;' +
+      'margin-top:5px;color:var(--vmc-hi-t);}' +
+      '.vmcq .vmc-min .vmc-wd{color:var(--vmc-lo-t);}' +
+      '.vmcq .vmc-na .vmc-wd{color:var(--vmc-t2);}' +
+      '.vmcq .vmc-un{display:block;font-size:10.5px;color:var(--vmc-t2);margin-top:4px;' +
+      'font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.vmcq .vmc-sent .vmc-un{color:var(--vmc-air);font-weight:600;}' +
+
+      // Comandi nello stampo Mushroom: riquadro con angoli 12, fondo della tinta
+      // al 16% sulla velocita' in corso. Il riquadro non attivo resta un
+      // rettangolo neutro e non un buco: si vede che si puo' premere.
+      '.vmcq .vmc-cmds{display:flex;gap:8px;margin-top:11px;}' +
+      '.vmcq .vmc-b{flex:1;min-width:0;height:42px;border:none;border-radius:12px;' +
+      'background:var(--vmc-neutral);color:var(--vmc-t2);cursor:pointer;font:inherit;' +
+      'font-size:12.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;' +
+      'transition:background .16s,color .16s,box-shadow .16s;}' +
+      '.vmcq .vmc-b ha-icon{--mdc-icon-size:20px;width:20px;height:20px;flex:none;}' +
+      '.vmcq .vmc-b:hover{box-shadow:0 0 0 2px rgba(127,127,127,.22);}' +
+      '.vmcq .vmc-b:focus-visible{outline:2px solid var(--vmc-air);outline-offset:2px;}' +
+      '.vmcq .vmc-min .vmc-b-min,.vmcq .vmc-max .vmc-b-max{' +
+      'background:color-mix(in srgb,var(--vmc-air) 16%,transparent);color:var(--vmc-air);}' +
+      '.vmcq .vmc-min .vmc-b-min:hover,.vmcq .vmc-max .vmc-b-max:hover{' +
+      'box-shadow:0 0 0 2px color-mix(in srgb,var(--vmc-air) 40%,transparent);}' +
+      // sotto i 120px di contenuto resta la sola icona: la parola andrebbe
+      // comunque sotto i puntini
+      '@container (max-width:120px){.vmcq .vmc-lbl{display:none;}' +
+      '.vmcq .vmc-b ha-icon{--mdc-icon-size:22px;width:22px;height:22px;}}' +
+      '</style>'
+    );
+  }
+}
+
+
+customElements.define('casa-mgdd-vmc-card', VmcCard);
+window.customCards.push({
+  type: 'casa-mgdd-vmc-card',
+  name: 'Casa MGDD VMC',
+  description: 'Una tessera per VMC: la corona della portata con MIN e MAX, e i due comandi sotto. I pulsanti rimandano il comando anche sulla velocita\' gia\' in corso. Config via YAML.',
 });
