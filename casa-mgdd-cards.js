@@ -9,7 +9,7 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card.
  *
- * Version: 1.91.0
+ * Version: 1.91.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10840,9 +10840,15 @@ class AirCard extends HTMLElement {
       // Tre righe: nome piccolo, parola grossa, numero con l'unita'. La parola e'
       // quella che si legge di sfuggita, quindi e' lei ad avere il corpo grande e
       // il colore della fascia.
+      //
+      // IL NOME DELLA STANZA E' NEL COLORE PIENO E CON L'INTERLETTERA DELLA
+      // VMC-CARD (1,02px, non 1,15). Le due sezioni stanno una sotto l'altra
+      // nella stessa colonna della Home e il nome e' la stessa parola: una in
+      // nero e una in grigio si leggevano come due componenti diversi. Se si
+      // cambia qui, cambiare anche `.vmc-nm`.
       '.air .air-tx{min-width:0;}' +
-      '.air .air-nm{display:block;font-size:10px;font-weight:800;letter-spacing:1.15px;' +
-      'text-transform:uppercase;color:var(--air-t2);line-height:1;' +
+      '.air .air-nm{display:block;font-size:10px;font-weight:800;letter-spacing:1.02px;' +
+      'text-transform:uppercase;color:var(--air-t1);line-height:1;' +
       'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
       '.air .air-wd{display:block;font-size:15px;font-weight:700;letter-spacing:-.3px;line-height:1;' +
       'margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
@@ -10933,9 +10939,10 @@ window.customCards.push({
 // da 135 a 405) tramite le stesse funzioni `airPt`/`airArc`: se un giorno si
 // cambia la corona la' , qui segue.
 //
-// IL NOME DELLA STANZA E' NEL COLORE PIENO DEL TESTO, non nel grigio della
-// air-card: la' la riga colorata e' la parola sulla qualita' dell'aria, qui e'
-// lo stato, e il nome deve reggere il confronto.
+// IL NOME DELLA STANZA E' NEL COLORE PIENO DEL TESTO: la riga colorata sotto e'
+// lo stato, e il nome deve reggere il confronto. Dalla 1.91.1 anche la air-card
+// fa cosi' -- le due sezioni stanno nella stessa colonna della Home e il nome e'
+// la stessa parola: se si cambia qui, cambiare anche `.air-nm`.
 //
 // MISURE. Su iPhone la tessera sta in 174px: 24 di padding, 66 di corona, 10 di
 // gap, restano 74px per il testo. "SOGGIORNO" a 10px peso 800 ne chiede 71 con
