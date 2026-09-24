@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card.
  *
- * Version: 1.92.1
+ * Version: 1.92.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -11365,7 +11365,9 @@ class VacuumCard extends HTMLElement {
         entity: o.entity,
         name: nm,
         icon: o.icon || (lava ? 'mdi:water-outline' : 'mdi:vacuum-outline'),
-        ok: !!s && s.state !== 'unavailable' && s.state !== 'unknown',
+        // Lo stato di un button e' l'orario dell'ultima pressione: `unknown`
+        // vuol dire "mai premuto da HA", non "non disponibile".
+        ok: !!s && s.state !== 'unavailable',
         running: !!(info && info.running),
       };
     });
@@ -11533,8 +11535,13 @@ class VacuumCard extends HTMLElement {
       cmds = btn('return_to_base', 'mdi:home-import-outline', 'Base') + btn('pause', 'mdi:pause', 'Pausa', true);
     } else if (ph.k === 'ret') {
       cmds = btn('return_to_base', 'mdi:home-import-outline', 'Rientro', true) + btn('stop', 'mdi:stop', 'Stop');
+    } else if (ph.k === 'dock') {
+      // Niente "Avvia" in base: `vacuum.start` riparte con l'ultima attivita'
+      // svolta, che raramente e' quella voluta. Si parte solo da una routine.
+      cmds = btn('toggle', 'mdi:lightning-bolt-outline', 'Routine', this._open);
     } else {
-      cmds = btn('start', 'mdi:play', 'Avvia') + btn('toggle', 'mdi:lightning-bolt-outline', 'Routine', this._open);
+      cmds = btn('return_to_base', 'mdi:home-import-outline', 'Base') +
+        btn('toggle', 'mdi:lightning-bolt-outline', 'Routine', this._open);
     }
 
     let panel = '';
