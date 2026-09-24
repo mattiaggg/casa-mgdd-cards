@@ -7,9 +7,10 @@
  * casa-mgdd-doors-card, casa-mgdd-system-card, casa-mgdd-openings-card,
  * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
- * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card.
+ * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
+ * casa-mgdd-vacuum-card.
  *
- * Version: 1.91.1
+ * Version: 1.92.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -11251,4 +11252,456 @@ window.customCards.push({
   type: 'casa-mgdd-vmc-card',
   name: 'Casa MGDD VMC',
   description: 'Una tessera per VMC: la corona della portata con MIN e MAX, e i due comandi sotto. I pulsanti rimandano il comando anche sulla velocita\' gia\' in corso. Config via YAML.',
+});
+
+// ===== vacuum-card.js =====
+// Il robot aspirapolvere sulla Home: la stessa tessera della vmc-card -- corona
+// da 66 a sinistra, tre righe di testo, due comandi sotto -- piu' un pannello
+// che si apre dalla freccia in alto a destra con le routine (gli shortcut
+// dell'app Dreame) da lanciare con un tocco.
+//
+// COSA DICE. La seconda riga e' la fase, colorata: Aspira (ciano, come l'aria
+// della vmc), Lava / Aspira e lava / Lava i moci (verde acqua), Rientro, In
+// pausa, In base, In carica, Errore. Dentro una pulizia la fase viene da
+// `cleaning_mode` del vacuum, e le fasi di stazione da `washing`,
+// `returning_to_wash` e `drying`: sono tutti attributi dell'integrazione
+// dreame-vacuum, nessun sensore in piu' da dichiarare.
+//
+// LA CORONA E' IL COMPLETAMENTO del compito in corso (`cleaning_progress`),
+// con la percentuale scritta nella bocca in basso. A robot fermo diventa la
+// batteria, in grigio: la tessera non resta mai con un arco vuoto.
+//
+// LE ROUTINE. Senza `shortcuts:` la card cerca da sola
+// `button.<robot>_shortcut_1..9`. Il nome viene dall'attributo `shortcuts` del
+// vacuum (quello scritto nell'app, "Aspira + Lava tutta la casa"), ripescato
+// per indice; se manca, dal friendly_name del button senza il prefisso. Lo
+// stesso attributo dice quale routine e' `running`: quella e' marcata con la
+// percentuale. Durante una pulizia l'integrazione mette i button shortcut in
+// `unavailable`: restano visibili ma sbiaditi e non premibili, e tornano
+// attivi quando il robot e' in base.
+//
+// LA STANZA viene da `sensor.<robot>_current_room` se esiste, oppure dal
+// sensore indicato in `room:`.
+
+const VAC_ROUTINE_MAX = 9;
+
+class VacuumCard extends HTMLElement {
+  setConfig(config) {
+    if (!config || !config.entity || !/^vacuum\./.test(config.entity)) {
+      throw new Error('Indicare `entity:` con un\'entita\' vacuum (vacuum.xxx)');
+    }
+    if (config.shortcuts && !Array.isArray(config.shortcuts)) {
+      throw new Error('`shortcuts:` deve essere una lista di button');
+    }
+    this.config = Object.assign({}, config);
+    this._open = !!config.expanded;
+    this._sent = {};
+    this._sig = null;
+  }
+
+  static getStubConfig() {
+    return { entity: 'vacuum.dreamebot_l20_ultra_complete', name: 'Dreame L20 Ultra' };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const sig = this._sig2();
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getCardSize() {
+    return this._open ? 5 : 2;
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 'full', min_columns: 6 };
+  }
+
+  // ---------- dati ----------
+
+  _obj() {
+    return this.config.entity.split('.')[1];
+  }
+
+  _roomId() {
+    return this.config.room || 'sensor.' + this._obj() + '_current_room';
+  }
+
+  _routines() {
+    const h = this._hass;
+    let list = this.config.shortcuts;
+    if (!list) {
+      list = [];
+      for (let i = 1; i <= VAC_ROUTINE_MAX; i++) {
+        const id = 'button.' + this._obj() + '_shortcut_' + i;
+        if (h.states[id]) list.push(id);
+      }
+    }
+    const v = h.states[this.config.entity];
+    const sc = (v && v.attributes && v.attributes.shortcuts) || {};
+    const byIdx = {};
+    Object.keys(sc).forEach((k) => {
+      if (sc[k] && sc[k].index != null) byIdx[sc[k].index] = sc[k];
+    });
+    return list.map((r) => {
+      const o = typeof r === 'string' ? { entity: r } : Object.assign({}, r);
+      const s = h.states[o.entity];
+      const m = /_shortcut_(\d+)$/.exec(o.entity || '');
+      const info = m ? byIdx[parseInt(m[1], 10)] : null;
+      let nm = o.name || (info && info.name);
+      if (!nm) {
+        nm = (s && s.attributes && s.attributes.friendly_name) || o.entity;
+        nm = nm.replace(/^.*\bshortcut\s+/i, '');
+      }
+      const lava = /lava|mop/i.test(nm);
+      return {
+        entity: o.entity,
+        name: nm,
+        icon: o.icon || (lava ? 'mdi:water-outline' : 'mdi:vacuum-outline'),
+        ok: !!s && s.state !== 'unavailable' && s.state !== 'unknown',
+        running: !!(info && info.running),
+      };
+    });
+  }
+
+  // Firma propria: quasi tutto quello che la tessera mostra sta negli
+  // ATTRIBUTI del vacuum, che `mgddStatesSig` non guarda.
+  _sig2() {
+    if (!this._hass) return '';
+    const v = this._hass.states[this.config.entity];
+    if (!v) return 'x';
+    const a = v.attributes || {};
+    let out = v.state + '|' + [a.cleaning_mode, a.cleaning_progress, a.battery, a.charging, a.washing,
+      a.returning_to_wash, a.drying, a.paused, a.returning, a.running, a.has_error, a.error,
+      a.cleaned_area, a.cleaning_time].join(',');
+    const rm = this._hass.states[this._roomId()];
+    if (rm) out += '|' + rm.state;
+    this._routines().forEach((r) => {
+      out += '|' + r.entity + (r.ok ? 1 : 0) + (r.running ? 1 : 0);
+    });
+    return out;
+  }
+
+  _num(x) {
+    const n = parseFloat(x);
+    return isNaN(n) ? null : Math.round(n);
+  }
+
+  // La fase: parola, classe di colore, e se c'e' un compito aperto (corona =
+  // completamento) oppure no (corona = batteria).
+  _phase() {
+    const v = this._hass.states[this.config.entity];
+    if (!v || v.state === 'unavailable' || v.state === 'unknown') {
+      return { k: 'na', w: 'Non disponibile', task: false };
+    }
+    const a = v.attributes || {};
+    const st = v.state;
+    if (a.has_error || st === 'error') return { k: 'err', w: 'Errore', task: false };
+    if (a.returning_to_wash) return { k: 'mop', w: 'Va a lavare i moci', task: true };
+    if (a.washing) return { k: 'mop', w: 'Lava i moci', task: true };
+    if (st === 'returning' || a.returning) return { k: 'ret', w: 'Rientro', task: false };
+    if (st === 'paused' || a.paused) return { k: 'pause', w: 'In pausa', task: true };
+    if (st === 'cleaning' || a.running) {
+      const cm = String(a.cleaning_mode || '').toLowerCase();
+      if (cm.indexOf('after') >= 0) return { k: 'sweep', w: 'Aspira, poi lava', task: true };
+      if (cm.indexOf('sweeping and mopping') >= 0) return { k: 'mop', w: 'Aspira e lava', task: true };
+      if (cm.indexOf('mopping') === 0) return { k: 'mop', w: 'Lava', task: true };
+      return { k: 'sweep', w: 'Aspira', task: true };
+    }
+    if (a.drying) return { k: 'dock', w: 'Asciuga i moci', task: false };
+    const bat = this._num(a.battery);
+    if (st === 'docked') {
+      return { k: 'dock', w: a.charging && bat != null && bat < 100 ? 'In carica' : 'In base', task: false };
+    }
+    return { k: 'dock', w: 'Fermo', task: false };
+  }
+
+  _name() {
+    if (this.config.name) return this.config.name;
+    const v = this._hass.states[this.config.entity];
+    return (v && v.attributes && v.attributes.friendly_name) || this._obj();
+  }
+
+  // ---------- comandi ----------
+
+  _cmd(c) {
+    if (c === 'toggle') {
+      this._open = !this._open;
+      this._render();
+      return;
+    }
+    if (['start', 'pause', 'stop', 'return_to_base'].indexOf(c) < 0) return;
+    this._hass.callService('vacuum', c, { entity_id: this.config.entity });
+    this._flash('cmd');
+  }
+
+  _press(id) {
+    const r = this._routines().find((x) => x.entity === id);
+    if (!r || !r.ok) return;
+    this._hass.callService('button', 'press', { entity_id: id });
+    this._flash(id);
+  }
+
+  _flash(key) {
+    // La conferma vive nel modello, non nel DOM: il nodo si riscrive a ogni hass.
+    this._sent[key] = Date.now() + 2000;
+    this._render();
+    clearTimeout(this._sentT);
+    this._sentT = setTimeout(() => this._render(), 2100);
+  }
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  // ---------- markup ----------
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    mgddPaint(this, this._styles(), this._html());
+    this._wire();
+  }
+
+  // Stessa geometria della vmc e della air-card: 270 gradi da 135 a 405.
+  _ring(pct, task) {
+    const t = pct == null ? 0 : Math.max(0, Math.min(100, pct)) / 100;
+    return (
+      '<span class="vac-rw"><svg viewBox="0 0 110 110" aria-hidden="true">' +
+      '<g fill="none" stroke="var(--vac-ac)" stroke-width="9">' +
+      '<path class="vac-trk" d="' + airArc(135, 405) + '"/>' +
+      (t > 0 ? '<path d="' + airArc(135, 135 + 270 * t) + '"/>' : '') +
+      '</g>' +
+      (pct != null ? '<text x="55" y="101" text-anchor="middle" class="vac-pc">' + pct + '%</text>' : '') +
+      '</svg><span class="vac-c"><ha-icon icon="' + (task ? 'mdi:robot-vacuum' : 'mdi:robot-vacuum-variant') +
+      '"></ha-icon></span></span>'
+    );
+  }
+
+  _html() {
+    const h = this._hass;
+    const v = h.states[this.config.entity];
+    const a = (v && v.attributes) || {};
+    const ph = this._phase();
+    const nm = this._name();
+    const bat = this._num(a.battery);
+    const prog = this._num(a.cleaning_progress);
+    const area = this._num(a.cleaned_area);
+    const min = this._num(a.cleaning_time);
+    const rs = h.states[this._roomId()];
+    const room = rs && rs.state && rs.state !== 'unknown' && rs.state !== 'unavailable' ? rs.state : '';
+    const routines = this._routines();
+    const cur = routines.find((r) => r.running);
+    const sent = (this._sent.cmd || 0) > Date.now();
+
+    const stats = [];
+    if (area != null) stats.push(area + ' m²');
+    if (min != null) stats.push(min + ' min');
+
+    let l1;
+    let l2;
+    if (ph.k === 'err') {
+      l1 = a.error && a.error !== 'No error' ? a.error : 'Controllare il robot';
+      l2 = bat != null ? 'Batteria ' + bat + '%' : '';
+    } else if (ph.task) {
+      l1 = [room].concat(stats).filter(Boolean).join(' · ');
+      l2 = cur ? cur.name : '';
+    } else if (ph.k === 'ret') {
+      l1 = room;
+      l2 = stats.length ? 'Pulizia: ' + stats.join(' · ') : '';
+    } else {
+      l1 = bat != null ? 'Batteria ' + bat + '%' : '';
+      l2 = stats.length ? 'Ultima: ' + stats.join(' · ') : '';
+    }
+    if (sent) l2 = 'inviato';
+
+    const btn = (c, icon, lbl, on) =>
+      '<button class="vac-b' + (on ? ' vac-on' : '') + '" data-cmd="' + c + '" title="' + lbl + '">' +
+      '<ha-icon icon="' + icon + '"></ha-icon><span class="vac-lbl">' + lbl + '</span></button>';
+    let cmds;
+    if (ph.k === 'pause') {
+      cmds = btn('return_to_base', 'mdi:home-import-outline', 'Base') + btn('start', 'mdi:play', 'Riprendi', true);
+    } else if (ph.task) {
+      cmds = btn('return_to_base', 'mdi:home-import-outline', 'Base') + btn('pause', 'mdi:pause', 'Pausa', true);
+    } else if (ph.k === 'ret') {
+      cmds = btn('return_to_base', 'mdi:home-import-outline', 'Rientro', true) + btn('stop', 'mdi:stop', 'Stop');
+    } else {
+      cmds = btn('start', 'mdi:play', 'Avvia') + btn('toggle', 'mdi:lightning-bolt-outline', 'Routine', this._open);
+    }
+
+    let panel = '';
+    if (this._open) {
+      const busy = routines.some((r) => !r.ok);
+      panel =
+        '<div class="vac-rt">' +
+        (routines.length
+          ? routines.map((r) => {
+            const inv = (this._sent[r.entity] || 0) > Date.now();
+            const cls = r.running ? ' vac-run' : !r.ok ? ' vac-off' : '';
+            const sub = r.running ? 'in corso' + (prog != null ? ' · ' + prog + '%' : '') : inv ? 'inviato' : '';
+            return '<button class="vac-r' + cls + '" data-sc="' + mgddEsc(r.entity) + '"' +
+              (r.ok ? '' : ' aria-disabled="true" title="Disponibile con il robot in base"') + '>' +
+              '<ha-icon icon="' + mgddEsc(r.icon) + '"></ha-icon><span class="vac-rn">' + mgddEsc(r.name) +
+              (sub ? '<span class="vac-rs">' + sub + '</span>' : '') + '</span></button>';
+          }).join('')
+          : '<span class="vac-un">Nessuna routine trovata</span>') +
+        '</div>' +
+        (busy && ph.task ? '<span class="vac-nt">Le altre routine tornano disponibili con il robot in base.</span>' : '');
+    }
+
+    return (
+      '<div class="vacq' + (this._isDark() ? ' vac-dark' : '') + '">' +
+      '<ha-card class="vac-t vac-' + ph.k + (sent ? ' vac-sent' : '') + '">' +
+      '<div class="vac-top">' +
+      '<div class="vac-cell" data-more="' + mgddEsc(this.config.entity) + '" role="button" tabindex="0" ' +
+      'aria-label="' + mgddEsc(nm + ', ' + ph.w) + '">' +
+      this._ring(ph.task ? prog : bat, ph.task) +
+      '<div class="vac-tx"><span class="vac-nm">' + mgddEsc(nm) + '</span>' +
+      '<span class="vac-wd">' + mgddEsc(ph.w) + '</span>' +
+      (l1 ? '<span class="vac-un">' + mgddEsc(l1) + '</span>' : '') +
+      (l2 ? '<span class="vac-un vac-l2">' + mgddEsc(l2) + '</span>' : '') +
+      '</div></div>' +
+      '<div class="vac-side">' +
+      (ph.task && bat != null ? '<span class="vac-bat"><ha-icon icon="mdi:battery-outline"></ha-icon>' + bat + '%</span>' : '') +
+      '<button class="vac-x" data-cmd="toggle" aria-expanded="' + this._open + '" aria-label="' +
+      (this._open ? 'Chiudi le routine' : 'Apri le routine') + '"><ha-icon icon="mdi:chevron-' +
+      (this._open ? 'up' : 'down') + '"></ha-icon></button></div></div>' +
+      '<div class="vac-cmds">' + cmds + '</div>' +
+      panel +
+      '</ha-card></div>'
+    );
+  }
+
+  _wire() {
+    if (this._wired) return;
+    this._wired = true;
+    this.addEventListener('click', (ev) => this._fire(ev));
+    this.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        this._fire(ev);
+      }
+    });
+  }
+
+  _fire(ev) {
+    const t = ev.target && ev.target.closest ? ev.target : null;
+    if (!t) return;
+    const c = t.closest('[data-cmd]');
+    if (c) {
+      ev.stopPropagation();
+      this._cmd(c.getAttribute('data-cmd'));
+      return;
+    }
+    const s = t.closest('[data-sc]');
+    if (s) {
+      ev.stopPropagation();
+      this._press(s.getAttribute('data-sc'));
+      return;
+    }
+    const el = t.closest('[data-more]');
+    const id = el && el.getAttribute('data-more');
+    if (!id) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+  }
+
+  _styles() {
+    return (
+      '<style>' +
+      '.vacq{--vac-t1:var(--primary-text-color,#14161a);--vac-t2:var(--secondary-text-color,#70757f);' +
+      '--vac-div:var(--divider-color,rgba(16,20,28,.11));' +
+      // stessi ciano della vmc per l'aspirazione, verde acqua per il lavaggio
+      '--vac-air:#0EA5E9;--vac-air-t:#0A7FB5;--vac-mop:#14B8A6;--vac-mop-t:#0F766E;' +
+      '--vac-lo:#6BB8D6;--vac-lo-t:#4C7E92;--vac-err:#DC4B48;--vac-err-t:#C93F3C;' +
+      '--vac-grey:#9AA0A8;--vac-neutral:rgba(16,20,28,.055);}' +
+      '.vacq.vac-dark{--vac-air:#38BDF8;--vac-air-t:#4FC3F7;--vac-mop:#2DD4BF;--vac-mop-t:#5EEAD4;' +
+      '--vac-lo:#4E8FA8;--vac-lo-t:#8FB6C6;--vac-err:#F0605C;--vac-err-t:#F0605C;--vac-grey:#7C828B;' +
+      '--vac-neutral:rgba(255,255,255,.07);}' +
+      '.vacq *{box-sizing:border-box;}' +
+      '.vacq svg{display:block;}' +
+
+      '.vacq .vac-t{display:flex;flex-direction:column;padding:11px 12px;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'color:var(--vac-t1);container-type:inline-size;--vac-ac:var(--vac-grey);--vac-at:var(--vac-t2);}' +
+      '.vacq .vac-sweep{--vac-ac:var(--vac-air);--vac-at:var(--vac-air-t);}' +
+      '.vacq .vac-mop{--vac-ac:var(--vac-mop);--vac-at:var(--vac-mop-t);}' +
+      '.vacq .vac-ret,.vacq .vac-pause{--vac-ac:var(--vac-lo);--vac-at:var(--vac-lo-t);}' +
+      '.vacq .vac-err{--vac-ac:var(--vac-err);--vac-at:var(--vac-err-t);}' +
+
+      '.vacq .vac-top{display:flex;align-items:flex-start;gap:6px;}' +
+      '.vacq .vac-cell{display:flex;align-items:center;gap:10px;cursor:pointer;flex:1;min-width:0;}' +
+      '.vacq .vac-cell:focus-visible{outline:2px solid var(--vac-t2);outline-offset:2px;border-radius:10px;}' +
+      '.vacq .vac-rw{position:relative;width:66px;aspect-ratio:1;flex:none;}' +
+      '.vacq .vac-rw svg{width:100%;height:100%;}' +
+      // la traccia e' la scala, non il dato: tenue come nella vmc
+      '.vacq .vac-trk{opacity:.22;}' +
+      '.vacq .vac-pc{font-size:15px;font-weight:700;fill:var(--vac-at);font-variant-numeric:tabular-nums;}' +
+      '.vacq .vac-c{position:absolute;inset:0;display:grid;place-items:center;padding-bottom:6px;' +
+      'pointer-events:none;color:var(--vac-at);}' +
+      '.vacq .vac-c ha-icon{--mdc-icon-size:24px;width:24px;height:24px;}' +
+
+      '.vacq .vac-tx{min-width:0;}' +
+      '.vacq .vac-nm{display:block;font-size:10px;font-weight:800;letter-spacing:1.02px;' +
+      'text-transform:uppercase;color:var(--vac-t1);line-height:1;' +
+      'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.vacq .vac-wd{display:block;font-size:15px;font-weight:700;letter-spacing:-.3px;line-height:1.05;' +
+      'margin-top:5px;color:var(--vac-at);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.vacq .vac-un{display:block;font-size:10.5px;color:var(--vac-t2);margin-top:4px;' +
+      'font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.vacq .vac-l2{margin-top:2px;}' +
+      '.vacq .vac-sent .vac-l2{color:var(--vac-ac);font-weight:600;}' +
+
+      '.vacq .vac-side{display:flex;align-items:center;gap:2px;flex:none;}' +
+      '.vacq .vac-bat{display:inline-flex;align-items:center;gap:2px;font-size:10.5px;font-weight:600;' +
+      'color:var(--vac-t2);font-variant-numeric:tabular-nums;}' +
+      '.vacq .vac-bat ha-icon{--mdc-icon-size:15px;width:15px;height:15px;}' +
+      '.vacq .vac-x{border:none;background:none;color:var(--vac-t2);cursor:pointer;padding:4px;' +
+      'border-radius:8px;display:grid;place-items:center;}' +
+      '.vacq .vac-x ha-icon{--mdc-icon-size:22px;width:22px;height:22px;}' +
+      '.vacq .vac-x:hover{background:var(--vac-neutral);}' +
+      '.vacq .vac-x:focus-visible{outline:2px solid var(--vac-ac);outline-offset:1px;}' +
+
+      // comandi nello stesso stampo della vmc
+      '.vacq .vac-cmds{display:flex;gap:8px;margin-top:11px;}' +
+      '.vacq .vac-b{flex:1;min-width:0;height:42px;border:none;border-radius:12px;' +
+      'background:var(--vac-neutral);color:var(--vac-t2);cursor:pointer;font:inherit;' +
+      'font-size:12.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;' +
+      'transition:background .16s,color .16s,box-shadow .16s;}' +
+      '.vacq .vac-b ha-icon{--mdc-icon-size:20px;width:20px;height:20px;flex:none;}' +
+      '.vacq .vac-b:hover{box-shadow:0 0 0 2px rgba(127,127,127,.22);}' +
+      '.vacq .vac-b:focus-visible{outline:2px solid var(--vac-ac);outline-offset:2px;}' +
+      '.vacq .vac-b.vac-on{background:color-mix(in srgb,var(--vac-ac) 16%,transparent);color:var(--vac-at);}' +
+      // in base la tinta e' grigia: "Routine" aperto prende il ciano, se no non si distingue
+      '.vacq .vac-dock .vac-b.vac-on,.vacq .vac-na .vac-b.vac-on{' +
+      'background:color-mix(in srgb,var(--vac-air) 16%,transparent);color:var(--vac-air-t);}' +
+
+      // pannello routine
+      '.vacq .vac-rt{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:6px;' +
+      'margin-top:10px;padding-top:10px;border-top:1px solid var(--vac-div);}' +
+      '.vacq .vac-r{display:flex;align-items:center;gap:9px;min-height:40px;padding:8px 10px;border:none;' +
+      'border-radius:11px;background:var(--vac-neutral);color:var(--vac-t1);cursor:pointer;font:inherit;' +
+      'font-size:12.5px;font-weight:500;text-align:left;transition:box-shadow .16s,background .16s;}' +
+      '.vacq .vac-r ha-icon{--mdc-icon-size:19px;width:19px;height:19px;flex:none;color:var(--vac-t2);}' +
+      '.vacq .vac-r:hover{box-shadow:0 0 0 2px rgba(127,127,127,.22);}' +
+      '.vacq .vac-r:focus-visible{outline:2px solid var(--vac-ac);outline-offset:2px;}' +
+      '.vacq .vac-rn{min-width:0;line-height:1.2;}' +
+      '.vacq .vac-rs{display:block;font-size:10.5px;font-weight:600;margin-top:2px;color:var(--vac-at);}' +
+      '.vacq .vac-r.vac-run{background:color-mix(in srgb,var(--vac-ac) 16%,transparent);color:var(--vac-at);}' +
+      '.vacq .vac-r.vac-run ha-icon{color:var(--vac-at);}' +
+      '.vacq .vac-r.vac-off{opacity:.45;cursor:default;}' +
+      '.vacq .vac-r.vac-off:hover{box-shadow:none;}' +
+      '.vacq .vac-nt{display:block;font-size:10.5px;color:var(--vac-t2);margin-top:8px;}' +
+      '@container (max-width:150px){.vacq .vac-lbl{display:none;}}' +
+      '</style>'
+    );
+  }
+}
+
+customElements.define('casa-mgdd-vacuum-card', VacuumCard);
+window.customCards.push({
+  type: 'casa-mgdd-vacuum-card',
+  name: 'Casa MGDD Robot',
+  description: 'Il robot aspirapolvere nella tessera della vmc: corona del completamento, fase (aspira/lava), stanza, due comandi e un pannello a scomparsa con le routine (shortcut) da lanciare. Config via YAML.',
 });
