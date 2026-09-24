@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card.
  *
- * Version: 1.92.0
+ * Version: 1.92.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -11280,6 +11280,10 @@ window.customCards.push({
 // `unavailable`: restano visibili ma sbiaditi e non premibili, e tornano
 // attivi quando il robot e' in base.
 //
+// I TOCCHI. Come la doors-card: un tocco ovunque sulla tessera apre e chiude
+// il pannello delle routine; un tocco sull'icona (la corona) apre le maggiori
+// informazioni del vacuum. I pulsanti fanno solo il proprio comando.
+//
 // LA STANZA viene da `sensor.<robot>_current_room` se esiste, oppure dal
 // sensore indicato in `room:`.
 
@@ -11469,7 +11473,9 @@ class VacuumCard extends HTMLElement {
   _ring(pct, task) {
     const t = pct == null ? 0 : Math.max(0, Math.min(100, pct)) / 100;
     return (
-      '<span class="vac-rw"><svg viewBox="0 0 110 110" aria-hidden="true">' +
+      '<span class="vac-rw" data-more="' + mgddEsc(this.config.entity) + '" role="button" tabindex="0" ' +
+      'aria-label="Maggiori informazioni" title="Maggiori informazioni">' +
+      '<svg viewBox="0 0 110 110" aria-hidden="true">' +
       '<g fill="none" stroke="var(--vac-ac)" stroke-width="9">' +
       '<path class="vac-trk" d="' + airArc(135, 405) + '"/>' +
       (t > 0 ? '<path d="' + airArc(135, 135 + 270 * t) + '"/>' : '') +
@@ -11555,8 +11561,8 @@ class VacuumCard extends HTMLElement {
       '<div class="vacq' + (this._isDark() ? ' vac-dark' : '') + '">' +
       '<ha-card class="vac-t vac-' + ph.k + (sent ? ' vac-sent' : '') + '">' +
       '<div class="vac-top">' +
-      '<div class="vac-cell" data-more="' + mgddEsc(this.config.entity) + '" role="button" tabindex="0" ' +
-      'aria-label="' + mgddEsc(nm + ', ' + ph.w) + '">' +
+      '<div class="vac-cell" role="button" tabindex="0" aria-expanded="' + this._open + '" ' +
+      'aria-label="' + mgddEsc(nm + ', ' + ph.w + (this._open ? ', chiudi le routine' : ', apri le routine')) + '">' +
       this._ring(ph.task ? prog : bat, ph.task) +
       '<div class="vac-tx"><span class="vac-nm">' + mgddEsc(nm) + '</span>' +
       '<span class="vac-wd">' + mgddEsc(ph.w) + '</span>' +
@@ -11601,10 +11607,16 @@ class VacuumCard extends HTMLElement {
       this._press(s.getAttribute('data-sc'));
       return;
     }
+    // L'icona (la corona) apre le maggiori informazioni; il resto della
+    // tessera apre e chiude le routine, come la doors-card.
     const el = t.closest('[data-more]');
     const id = el && el.getAttribute('data-more');
-    if (!id) return;
-    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+    if (id) {
+      ev.stopPropagation();
+      this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true }));
+      return;
+    }
+    if (t.closest('.vac-t')) this._cmd('toggle');
   }
 
   _styles() {
@@ -11633,7 +11645,10 @@ class VacuumCard extends HTMLElement {
       '.vacq .vac-top{display:flex;align-items:flex-start;gap:6px;}' +
       '.vacq .vac-cell{display:flex;align-items:center;gap:10px;cursor:pointer;flex:1;min-width:0;}' +
       '.vacq .vac-cell:focus-visible{outline:2px solid var(--vac-t2);outline-offset:2px;border-radius:10px;}' +
-      '.vacq .vac-rw{position:relative;width:66px;aspect-ratio:1;flex:none;}' +
+      '.vacq .vac-t{cursor:pointer;}' +
+      '.vacq .vac-rw{position:relative;width:66px;aspect-ratio:1;flex:none;border-radius:50%;}' +
+      '.vacq .vac-rw:hover{background:var(--vac-neutral);}' +
+      '.vacq .vac-rw:focus-visible{outline:2px solid var(--vac-ac);outline-offset:2px;}' +
       '.vacq .vac-rw svg{width:100%;height:100%;}' +
       // la traccia e' la scala, non il dato: tenue come nella vmc
       '.vacq .vac-trk{opacity:.22;}' +
