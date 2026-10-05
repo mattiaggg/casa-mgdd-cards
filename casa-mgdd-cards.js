@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card.
  *
- * Version: 1.92.2
+ * Version: 1.93.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10556,7 +10556,7 @@ class AirCard extends HTMLElement {
   _ids() {
     const out = [];
     this._rooms().forEach((r) => {
-      ['pm', 'fan', 'filter', 'prefilter'].forEach((k) => {
+      ['pm', 'pm1', 'pm10', 'fan', 'filter', 'prefilter'].forEach((k) => {
         if (r[k]) out.push(r[k]);
       });
     });
@@ -10667,6 +10667,33 @@ class AirCard extends HTMLElement {
     return AIR_WORDS[this._bandIdx(v)];
   }
 
+  // PM1 e PM10 (v1.93.0), facoltativi per stanza: solo se il purificatore li
+  // misura, come l'Eleva 300X della Camera. Sono numeri e basta, nel colore del
+  // testo: le fasce 10 / 20 / 35 sono soglie del PM2.5, e sul PM10 (OMS: 45
+  // µg/m³ di media giornaliera) direbbero "Moderata" a un'aria che va bene.
+  // La corona, la parola e il colore restano del PM2.5.
+  _extra(r) {
+    if (!r.pm1 && !r.pm10) return null;
+    const val = (e) => {
+      const n = this._num(e);
+      return n === null ? '—' : String(Math.round(n));
+    };
+    const out = [];
+    if (r.pm1) out.push({ k: 'pm1', lb: 'PM1', v: val(r.pm1) });
+    out.push({ k: 'pm', lb: 'PM2.5', v: val(r.pm) });
+    if (r.pm10) out.push({ k: 'pm10', lb: 'PM10', v: val(r.pm10) });
+    return out;
+  }
+
+  // Nella tessera stretta (telefono) c'e' posto per UN valore in piu' nella terza
+  // riga: "PM1 1 · PM10 3" veniva troncato a "PM1 1 · PM...". Vince il PM10,
+  // che aggiunge informazione: il PM1 e' una parte del PM2.5 e non lo supera mai.
+  _narrow(extra) {
+    const x = extra.find((e) => e.k === 'pm10') || extra.find((e) => e.k === 'pm1');
+    // Senza unita': "PM10 3 µg/m³" non ci sta, e l'unita' e' la stessa del PM2.5.
+    return x ? x.lb + ' ' + x.v : 'µg/m³';
+  }
+
   // La parola col colore della sua fascia: e' la riga grossa del testo a lato.
   _word(r) {
     const v = this._num(r.pm);
@@ -10720,15 +10747,29 @@ class AirCard extends HTMLElement {
         const v = this._num(r.pm);
         const nm = this._name(r);
         const num = v === null ? '\u2014' : String(Math.round(v));
+        const extra = this._extra(r);
+        const parla = extra
+          ? extra.filter((x) => x.k !== 'pm').map((x) => x.lb + ' ' + x.v).join(', ')
+          : '';
         return (
           '<ha-card class="air-t" data-more="' + mgddEsc(r.fan || r.pm) + '" role="button" tabindex="0" ' +
           'aria-label="' + mgddEsc(nm + ', ' + num + ' microgrammi per metro cubo, aria ' +
-            this._wordText(r).toLowerCase()) + '">' +
+            this._wordText(r).toLowerCase() + (parla ? ', ' + parla : '')) + '">' +
           dot +
           '<div class="air-in"><div class="air-cell">' + this._ring(r) +
           '<div class="air-tx"><span class="air-nm">' + mgddEsc(nm) + '</span>' +
           this._word(r) +
-          '<span class="air-un">' + num + ' \u00b5g/m\u00b3</span></div></div></div></ha-card>'
+          (extra
+            ? '<span class="air-un air-un-w">\u00b5g/m\u00b3</span>' +
+              '<span class="air-un air-un-n">' + mgddEsc(this._narrow(extra)) + '</span>'
+            : '<span class="air-un">' + num + ' \u00b5g/m\u00b3</span>') +
+          '</div>' +
+          (extra
+            ? '<div class="air-col" aria-hidden="true">' +
+              extra.map((x) => '<div><span>' + x.lb + '</span><b>' + x.v + '</b></div>').join('') +
+              '</div>'
+            : '') +
+          '</div></div></ha-card>'
         );
       })
       .join('');
@@ -10847,7 +10888,7 @@ class AirCard extends HTMLElement {
       // nella stessa colonna della Home e il nome e' la stessa parola: una in
       // nero e una in grigio si leggevano come due componenti diversi. Se si
       // cambia qui, cambiare anche `.vmc-nm`.
-      '.air .air-tx{min-width:0;}' +
+      '.air .air-tx{min-width:0;flex:1;}' +
       '.air .air-nm{display:block;font-size:10px;font-weight:800;letter-spacing:1.02px;' +
       'text-transform:uppercase;color:var(--air-t1);line-height:1;' +
       'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
@@ -10895,6 +10936,23 @@ class AirCard extends HTMLElement {
       '.air .air-dot i{width:6px;height:6px;border-radius:50%;background:var(--air-amber);}' +
       '.air .air-dot:focus-visible{outline:2px solid var(--air-amber);outline-offset:-2px;' +
       'border-radius:50%;}' +
+
+      // La colonna PM1 / PM2.5 / PM10 a destra (v1.93.0). Non cambia l'altezza
+      // della tessera: le tre righe stanno nei 66 px della corona. Ogni tessera e'
+      // un container, perche' e' la SUA larghezza a decidere se la colonna ci
+      // sta accanto a "Eccellente": sotto i 250 px la colonna sparisce e i due
+      // valori in piu' passano nella terza riga ("PM1 1 · PM10 3"), invece di
+      // troncare la parola o allungare la tessera.
+      '.air .air-t{container:airt / inline-size;}' +
+      '.air .air-col{flex:none;display:grid;gap:4px;padding-left:10px;' +
+      'border-left:1px solid var(--divider-color,rgba(16,20,28,.12));' +
+      'font-size:10.5px;color:var(--air-t2);font-variant-numeric:tabular-nums;}' +
+      '.air .air-col div{display:flex;justify-content:space-between;gap:8px;line-height:1.15;}' +
+      '.air .air-col b{color:var(--air-t1);font-weight:700;}' +
+      '.air .air-un-n{display:none;}' +
+      '@container airt (max-width:250px){' +
+      '.air .air-col,.air .air-un-w{display:none;}' +
+      '.air .air-un-n{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}' +
 
       '@container (max-width:360px){.air{gap:6px;}}' +
 
