@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card.
  *
- * Version: 1.93.0
+ * Version: 1.93.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10522,6 +10522,7 @@ class AirCard extends HTMLElement {
       filter_warn: typeof config.filter_warn === 'number' ? config.filter_warn : 5,
     });
     this._sig = null;
+    this._nar = {};
   }
 
   static getStubConfig() {
@@ -10630,6 +10631,30 @@ class AirCard extends HTMLElement {
     if (!this.config || !this._hass) return;
     mgddPaint(this, this._styles(), this._html());
     this._wire();
+    cancelAnimationFrame(this._fitF);
+    this._fitF = requestAnimationFrame(() => this._fit());
+  }
+
+  // La colonna PM1 / PM2.5 / PM10 resta finche' "Eccellente" ci sta intera
+  // accanto: lo si MISURA sulla tessera vera, non lo si deduce da una soglia in
+  // pixel. La v1.93.0 usava una container query a 250 px, calcolata col font di
+  // riserva del banco: in Home Assistant, con Inter, la tessera da 245 px aveva
+  // spazio in avanzo e mostrava lo stesso la versione stretta.
+  // Una tessera passata alla versione stretta ci resta fino al prossimo cambio
+  // di larghezza: a quel punto si riprova larga e si rimisura.
+  _fit() {
+    if (!this.isConnected) return;
+    let cambiato = false;
+    this.querySelectorAll('.air-t[data-pm]:not(.air-nar)').forEach((t) => {
+      if (!t.querySelector('.air-col')) return;
+      const wd = t.querySelector('.air-wd');
+      // clientWidth 0 = testo schiacciato a niente dalla colonna: anche quello e' "non ci sta".
+      if (wd && wd.scrollWidth > wd.clientWidth + 1) {
+        this._nar[t.getAttribute('data-pm')] = true;
+        cambiato = true;
+      }
+    });
+    if (cambiato) this._render();
   }
 
   _ring(r) {
@@ -10752,7 +10777,8 @@ class AirCard extends HTMLElement {
           ? extra.filter((x) => x.k !== 'pm').map((x) => x.lb + ' ' + x.v).join(', ')
           : '';
         return (
-          '<ha-card class="air-t" data-more="' + mgddEsc(r.fan || r.pm) + '" role="button" tabindex="0" ' +
+          '<ha-card class="air-t' + (extra && this._nar[r.pm] ? ' air-nar' : '') + '" ' +
+          'data-pm="' + mgddEsc(r.pm) + '" data-more="' + mgddEsc(r.fan || r.pm) + '" role="button" tabindex="0" ' +
           'aria-label="' + mgddEsc(nm + ', ' + num + ' microgrammi per metro cubo, aria ' +
             this._wordText(r).toLowerCase() + (parla ? ', ' + parla : '')) + '">' +
           dot +
@@ -10779,6 +10805,21 @@ class AirCard extends HTMLElement {
   _wire() {
     if (this._wired) return;
     this._wired = true;
+    // Cambia la larghezza (rotazione del telefono, barra laterale, colonne della
+    // sezione): si torna alla colonna e `_fit()` rimisura. Solo la larghezza:
+    // l'altezza cambia quando cambia il contenuto, e rimisurare li' ciclerebbe.
+    if (typeof ResizeObserver === 'function') {
+      this._ro = new ResizeObserver((entries) => {
+        const w = Math.round(entries[0].contentRect.width);
+        if (w === this._w) return;
+        this._w = w;
+        if (Object.keys(this._nar).length) {
+          this._nar = {};
+          this._render();
+        }
+      });
+      this._ro.observe(this);
+    }
     this.addEventListener('click', (ev) => this._fire(ev));
     this.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') {
@@ -10938,21 +10979,18 @@ class AirCard extends HTMLElement {
       'border-radius:50%;}' +
 
       // La colonna PM1 / PM2.5 / PM10 a destra (v1.93.0). Non cambia l'altezza
-      // della tessera: le tre righe stanno nei 66 px della corona. Ogni tessera e'
-      // un container, perche' e' la SUA larghezza a decidere se la colonna ci
-      // sta accanto a "Eccellente": sotto i 250 px la colonna sparisce e i due
-      // valori in piu' passano nella terza riga ("PM1 1 · PM10 3"), invece di
+      // della tessera: le tre righe stanno nei 66 px della corona. Quando accanto
+      // a "Eccellente" non ci sta (lo decide `_fit()` misurando, classe
+      // `air-nar`), la colonna sparisce e la terza riga dice "PM10 3", invece di
       // troncare la parola o allungare la tessera.
-      '.air .air-t{container:airt / inline-size;}' +
-      '.air .air-col{flex:none;display:grid;gap:4px;padding-left:10px;' +
+      '.air .air-col{flex:none;display:grid;gap:4px;padding-left:8px;margin-left:-2px;' +
       'border-left:1px solid var(--divider-color,rgba(16,20,28,.12));' +
-      'font-size:10.5px;color:var(--air-t2);font-variant-numeric:tabular-nums;}' +
-      '.air .air-col div{display:flex;justify-content:space-between;gap:8px;line-height:1.15;}' +
+      'font-size:10px;color:var(--air-t2);font-variant-numeric:tabular-nums;}' +
+      '.air .air-col div{display:flex;justify-content:space-between;gap:6px;line-height:1.15;}' +
       '.air .air-col b{color:var(--air-t1);font-weight:700;}' +
       '.air .air-un-n{display:none;}' +
-      '@container airt (max-width:250px){' +
-      '.air .air-col,.air .air-un-w{display:none;}' +
-      '.air .air-un-n{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}' +
+      '.air .air-nar .air-col,.air .air-nar .air-un-w{display:none;}' +
+      '.air .air-nar .air-un-n{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
 
       '@container (max-width:360px){.air{gap:6px;}}' +
 
