@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card.
  *
- * Version: 1.93.1
+ * Version: 1.93.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10650,7 +10650,7 @@ class AirCard extends HTMLElement {
       const wd = t.querySelector('.air-wd');
       // clientWidth 0 = testo schiacciato a niente dalla colonna: anche quello e' "non ci sta".
       if (wd && wd.scrollWidth > wd.clientWidth + 1) {
-        this._nar[t.getAttribute('data-pm')] = true;
+        this._nar[t.getAttribute('data-pm')] = t.getAttribute('data-fit');
         cambiato = true;
       }
     });
@@ -10773,12 +10773,16 @@ class AirCard extends HTMLElement {
         const nm = this._name(r);
         const num = v === null ? '\u2014' : String(Math.round(v));
         const extra = this._extra(r);
+        const fitKey = extra ? this._wordText(r) + '|' + extra.map((x) => x.v).join('|') : '';
         const parla = extra
           ? extra.filter((x) => x.k !== 'pm').map((x) => x.lb + ' ' + x.v).join(', ')
           : '';
         return (
-          '<ha-card class="air-t' + (extra && this._nar[r.pm] ? ' air-nar' : '') + '" ' +
-          'data-pm="' + mgddEsc(r.pm) + '" data-more="' + mgddEsc(r.fan || r.pm) + '" role="button" tabindex="0" ' +
+          // La versione stretta vale per i valori con cui e' stata misurata: un
+          // PM10 da 120 che torna a 5 deve riavere la colonna, senza aspettare un
+          // cambio di larghezza.
+          '<ha-card class="air-t' + (extra && this._nar[r.pm] === fitKey ? ' air-nar' : '') + '" ' +
+          'data-pm="' + mgddEsc(r.pm) + '" data-fit="' + mgddEsc(fitKey) + '" data-more="' + mgddEsc(r.fan || r.pm) + '" role="button" tabindex="0" ' +
           'aria-label="' + mgddEsc(nm + ', ' + num + ' microgrammi per metro cubo, aria ' +
             this._wordText(r).toLowerCase() + (parla ? ', ' + parla : '')) + '">' +
           dot +
@@ -10819,6 +10823,14 @@ class AirCard extends HTMLElement {
         }
       });
       this._ro.observe(this);
+    }
+    // Inter arriva DOPO il primo disegno (lo carica /local/inter-font.js) ed e'
+    // piu' larga del font di riserva: misurata prima, "Eccellente" accanto a un
+    // PM10 a tre cifre sembrava starci e poi veniva troncata. Si rimisura quando
+    // i font hanno finito di caricarsi.
+    if (document.fonts) {
+      document.fonts.ready.then(() => this._fit());
+      document.fonts.addEventListener('loadingdone', () => this._fit());
     }
     this.addEventListener('click', (ev) => this._fire(ev));
     this.addEventListener('keydown', (ev) => {
