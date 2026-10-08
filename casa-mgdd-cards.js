@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card.
  *
- * Version: 1.93.2
+ * Version: 1.93.3
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -10710,13 +10710,12 @@ class AirCard extends HTMLElement {
     return out;
   }
 
-  // Nella tessera stretta (telefono) c'e' posto per UN valore in piu' nella terza
-  // riga: "PM1 1 · PM10 3" veniva troncato a "PM1 1 · PM...". Vince il PM10,
-  // che aggiunge informazione: il PM1 e' una parte del PM2.5 e non lo supera mai.
+  // Nella tessera stretta (telefono) la terza riga e' la stessa della tessera
+  // senza PM1/PM10: "2 µg/m³" del PM2.5 (v1.93.3). Prima diceva "PM10 3", e le
+  // due tessere affiancate mostravano cose diverse nello stesso posto.
   _narrow(extra) {
-    const x = extra.find((e) => e.k === 'pm10') || extra.find((e) => e.k === 'pm1');
-    // Senza unita': "PM10 3 µg/m³" non ci sta, e l'unita' e' la stessa del PM2.5.
-    return x ? x.lb + ' ' + x.v : 'µg/m³';
+    const x = extra.find((e) => e.k === 'pm');
+    return (x ? x.v : '—') + ' µg/m³';
   }
 
   // La parola col colore della sua fascia: e' la riga grossa del testo a lato.
@@ -10820,6 +10819,13 @@ class AirCard extends HTMLElement {
         if (Object.keys(this._nar).length) {
           this._nar = {};
           this._render();
+        } else {
+          // Anche senza tessere strette si rimisura: la v1.93.2 lo faceva solo
+          // per tornare larga, e una tessera misurata quando era ancora larga (o
+          // non ancora disposta, larghezza 0) che poi si stringeva restava con la
+          // colonna e "Eccellente" troncata a "E..".
+          cancelAnimationFrame(this._fitF);
+          this._fitF = requestAnimationFrame(() => this._fit());
         }
       });
       this._ro.observe(this);
@@ -10993,7 +10999,7 @@ class AirCard extends HTMLElement {
       // La colonna PM1 / PM2.5 / PM10 a destra (v1.93.0). Non cambia l'altezza
       // della tessera: le tre righe stanno nei 66 px della corona. Quando accanto
       // a "Eccellente" non ci sta (lo decide `_fit()` misurando, classe
-      // `air-nar`), la colonna sparisce e la terza riga dice "PM10 3", invece di
+      // `air-nar`), la colonna sparisce e la terza riga dice "2 µg/m³", invece di
       // troncare la parola o allungare la tessera.
       '.air .air-col{flex:none;display:grid;gap:4px;padding-left:8px;margin-left:-2px;' +
       'border-left:1px solid var(--divider-color,rgba(16,20,28,.12));' +
