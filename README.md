@@ -14,6 +14,7 @@ Il file `casa-mgdd-cards.js` registra più elementi custom in un'unica risorsa.
 | Potenza energia | `custom:energy-power-card` | Carichi attivi, oggi/mese, panoramica potenza. |
 | Controlli energia | `custom:energy-controls-card` | Controlli circuiti. |
 | Storico energia | `custom:energy-history-card` | Istogramma consumo con base fissa. |
+| Lavatrici | `custom:casa-mgdd-laundry-card` | Pianificatore lavatrici: un blocco per card (`block:` testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori `sensor.lavatrici_*`. |
 
 ## Installazione via HACS
 

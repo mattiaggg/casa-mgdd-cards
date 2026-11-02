@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card.
  *
- * Version: 1.93.4
+ * Version: 1.94.0
  */
 
 // Inter, chiesto una volta sola per pagina.
