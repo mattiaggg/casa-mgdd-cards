@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card.
  *
- * Version: 1.94.0
+ * Version: 1.94.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -11860,12 +11860,12 @@ const LD_METEO = {
 };
 
 const LD_CAT = {
-  cotoni: { n: 'Cotoni', i: '🧺' },
-  stracci: { n: 'Stracci', i: '🧹' },
-  delicati: { n: 'Delicati', i: '👕' },
-  sintetici: { n: 'Sintetici', i: '👕' },
-  altro: { n: 'Altro', i: '🫧' },
-  sconosciuto: { n: 'Sconosciuto', i: '🫧' },
+  cotoni: { n: 'Cotoni', b: 'Cot.', i: '🧺' },
+  stracci: { n: 'Stracci', b: 'Strac.', i: '🧹' },
+  delicati: { n: 'Delicati', b: 'Delic.', i: '👕' },
+  sintetici: { n: 'Sintetici', b: 'Sint.', i: '👕' },
+  altro: { n: 'Altro', b: 'Altro', i: '🫧' },
+  sconosciuto: { n: 'Sconosciuto', b: '?', i: '🫧' },
 };
 
 const LD_GIORNI = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
@@ -12136,13 +12136,17 @@ const LD_BLOCKS = {
     if (!g.length) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
     const cls = { verde: 'ld-dg', ambra: 'ld-da', rosso: 'ld-dr' };
     const tiles = g.map((d) => {
-      const lav = (d.lavaggi || []).map((k) => (LD_CAT[k] || LD_CAT.altro).n).join('<br>') || '—';
+      // nome intero; nelle caselle strette (colonna della dashboard) quello breve
+      const lav = (d.lavaggi || []).map((k) => {
+        const c = LD_CAT[k] || LD_CAT.altro;
+        return '<span class="ld-pl">' + c.n + '</span><span class="ld-ps">' + c.b + '</span>';
+      }).join('<br>') || '—';
       return '<div class="ld-day ' + (cls[d.colore] || '') + (d.migliore ? ' ld-best' : '') + '"><span class="ld-d">' + mgddEsc(d.nome) +
         '</span><span class="ld-n">' + ldDay(d.data).getDate() + '</span><span class="ld-e">' + (LD_METEO[d.meteo] || '·') +
         '</span><span class="ld-k">' + ldNum(d.kwh, true) + '</span><span class="ld-p">' + lav + '</span></div>';
     }).join('');
     return this._card('', label, '<span class="ld-tiny">kWh solari stimati</span>',
-      '<div class="ld-week" style="grid-template-columns:repeat(' + g.length + ',minmax(0,1fr))">' + tiles + '</div>' +
+      '<div class="ld-wk"><div class="ld-week" style="grid-template-columns:repeat(' + g.length + ',minmax(0,1fr))">' + tiles + '</div></div>' +
       '<div class="ld-legend"><span><i style="background:#1D9E75"></i>ok</span><span><i style="background:#EF9F27"></i>solo leggero</span>' +
       '<span><i style="background:#E24B4A"></i>niente, consumi minimi</span><span>▢ giorno migliore</span></div>');
   },
@@ -12385,10 +12389,13 @@ const LD_STYLES =
   '.ldq .ld-ai p{font-size:13.5px;line-height:1.55;margin:8px 0 0;}' +
   // settimana
   '.ldq .ld-week{display:grid;gap:7px;}' +
+  '.ldq .ld-wk{container-type:inline-size;}' +
+  '.ldq .ld-ps{display:none;}' +
+  '@container (max-width:380px){.ldq .ld-pl{display:none;}.ldq .ld-ps{display:inline;}}' +
   '.ldq .ld-day{border-radius:14px;padding:9px 4px 10px;text-align:center;display:flex;flex-direction:column;gap:5px;align-items:center;min-width:0;}' +
   '.ldq .ld-d{font-size:12px;font-weight:650;}.ldq .ld-n{font-size:10px;color:var(--ld-t2);margin-top:-4px;}' +
   '.ldq .ld-e{font-size:22px;line-height:1;}.ldq .ld-k{font-size:13px;font-weight:700;}' +
-  '.ldq .ld-p{font-size:10px;font-weight:650;border-radius:8px;padding:3px 4px;background:var(--ld-bg);width:92%;line-height:1.3;min-height:16px;overflow-wrap:anywhere;}' +
+  '.ldq .ld-p{font-size:10px;font-weight:650;border-radius:8px;padding:3px 4px;background:var(--ld-bg);width:92%;line-height:1.3;min-height:16px;}' +
   '.ldq .ld-dg{background:#1D9E751a;}.ldq .ld-da{background:#EF9F2724;}.ldq .ld-dr{background:#E24B4A17;}' +
   '.ldq .ld-best{outline:2px solid var(--ld-g);}' +
   '.ldq .ld-legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--ld-t2);}' +
