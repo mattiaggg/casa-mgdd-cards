@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harness lavatrici</title>
+<style>
+  body { margin: 0; background: #eef0f3; font-family: Inter, -apple-system, "Segoe UI", sans-serif;
+    --primary-text-color: #1c1c1e; --secondary-text-color: #6b6f76; --divider-color: rgba(0,0,0,.08);
+    --card-background-color: #fff; }
+  body.dark { background: #111214; --primary-text-color: #e8e8ea; --secondary-text-color: #9a9da3;
+    --divider-color: rgba(255,255,255,.1); --card-background-color: #1c1d20; }
+  .bar { display: flex; gap: 8px; padding: 10px 22px; font-size: 12px; }
+  .page { max-width: 1500px; margin: 0 auto; padding: 0 22px 40px; }
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 12px; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <button data-f="normale">Fixture normale</button>
+  <button data-f="assente">Fixture dati assenti</button>
+  <button id="dark">Chiaro / scuro</button>
+</div>
+<div class="page">
+  <div id="testata"></div>
+  <div class="cols">
+    <div class="col" data-blocks="oggi,batteria,enel,se-lavassi,gemini"></div>
+    <div class="col" data-blocks="settimana,grafico,perche"></div>
+    <div class="col" data-blocks="obiettivo,ultimi,programmi,stima,inesistente"></div>
+  </div>
+</div>
+<script>window.customCards = window.customCards || [];</script>
+<script src="lavatrici-fixture.js"></script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const cards = [];
+  function make(block, parent) {
+    const el = document.createElement('casa-mgdd-laundry-card');
+    el.setConfig({ type: 'custom:casa-mgdd-laundry-card', block });
+    parent.appendChild(el);
+    cards.push(el);
+  }
+  make('testata', document.getElementById('testata'));
+  for (const col of document.querySelectorAll('[data-blocks]')) {
+    for (const b of col.dataset.blocks.split(',')) make(b, col);
+  }
+  let dark = false;
+  let fixture = 'normale';
+  function apply() {
+    const hass = { states: LD_FIXTURE[fixture], themes: { darkMode: dark }, language: 'it', _ora: LD_FIXTURE.ora };
+    for (const c of cards) c.hass = hass;
+  }
+  document.querySelectorAll('[data-f]').forEach((b) => b.addEventListener('click', () => { fixture = b.dataset.f; apply(); }));
+  document.getElementById('dark').addEventListener('click', () => { dark = !dark; document.body.classList.toggle('dark', dark); apply(); });
+  apply();
+</script>
+</body>
+</html>

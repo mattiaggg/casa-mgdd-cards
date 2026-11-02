@@ -8,7 +8,7 @@
  * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
- * casa-mgdd-vacuum-card.
+ * casa-mgdd-vacuum-card, casa-mgdd-laundry-card.
  *
  * Version: 1.93.4
  */
@@ -11830,4 +11830,596 @@ window.customCards.push({
   type: 'casa-mgdd-vacuum-card',
   name: 'Casa MGDD Robot',
   description: 'Il robot aspirapolvere nella tessera della vmc: corona del completamento, fase (aspira/lava), stanza, due comandi e un pannello a scomparsa con le routine (shortcut) da lanciare. Config via YAML.',
+});
+
+// ============================================================================
+// casa-mgdd-laundry-card — Pianificatore lavatrici
+// ============================================================================
+// Una card per blocco della dashboard "Lavatrici" (config `block`). La card non
+// calcola niente: legge gli attributi dei sensori sensor.lavatrici_*, che
+// riempiono le automazioni con le macro di custom_templates/lavatrici.jinja.
+// Valori assenti → "—".
+
+const LD_DEFAULTS = {
+  piano: 'sensor.lavatrici_piano',
+  batteria: 'sensor.lavatrici_batteria',
+  lavaggi: 'sensor.lavatrici_lavaggi',
+  storico: 'sensor.lavatrici_storico',
+  ai: 'sensor.lavatrici_consiglio_ai',
+  soglia: 'input_number.lavatrici_soglia_enel',
+  solare: 'sensor.powerwall3_solar_power',
+  casa: 'sensor.powerwall3_load_power',
+  rete: 'sensor.powerwall3_site_power',
+  soc: 'sensor.powerwall3_charge',
+  batteria_kw: 'sensor.powerwall3_battery_power',
+};
+
+const LD_METEO = {
+  sunny: '☀️', 'clear-night': '☀️', partlycloudy: '⛅', cloudy: '☁️', fog: '🌫️',
+  rainy: '🌧️', pouring: '🌧️', 'lightning-rainy': '⛈️', lightning: '⛈️', snowy: '❄️', 'snowy-rainy': '🌨️',
+};
+
+const LD_CAT = {
+  cotoni: { n: 'Cotoni', i: '🧺' },
+  stracci: { n: 'Stracci', i: '🧹' },
+  delicati: { n: 'Delicati', i: '👕' },
+  sintetici: { n: 'Sintetici', i: '👕' },
+  altro: { n: 'Altro', i: '🫧' },
+  sconosciuto: { n: 'Sconosciuto', i: '🫧' },
+};
+
+const LD_GIORNI = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+const LD_MESI = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto',
+  'settembre', 'ottobre', 'novembre', 'dicembre'];
+
+// 1 decimale con la virgola; compatto = senza ",0"
+function ldNum(x, compatto) {
+  if (x == null || x === '' || isNaN(Number(x))) return '—';
+  const s = (Math.round(Number(x) * 10) / 10).toFixed(1).replace('.', ',');
+  return compatto ? s.replace(/,0$/, '') : s;
+}
+
+function ldIso(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// 'YYYY-MM-DD' → Date a mezzogiorno locale (lontano dai cambi d'ora)
+function ldDay(s) {
+  const p = String(s).split('-').map(Number);
+  return new Date(p[0], p[1] - 1, p[2], 12);
+}
+
+function ldHM(d) {
+  return mgddPad2(d.getHours()) + ':' + mgddPad2(d.getMinutes());
+}
+
+class LaundryCard extends HTMLElement {
+  setConfig(config) {
+    if (!config || !config.block) throw new Error('Config "block" mancante');
+    this.config = Object.assign({}, LD_DEFAULTS, config);
+    this._sig = null;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const sig = this._sigOf(hass);
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 'full' };
+  }
+
+  getCardSize() {
+    return 3;
+  }
+
+  // I sensori del pianificatore cambiano spesso solo negli attributi: nella firma
+  // entra anche last_updated. Le potenze live solo per il blocco che le mostra.
+  _sigOf(hass) {
+    if (!hass) return '';
+    const c = this.config;
+    let out = '';
+    for (const id of [c.piano, c.batteria, c.lavaggi, c.storico, c.ai]) {
+      const s = hass.states[id];
+      out += id + '=' + (s ? s.state + '@' + s.last_updated : 'x') + ';';
+    }
+    const live = c.block === 'batteria' ? [c.solare, c.casa, c.rete, c.soc, c.batteria_kw] : [];
+    return out + mgddStatesSig(hass, live.concat([c.soglia])) + (hass.themes && hass.themes.darkMode ? 'D' : 'L');
+  }
+
+  _st(id) {
+    return (this._hass && this._hass.states[id]) || null;
+  }
+
+  _attr(id, key) {
+    const s = this._st(id);
+    return s && s.attributes ? s.attributes[key] : undefined;
+  }
+
+  _num(id) {
+    const s = this._st(id);
+    if (!s || s.state === 'unavailable' || s.state === 'unknown') return null;
+    const v = Number(s.state);
+    return isNaN(v) ? null : v;
+  }
+
+  // l'harness fissa l'ora della fixture
+  _now() {
+    return this._hass && this._hass._ora ? new Date(this._hass._ora) : new Date();
+  }
+
+  _piano(key) {
+    return this._attr(this.config.piano, key);
+  }
+
+  _bat(key) {
+    const s = this._st(this.config.batteria);
+    if (!s || s.state === 'unavailable' || s.state === 'unknown') return undefined;
+    return s.attributes[key];
+  }
+
+  _render() {
+    if (!this._hass) return;
+    const b = this.config.block;
+    const fn = LD_BLOCKS[b];
+    const dark = !!(this._hass.themes && this._hass.themes.darkMode);
+    const inner = fn ? fn.call(this) : '<ha-card class="ld-c"><div class="ld-sub">blocco non valido: ' + mgddEsc(b) + '</div></ha-card>';
+    mgddPaint(this, LD_STYLES, '<div class="ldq' + (dark ? ' ld-dark' : '') + '">' + inner + '</div>');
+  }
+
+  // ---------- pezzi comuni ----------
+
+  _card(cls, label, right, body) {
+    return '<ha-card class="ld-c ' + (cls || '') + '"><div class="ld-hd"><span class="ld-lbl">' + label + '</span>' +
+      (right || '') + '</div>' + body + '</ha-card>';
+  }
+
+  _pill(cls, txt) {
+    return '<span class="ld-pill ld-p' + cls + '">' + txt + '</span>';
+  }
+
+  _vuoto(label, txt) {
+    return this._card('', label, '', '<div class="ld-sub">' + txt + '</div>');
+  }
+
+  _dayShort(iso) {
+    const d = ldDay(iso);
+    return LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + d.getDate();
+  }
+}
+
+const LD_BLOCKS = {
+  testata() {
+    const ok = this._piano('meteo_ok');
+    const agg = this._piano('aggiornato');
+    const bat = this._bat('aggiornato');
+    const now = this._now();
+    const h = now.getHours();
+    const prossimo = h < 6 ? '06:00' : h < 18 ? '18:00' : 'domani 06:00';
+    let quando = '—';
+    if (agg) {
+      const d = new Date(agg);
+      quando = (ldIso(d) === ldIso(now) ? 'oggi ' : this._dayShort(ldIso(d)) + ' ') + ldHM(d);
+    }
+    return '<div class="ld-top"><div class="ld-h1">🧺 Pianificatore lavatrici</div><div class="ld-meta">' +
+      (ok === false ? this._pill('r', 'Meteo iLMeteo non disponibile') : this._pill('n', 'Meteo: iLMeteo')) +
+      this._pill('n', 'Piano aggiornato ' + quando + ' · prossimo ' + prossimo) +
+      this._pill('n', 'Batteria ricalcolata ' + (bat ? ldHM(new Date(bat)) : '—')) +
+      '</div></div>';
+  },
+
+  oggi() {
+    const s = this._st(this.config.piano);
+    const now = this._now();
+    const label = 'Oggi · ' + LD_GIORNI[now.getDay()] + ' ' + now.getDate() + ' ' + LD_MESI[now.getMonth()];
+    const c = this._piano('consiglio');
+    if (!s || !c || !c.titolo) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
+    const col = s.state;
+    const pill = { verde: this._pill('g', '● Si può lavare'), ambra: this._pill('a', '● Solo un lavaggio leggero'),
+      rosso: this._pill('r', '● Niente lavatrici') }[col] || '';
+    const acts = (c.suggerimenti || []).map((t) => this._pill('n', mgddEsc(t))).join('');
+    return '<ha-card class="ld-c ld-hero ld-h-' + mgddEsc(col) + '"><div class="ld-hd" style="margin-bottom:0"><span class="ld-lbl">' +
+      label + '</span>' + pill + '</div><div class="ld-big">' + mgddEsc(c.titolo) + '</div><div class="ld-sub">' +
+      mgddEsc(c.testo) + '</div>' + (acts ? '<div class="ld-acts">' + acts + '</div>' : '') + '</ha-card>';
+  },
+
+  batteria() {
+    const c = this.config;
+    const soc = this._num(c.soc);
+    const cap = Number(this._piano('parametri') && this._piano('parametri').capacita) || 13.5;
+    const kw = this._num(c.batteria_kw);
+    // Powerwall: potenza positiva = scarica
+    const pill = kw == null ? '' : kw < -0.05 ? this._pill('g', '▲ in carica') : kw > 0.05 ? this._pill('a', '▼ in scarica') : this._pill('n', '= ferma');
+    const col = soc == null ? '#9A9993' : soc >= 50 ? '#1D9E75' : soc >= 20 ? '#EF9F27' : '#E24B4A';
+    const dash = soc == null ? 0 : (soc / 100) * 264;
+    const ring = '<svg class="ld-ring" viewBox="0 0 100 100"><circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" stroke-opacity=".09" stroke-width="10"/>' +
+      '<circle cx="50" cy="50" r="42" fill="none" stroke="' + col + '" stroke-width="10" stroke-linecap="round" stroke-dasharray="' +
+      dash.toFixed(1) + ' 264" transform="rotate(-90 50 50)"/>' +
+      '<text x="50" y="50" text-anchor="middle" font-size="22" font-weight="700" fill="currentColor">' + (soc == null ? '—' : Math.round(soc) + '%') + '</text>' +
+      '<text x="50" y="66" text-anchor="middle" font-size="10" class="ld-svg2">' + (soc == null ? '' : ldNum((soc / 100) * cap) + ' kWh') + '</text></svg>';
+    const picco = this._bat('picco_oggi');
+    const alba = this._bat('alba_domani');
+    const esa = this._bat('esaurimento');
+    const giorni = this._piano('giorni') || [];
+    let aut = '—';
+    let autCls = '';
+    if (this._bat('soc')) {
+      if (esa) {
+        const d = new Date(esa);
+        aut = 'fino ' + LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + ldHM(d);
+        autCls = ' class="ld-tr"';
+      } else if (giorni.length) {
+        aut = 'oltre ' + giorni[giorni.length - 1].nome.toLowerCase();
+        autCls = ' class="ld-tg"';
+      }
+    }
+    const kv = (t, v, extra) => '<div><span class="ld-tiny">' + t + '</span><b' + (extra || '') + '>' + v + '</b></div>';
+    const pw = (id) => {
+      const v = this._num(id);
+      return v == null ? '—' : ldNum(Math.abs(v)) + ' kW';
+    };
+    return this._card('', 'Batteria adesso', pill,
+      '<div class="ld-bat">' + ring + '<div class="ld-kv">' +
+      kv('Picco previsto oggi', picco ? picco.pct + '% · ' + picco.ora : '—') +
+      kv("All'alba di domani", alba != null ? alba + '%' : '—') +
+      kv('Autonomia', aut, autCls) +
+      kv('Capacità', ldNum(cap) + ' kWh') +
+      '</div></div><div class="ld-flow">' +
+      '<div><span class="ld-tiny">☀️ Solare</span><b>' + pw(c.solare) + '</b></div>' +
+      '<div><span class="ld-tiny">🏠 Casa</span><b>' + pw(c.casa) + '</b></div>' +
+      '<div><span class="ld-tiny">⚡ Rete</span><b>' + pw(c.rete) + '</b></div></div>');
+  },
+
+  enel() {
+    const label = 'Quando servirà Enel';
+    const ev = this._bat('eventi');
+    if (!ev) return this._vuoto(label, 'Simulazione non disponibile: manca il livello della batteria.');
+    const n = (this._piano('giorni') || []).length;
+    const tot = this._bat('enel_tot') || 0;
+    const pill = tot > 0.05 ? this._pill('r', ldNum(tot) + ' kWh in ' + n + ' giorni') : this._pill('g', '0 kWh in ' + n + ' giorni');
+    let rows = ev.map((e) => {
+      const a = new Date(e.inizio);
+      const f = new Date(e.fine);
+      const g = LD_GIORNI[a.getDay()];
+      return '<div class="ld-ev"><div class="ld-ic ld-bgr">⚡</div><div><b class="ld-b14">' + g[0].toUpperCase() + g.slice(1) + ' ' +
+        a.getDate() + ' · ' + ldHM(a) + ' → ' + ldHM(f) + '</b><div class="ld-tiny">Batteria a zero: servirà la rete</div></div>' +
+        this._pill('r', '~' + ldNum(e.kwh) + ' kWh') + '</div>';
+    }).join('');
+    if (!ev.length) {
+      rows = '<div class="ld-ev"><div class="ld-ic ld-bgg">✓</div><div><b class="ld-b14">Nessun prelievo previsto</b>' +
+        '<div class="ld-tiny">La batteria basta anche col piano lavaggi</div></div>' + this._pill('g', '0 kWh') + '</div>';
+    }
+    return this._card('', label, pill, rows);
+  },
+
+  'se-lavassi'() {
+    const label = 'Se lavassi oggi…';
+    const s = this._piano('se_lavassi_oggi');
+    const cons = (this._piano('parametri') || {}).consumi || {};
+    if (!s || !Object.keys(s).length) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
+    const soglia = this._num(this.config.soglia);
+    const lim = soglia == null ? 1 : soglia;
+    const cats = Object.keys(s).sort((a, b) => (cons[a] || 0) - (cons[b] || 0));
+    const rows = cats.map((k) => {
+      const v = Number(s[k]) || 0;
+      const p = v <= 0.05 ? this._pill('g', '0 kWh') : this._pill(v <= lim ? 'a' : 'r', '+' + ldNum(v) + ' kWh');
+      const c = LD_CAT[k] || LD_CAT.altro;
+      return '<span>' + c.i + ' ' + c.n + '</span><span>' + ldNum(cons[k]) + ' kWh</span>' + p;
+    }).join('');
+    return this._card('', label, '<span class="ld-tiny">Enel in più nei prossimi giorni</span>',
+      '<div class="ld-wi"><span class="ld-h">Programma</span><span class="ld-h">Consumo</span><span class="ld-h">Enel extra</span>' + rows + '</div>');
+  },
+
+  gemini() {
+    const s = this._st(this.config.ai);
+    let body;
+    if (s && s.state === 'ok' && s.attributes.testo) {
+      const g = s.attributes.generato ? new Date(s.attributes.generato) : null;
+      body = '<p>' + mgddEsc(s.attributes.testo) + '</p>' +
+        (g ? '<div class="ld-tiny" style="margin-top:8px">Generato alle ' + ldHM(g) + ' dai numeri del piano</div>' : '');
+    } else if (s && s.state === 'errore') {
+      body = '<p class="ld-sub">Gemini non ha risposto all\'ultimo aggiornamento del piano.</p>';
+    } else {
+      body = '<p class="ld-sub">Il consiglio comparirà quando sarà configurata l\'integrazione Google Generative AI.</p>';
+    }
+    return '<ha-card class="ld-c ld-ai"><span class="ld-lbl">✦ Il consiglio di Gemini</span>' + body + '</ha-card>';
+  },
+
+  settimana() {
+    const label = 'Prossimi giorni';
+    const g = this._piano('giorni') || [];
+    if (!g.length) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
+    const cls = { verde: 'ld-dg', ambra: 'ld-da', rosso: 'ld-dr' };
+    const tiles = g.map((d) => {
+      const lav = (d.lavaggi || []).map((k) => (LD_CAT[k] || LD_CAT.altro).n).join('<br>') || '—';
+      return '<div class="ld-day ' + (cls[d.colore] || '') + (d.migliore ? ' ld-best' : '') + '"><span class="ld-d">' + mgddEsc(d.nome) +
+        '</span><span class="ld-n">' + ldDay(d.data).getDate() + '</span><span class="ld-e">' + (LD_METEO[d.meteo] || '·') +
+        '</span><span class="ld-k">' + ldNum(d.kwh, true) + '</span><span class="ld-p">' + lav + '</span></div>';
+    }).join('');
+    return this._card('', label, '<span class="ld-tiny">kWh solari stimati</span>',
+      '<div class="ld-week" style="grid-template-columns:repeat(' + g.length + ',minmax(0,1fr))">' + tiles + '</div>' +
+      '<div class="ld-legend"><span><i style="background:#1D9E75"></i>ok</span><span><i style="background:#EF9F27"></i>solo leggero</span>' +
+      '<span><i style="background:#E24B4A"></i>niente, consumi minimi</span><span>▢ giorno migliore</span></div>');
+  },
+
+  grafico() {
+    const label = 'Batteria prevista col piano';
+    const soc = this._bat('soc');
+    const inizio = this._bat('inizio');
+    if (!soc || soc.length < 2 || !inizio) return this._vuoto(label, 'Simulazione non disponibile: manca il livello della batteria.');
+    const esa = this._bat('esaurimento');
+    const pill = esa ? this._pill('r', '0% ' + LD_GIORNI[new Date(esa).getDay()].slice(0, 3) + ' ' + ldHM(new Date(esa))) : this._pill('g', 'Mai a zero');
+    const X0 = 22;
+    const X1 = 356;
+    const Y = (p) => 130 - (p / 100) * 120;
+    const n = soc.length;
+    const X = (i) => X0 + (i * (X1 - X0)) / (n - 1);
+    const t0 = new Date(inizio).getTime();
+    const ora = (i) => new Date(t0 + i * 3600e3);
+    const pts = soc.map((p, i) => X(i).toFixed(1) + ',' + Y(p).toFixed(1));
+    let svg = '<g font-size="8" class="ld-svg2"><text x="0" y="13">100%</text><text x="6" y="73">50%</text><text x="12" y="133">0%</text></g>' +
+      '<rect x="' + X0 + '" y="118" width="' + (X1 - X0) + '" height="12" fill="#E24B4A" opacity=".10"/>' +
+      '<g class="ld-grid"><line x1="' + X0 + '" y1="10" x2="' + X1 + '" y2="10"/><line x1="' + X0 + '" y1="70" x2="' + X1 + '" y2="70"/>' +
+      '<line x1="' + X0 + '" y1="130" x2="' + X1 + '" y2="130"/>';
+    // mezzanotti: griglia ed etichette dei giorni al centro
+    const bordi = [0];
+    for (let i = 1; i < n; i++) if (ora(i).getHours() === 0) { bordi.push(i); svg += '<line x1="' + X(i).toFixed(1) + '" y1="8" x2="' + X(i).toFixed(1) + '" y2="132"/>'; }
+    bordi.push(n - 1);
+    svg += '</g>';
+    svg += '<path d="M' + pts.join(' L') + ' L' + X(n - 1).toFixed(1) + ',130 L' + X0 + ',130Z" fill="#1D9E75" opacity=".08"/>' +
+      '<path d="M' + pts.join(' L') + '" fill="none" stroke="#1D9E75" stroke-width="2.2" stroke-linejoin="round"/>';
+    for (const e of this._bat('eventi') || []) {
+      const a = Math.max(0, (new Date(e.inizio).getTime() - t0) / 3600e3);
+      const b = Math.min(n - 1, (new Date(e.fine).getTime() - t0) / 3600e3);
+      if (b <= a) continue;
+      svg += '<line x1="' + X(a).toFixed(1) + '" y1="130" x2="' + X(b).toFixed(1) + '" y2="130" stroke="#E24B4A" stroke-width="4" stroke-linecap="round"/>' +
+        '<text x="' + X((a + b) / 2).toFixed(1) + '" y="145" text-anchor="middle" font-size="8.5" fill="#B93C3C" font-weight="650">⚡ Enel</text>';
+    }
+    svg += '<circle cx="' + X0 + '" cy="' + Y(soc[0]).toFixed(1) + '" r="4" fill="#1D9E75"/><text x="' + (X0 + 4) + '" y="' +
+      Math.max(9, Y(soc[0]) - 9).toFixed(1) + '" font-size="9" font-weight="650" fill="currentColor">ora ' + soc[0] + '%</text>';
+    const giorni = this._piano('giorni') || [];
+    const perData = {};
+    for (const g of giorni) perData[g.data] = g;
+    let et = '<g font-size="10" text-anchor="middle" class="ld-svg2" font-weight="650">';
+    let ic = '<g font-size="12" text-anchor="middle">';
+    for (let k = 0; k < bordi.length - 1; k++) {
+      const a = bordi[k];
+      const b = bordi[k + 1];
+      if (b - a < 3) continue;
+      const g = perData[ldIso(ora(a))];
+      if (!g) continue;
+      et += '<text x="' + X((a + b) / 2).toFixed(1) + '" y="160">' + mgddEsc(g.nome) + '</text>';
+      if (g.lavaggi && g.lavaggi.length) {
+        let m = a;
+        for (let i = a; i <= b; i++) if (soc[i] > soc[m]) m = i;
+        g.lavaggi.forEach((cat, j) => {
+          ic += '<text x="' + (X(m) + (j - (g.lavaggi.length - 1) / 2) * 16).toFixed(1) + '" y="' + Math.max(13, Y(soc[m]) - 7).toFixed(1) + '">' +
+            (LD_CAT[cat] || LD_CAT.altro).i + '</text>';
+        });
+      }
+    }
+    svg += ic + '</g>' + et + '</g>';
+    return this._card('', label, pill, '<svg viewBox="0 0 360 170" class="ld-chart">' + svg + '</svg>');
+  },
+
+  perche() {
+    const label = 'Perché questo piano';
+    const g = this._piano('giorni') || [];
+    if (!g.length) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
+    const max = Math.max(1, ...g.map((d) => Math.max(Number(d.kwh) || 0, Number(d.fabbisogno) || 0)));
+    const rows = g.map((d) => {
+      const w = (v) => Math.round(((Number(v) || 0) / max) * 100);
+      return '<div class="ld-li"><div><b>' + mgddEsc(d.nome) + '</b> ' + (LD_METEO[d.meteo] || '') + '</div><div class="ld-bars">' +
+        '<div class="ld-bar"><i style="width:' + w(d.kwh) + '%;background:#EF9F27"></i></div>' +
+        '<div class="ld-bar"><i style="width:' + w(d.fabbisogno) + '%;background:#9A9993"></i></div></div>' +
+        '<div class="ld-r"><span class="ld-tiny">' + ldNum(d.kwh, true) + ' / ' + ldNum(d.fabbisogno, true) + ' kWh</span></div></div>';
+    }).join('');
+    return this._card('', label, '<span class="ld-tiny"><span style="color:#EF9F27">■</span> sole previsto &nbsp;<span style="color:#9A9993">■</span> fabbisogno (fisso + lavaggi)</span>',
+      rows + '<div class="ld-sub" style="margin-top:8px">La differenza la copre la batteria, caricata nei giorni prima: i lavaggi grossi vanno dove la batteria arriva carica.</div>');
+  },
+
+  obiettivo() {
+    const label = 'Obiettivo settimana';
+    const ob = this._piano('obiettivo');
+    if (!ob) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
+    const now = this._now();
+    const dom = new Date(now);
+    dom.setDate(now.getDate() + ((7 - now.getDay()) % 7));
+    const fine = ldIso(dom);
+    let T = 0;
+    let F = 0;
+    let rows = '';
+    const cats = ['cotoni', 'stracci', 'delicati', 'sintetici'];
+    for (const k of cats) {
+      const o = ob[k] || { target: 0, fatti: 0 };
+      T += o.target;
+      F += Math.min(o.fatti, o.target);
+      for (let i = 0; i < Math.min(o.fatti, o.target); i++) {
+        rows += '<div class="ld-goal ld-done"><div class="ld-gic">✓</div><div><b>' + LD_CAT[k].n + '</b>' + (o.target > 1 ? ' #' + (i + 1) : '') +
+          '<div class="ld-tiny">fatto</div></div><span></span>' + this._pill('g', 'fatto') + '</div>';
+      }
+    }
+    const ass = (this._piano('assegnazioni') || []).filter((a) => a.data <= fine).sort((a, b) => (a.data < b.data ? -1 : 1));
+    const cont = {};
+    for (const a of ass) {
+      const o = ob[a.cat] || { target: 1, fatti: 0 };
+      cont[a.cat] = (cont[a.cat] || o.fatti) + 1;
+      const c = LD_CAT[a.cat] || LD_CAT.altro;
+      rows += '<div class="ld-goal"><div class="ld-gic">' + c.i + '</div><div><b>' + c.n + '</b>' + (o.target > 1 ? ' #' + cont[a.cat] : '') +
+        '<div class="ld-tiny">~' + ldNum(a.kwh) + ' kWh</div></div><span class="ld-tiny">' + this._dayShort(a.data) + '</span>' +
+        (a.sconsigliato ? this._pill('a', 'meglio la settimana prossima') : this._pill('g', 'pianificato')) + '</div>';
+    }
+    const pct = T ? Math.round((F / T) * 100) : 0;
+    return this._card('', label, this._pill('n', F + ' di ' + T + ' fatti'),
+      '<div class="ld-progress"><div style="width:' + pct + '%"></div></div>' + rows +
+      '<div class="ld-tiny" style="margin-top:6px">Un lavaggio si spunta da solo quando gli Shelly vedono finire lavatrice e asciugatrice.</div>');
+  },
+
+  ultimi() {
+    const label = 'Ultimi lavaggi';
+    const l = (this._attr(this.config.lavaggi, 'lavaggi') || []).slice().sort((a, b) => (a.fine < b.fine ? 1 : -1)).slice(0, 5);
+    if (!l.length) return this._vuoto(label, 'Nessun lavaggio registrato: compariranno qui appena gli Shelly vedono finire un ciclo.');
+    const rows = l.map((w) => {
+      const d = new Date(w.fine);
+      const c = LD_CAT[w.cat] || LD_CAT.altro;
+      const nome = w.cat === 'altro' && w.programma ? String(w.programma).replace(/^\w+ Pr /, '') : c.n;
+      const pc = (v) => Math.max(0, Math.round((Number(v) || 0) * 100));
+      return '<div class="ld-log"><span class="ld-tiny">' + LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + d.getDate() + '/' + (d.getMonth() + 1) +
+        '</span><span><b>' + mgddEsc(nome) + '</b></span><span>' + ldNum((Number(w.kwh_lav) || 0) + (Number(w.kwh_asc) || 0)) + ' kWh</span>' +
+        '<div class="ld-mix"><i style="width:' + pc(w.sole) + '%;background:#EF9F27"></i><i style="width:' + pc(w.batteria) +
+        '%;background:#1D9E75"></i><i style="width:' + pc(w.enel) + '%;background:#E24B4A"></i></div></div>';
+    }).join('');
+    return this._card('', label, '<span class="ld-tiny"><span style="color:#EF9F27">■</span> sole <span style="color:#1D9E75">■</span> batteria <span style="color:#E24B4A">■</span> Enel</span>', rows);
+  },
+
+  programmi() {
+    const label = 'Consumo medio per programma';
+    const m = this._attr(this.config.lavaggi, 'medie') || (this._piano('parametri') || {}).consumi;
+    if (!m) return this._vuoto(label, 'Nessun dato sui consumi.');
+    const voci = Object.keys(m).sort((a, b) => m[b] - m[a]);
+    const max = Math.max(...voci.map((k) => Number(m[k]) || 0), 0.1);
+    const rows = voci.map((k) => {
+      const c = LD_CAT[k] || LD_CAT.altro;
+      return '<span>' + c.i + ' ' + c.n + '</span><div class="ld-bar"><i style="width:' + Math.round(((Number(m[k]) || 0) / max) * 100) +
+        '%;background:#9A9993"></i></div><b>' + ldNum(m[k]) + '</b>';
+    }).join('');
+    const l = (this._attr(this.config.lavaggi, 'lavaggi') || []).filter((w) => Number(w.kwh_asc) > 0);
+    let nota = 'Valori iniziali: si aggiornano con i lavaggi registrati (media degli ultimi 5).';
+    if (l.length) {
+      const asc = l.reduce((s, w) => s + Number(w.kwh_asc), 0);
+      const tot = l.reduce((s, w) => s + Number(w.kwh_asc) + Number(w.kwh_lav || 0), 0);
+      if (tot > 0) nota = "L'asciugatrice pesa circa il " + Math.round((asc / tot) * 100) + '% di ogni lavaggio.';
+    }
+    return this._card('', label, '<span class="ld-tiny">lavatrice + asciugatrice, kWh</span>',
+      '<div class="ld-wi ld-wi3">' + rows + '</div><div class="ld-tiny" style="margin-top:8px">' + nota + '</div>');
+  },
+
+  stima() {
+    const label = 'Quanto ci prende la stima';
+    const acc = this._piano('accuratezza') || {};
+    const p = this._piano('parametri') || {};
+    const g = (acc.giorni || []).slice(-15);
+    const stat = '<div class="ld-stat3"><div><b>' + ldNum(p.consumo_fisso) + ' kWh</b><span class="ld-tiny">consumo fisso / g</span></div>' +
+      '<div><b>' + ldNum(p.tetto) + ' kWh</b><span class="ld-tiny">tetto solare 15 gg</span></div>' +
+      '<div><b>' + (p.notturno_kw == null ? '—' : String(Number(p.notturno_kw).toFixed(2)).replace('.', ',')) + ' kW</b><span class="ld-tiny">consumo notturno</span></div></div>';
+    if (!g.length) return this._card('', label, '', '<div class="ld-sub">Servono qualche giorno di dati: la stima si confronta con la produzione reale ogni sera alle 23:55.</div>' + stat);
+    const max = Math.max(...g.map((d) => Math.max(Number(d.reale) || 0, Number(d.stima) || 0)), 1);
+    const step = 360 / g.length;
+    const bw = Math.min(9, step * 0.38);
+    const H = (v) => ((Number(v) || 0) / max) * 70;
+    let svg = '<line x1="0" y1="80" x2="360" y2="80" class="ld-grid"/>';
+    g.forEach((d, i) => {
+      const x = i * step + step / 2 - bw - 1;
+      svg += '<rect x="' + x.toFixed(1) + '" y="' + (80 - H(d.reale)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + H(d.reale).toFixed(1) + '" rx="2" fill="#EF9F27"/>' +
+        '<rect x="' + (x + bw + 2).toFixed(1) + '" y="' + (80 - H(d.stima)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + H(d.stima).toFixed(1) +
+        '" rx="2" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="1.2" stroke-dasharray="2 2"/>';
+    });
+    const lab = (i, anchor) => {
+      const d = ldDay(g[i].data);
+      return '<text x="' + (anchor === 'end' ? 358 : anchor === 'middle' ? 180 : 2) + '" y="93" text-anchor="' + anchor + '">' + d.getDate() + '/' + (d.getMonth() + 1) + '</text>';
+    };
+    svg += '<g font-size="8.5" class="ld-svg2">' + lab(0, 'start') + (g.length > 2 ? lab(Math.floor(g.length / 2), 'middle') : '') + lab(g.length - 1, 'end') + '</g>';
+    const err = acc.errore_pct;
+    const pill = err == null ? '' : this._pill(err <= 20 ? 'g' : err <= 35 ? 'a' : 'r', '±' + Math.round(err) + '% ultimi ' + g.length + ' gg');
+    return this._card('', label, pill, '<svg viewBox="0 0 360 96" class="ld-chart">' + svg + '</svg>' +
+      '<div class="ld-legend" style="margin-top:4px"><span><i style="background:#EF9F27"></i>prodotto reale</span><span><i class="ld-dash"></i>stimato da iLMeteo</span></div>' + stat);
+  },
+};
+
+const LD_STYLES =
+  '<style>' +
+  '.ldq{--ld-t1:var(--primary-text-color,#1c1c1e);--ld-t2:var(--secondary-text-color,#6b6f76);--ld-div:var(--divider-color,rgba(0,0,0,.08));' +
+  '--ld-bg:var(--ha-card-background,var(--card-background-color,#fff));' +
+  '--ld-g:#1D9E75;--ld-g2:#0E9B6C;--ld-gbg:#1D9E751f;--ld-a:#EF9F27;--ld-a2:#BA7517;--ld-abg:#EF9F2729;--ld-r:#E24B4A;--ld-r2:#B93C3C;--ld-rbg:#E24B4A1c;' +
+  '--ld-p:#6D5AE6;--ld-neutral:rgba(127,127,127,.1);' +
+  'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--ld-t1);}' +
+  '.ldq.ld-dark{--ld-g2:#3CC79A;--ld-a2:#F2B45A;--ld-r2:#F07572;--ld-neutral:rgba(255,255,255,.08);}' +
+  '.ldq *{box-sizing:border-box;}' +
+  '.ldq .ld-c{display:block;background:var(--ld-bg);border:1px solid var(--ld-div);border-radius:18px;padding:15px 17px;box-shadow:none;}' +
+  '.ldq .ld-lbl{font-size:11px;font-weight:650;color:var(--ld-t2);text-transform:uppercase;letter-spacing:.05em;}' +
+  '.ldq .ld-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px;}' +
+  '.ldq .ld-big{font-size:22px;font-weight:700;line-height:1.2;margin:6px 0 4px;}' +
+  '.ldq .ld-sub{font-size:13px;color:var(--ld-t2);line-height:1.45;}' +
+  '.ldq .ld-tiny{font-size:11px;color:var(--ld-t2);}' +
+  '.ldq .ld-b14{font-size:14px;}' +
+  '.ldq .ld-tr{color:var(--ld-r2);}.ldq .ld-tg{color:var(--ld-g2);}' +
+  '.ldq .ld-pill{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:650;border-radius:20px;padding:3px 10px;white-space:nowrap;}' +
+  '.ldq .ld-pg{color:var(--ld-g2);background:var(--ld-gbg);}.ldq .ld-pa{color:var(--ld-a2);background:var(--ld-abg);}' +
+  '.ldq .ld-pr{color:var(--ld-r2);background:var(--ld-rbg);}.ldq .ld-pn{color:var(--ld-t2);background:var(--ld-neutral);}' +
+  // testata
+  '.ldq .ld-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:4px 2px;}' +
+  '.ldq .ld-h1{font-size:22px;font-weight:700;}' +
+  '.ldq .ld-meta{display:flex;gap:8px;flex-wrap:wrap;}' +
+  // oggi
+  '.ldq .ld-hero{border:none;}' +
+  '.ldq .ld-h-rosso{background:linear-gradient(135deg,var(--ld-rbg),var(--ld-bg) 70%);}' +
+  '.ldq .ld-h-ambra{background:linear-gradient(135deg,var(--ld-abg),var(--ld-bg) 70%);}' +
+  '.ldq .ld-h-verde{background:linear-gradient(135deg,var(--ld-gbg),var(--ld-bg) 70%);}' +
+  '.ldq .ld-acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;}' +
+  // batteria
+  '.ldq .ld-bat{display:flex;gap:16px;align-items:center;}' +
+  '.ldq .ld-ring{width:96px;height:96px;flex:0 0 auto;}' +
+  '.ldq .ld-svg2{fill:var(--ld-t2);}' +
+  '.ldq .ld-kv{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;flex:1;}' +
+  '.ldq .ld-kv b{display:block;font-size:16px;}' +
+  '.ldq .ld-flow,.ldq .ld-stat3{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--ld-div);border-radius:12px;overflow:hidden;margin-top:12px;}' +
+  '.ldq .ld-flow>div,.ldq .ld-stat3>div{background:var(--ld-bg);padding:8px 6px;text-align:center;}' +
+  '.ldq .ld-flow b,.ldq .ld-stat3 b{display:block;font-size:14px;}' +
+  // enel
+  '.ldq .ld-ev{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--ld-div);}' +
+  '.ldq .ld-ev:first-of-type{border-top:none;}' +
+  '.ldq .ld-ic{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;}' +
+  '.ldq .ld-bgr{background:var(--ld-rbg);}.ldq .ld-bgg{background:var(--ld-gbg);}' +
+  // se lavassi / programmi
+  '.ldq .ld-wi{display:grid;grid-template-columns:1fr auto auto;gap:6px 12px;align-items:center;font-size:13px;}' +
+  '.ldq .ld-wi3{grid-template-columns:1fr 2fr auto;}' +
+  '.ldq .ld-h{font-size:10.5px;color:var(--ld-t2);font-weight:650;text-transform:uppercase;}' +
+  // gemini
+  '.ldq .ld-ai{background:color-mix(in srgb,var(--ld-p) 6%,var(--ld-bg));border-color:color-mix(in srgb,var(--ld-p) 22%,transparent);}' +
+  '.ldq .ld-ai .ld-lbl{color:var(--ld-p);}' +
+  '.ldq .ld-ai p{font-size:13.5px;line-height:1.55;margin:8px 0 0;}' +
+  // settimana
+  '.ldq .ld-week{display:grid;gap:7px;}' +
+  '.ldq .ld-day{border-radius:14px;padding:9px 4px 10px;text-align:center;display:flex;flex-direction:column;gap:5px;align-items:center;min-width:0;}' +
+  '.ldq .ld-d{font-size:12px;font-weight:650;}.ldq .ld-n{font-size:10px;color:var(--ld-t2);margin-top:-4px;}' +
+  '.ldq .ld-e{font-size:22px;line-height:1;}.ldq .ld-k{font-size:13px;font-weight:700;}' +
+  '.ldq .ld-p{font-size:10px;font-weight:650;border-radius:8px;padding:3px 4px;background:var(--ld-bg);width:92%;line-height:1.3;min-height:16px;overflow-wrap:anywhere;}' +
+  '.ldq .ld-dg{background:#1D9E751a;}.ldq .ld-da{background:#EF9F2724;}.ldq .ld-dr{background:#E24B4A17;}' +
+  '.ldq .ld-best{outline:2px solid var(--ld-g);}' +
+  '.ldq .ld-legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--ld-t2);}' +
+  '.ldq .ld-legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:4px;vertical-align:-1px;}' +
+  '.ldq .ld-legend .ld-dash{border:1px dashed var(--ld-t2);}' +
+  // grafici
+  '.ldq .ld-chart{width:100%;display:block;color:var(--ld-t1);}' +
+  '.ldq .ld-grid,.ldq .ld-grid line{stroke:var(--ld-div);}' +
+  // perché
+  '.ldq .ld-li{display:grid;grid-template-columns:62px 1fr 110px;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--ld-div);}' +
+  '.ldq .ld-li:first-of-type{border-top:none;}' +
+  '.ldq .ld-bars{display:flex;flex-direction:column;gap:4px;}' +
+  '.ldq .ld-bar{height:8px;border-radius:4px;background:var(--ld-neutral);position:relative;overflow:hidden;}' +
+  '.ldq .ld-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;}' +
+  '.ldq .ld-r{text-align:right;}' +
+  // obiettivo
+  '.ldq .ld-goal{display:grid;grid-template-columns:30px 1fr auto auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--ld-div);font-size:13px;}' +
+  '.ldq .ld-goal:first-of-type{border-top:none;}' +
+  '.ldq .ld-gic{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:var(--ld-neutral);font-size:15px;}' +
+  '.ldq .ld-done .ld-gic{background:var(--ld-gbg);color:var(--ld-g2);font-weight:700;}' +
+  '.ldq .ld-progress{height:8px;border-radius:4px;background:var(--ld-neutral);overflow:hidden;margin:8px 0 2px;}' +
+  '.ldq .ld-progress>div{height:100%;background:var(--ld-g);}' +
+  // ultimi
+  '.ldq .ld-log{display:grid;grid-template-columns:58px 1fr 56px 90px;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--ld-div);font-size:12.5px;}' +
+  '.ldq .ld-log:first-of-type{border-top:none;}' +
+  '.ldq .ld-mix{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--ld-neutral);}' +
+  '.ldq .ld-mix i{display:block;height:100%;}' +
+  '</style>';
+
+customElements.define('casa-mgdd-laundry-card', LaundryCard);
+window.customCards.push({
+  type: 'casa-mgdd-laundry-card',
+  name: 'Casa MGDD Lavatrici',
+  description: 'Pianificatore lavatrici: un blocco per card (block: testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori sensor.lavatrici_*. Config via YAML.',
 });
