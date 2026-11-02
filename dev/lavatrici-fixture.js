@@ -113,5 +113,13 @@
       'sensor.lavatrici_storico': st(0, { giorni: [] }),
       'sensor.powerwall3_charge': st('unavailable', {}),
     }),
+    // simulazione scaduta: il sensore c'è ma senza ore (piano vecchio di giorni)
+    scaduta: Object.assign({}, comuni, {
+      'sensor.lavatrici_piano': piano,
+      'sensor.lavatrici_batteria': st(55, { aggiornato: ora, inizio: ora, soc: [], eventi: [], enel_tot: 0, esaurimento: null, picco_oggi: null, alba_domani: null }),
+      'sensor.lavatrici_lavaggi': lavaggi,
+      'sensor.lavatrici_storico': st(0, { giorni: [] }),
+      'sensor.powerwall3_charge': st('55', { unit_of_measurement: '%' }),
+    }),
   };
 })();

@@ -12047,7 +12047,8 @@ const LD_BLOCKS = {
     const giorni = this._piano('giorni') || [];
     let aut = '—';
     let autCls = '';
-    if (this._bat('soc')) {
+    // una simulazione senza ore (piano vecchio) non è una rassicurazione: resta "—"
+    if ((this._bat('soc') || []).length) {
       if (esa) {
         const d = new Date(esa);
         aut = 'fino ' + LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + ldHM(d);
@@ -12077,7 +12078,7 @@ const LD_BLOCKS = {
   enel() {
     const label = 'Quando servirà Enel';
     const ev = this._bat('eventi');
-    if (!ev) return this._vuoto(label, 'Simulazione non disponibile: manca il livello della batteria.');
+    if (!ev || !(this._bat('soc') || []).length) return this._vuoto(label, 'Simulazione non disponibile: manca il livello della batteria o il piano è scaduto.');
     const n = (this._piano('giorni') || []).length;
     const tot = this._bat('enel_tot') || 0;
     const pill = tot > 0.05 ? this._pill('r', ldNum(tot) + ' kWh in ' + n + ' giorni') : this._pill('g', '0 kWh in ' + n + ' giorni');
@@ -12150,7 +12151,7 @@ const LD_BLOCKS = {
     const label = 'Batteria prevista col piano';
     const soc = this._bat('soc');
     const inizio = this._bat('inizio');
-    if (!soc || soc.length < 2 || !inizio) return this._vuoto(label, 'Simulazione non disponibile: manca il livello della batteria.');
+    if (!soc || soc.length < 2 || !inizio) return this._vuoto(label, 'Simulazione non disponibile: manca il livello della batteria o il piano è scaduto.');
     const esa = this._bat('esaurimento');
     const pill = esa ? this._pill('r', '0% ' + LD_GIORNI[new Date(esa).getDay()].slice(0, 3) + ' ' + ldHM(new Date(esa))) : this._pill('g', 'Mai a zero');
     const X0 = 22;
