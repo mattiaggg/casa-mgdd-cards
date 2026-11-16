@@ -30,7 +30,7 @@ Tutte si configurano in YAML; solo le due card temperatura hanno l'editor visual
 | Aria | `custom:casa-mgdd-air-card` | Un quadrante PM2.5 per stanza; colonna PM1/PM2.5/PM10 con le chiavi facoltative `pm1:`/`pm10:`; avvisi filtro. |
 | VMC | `custom:casa-mgdd-vmc-card` | Una tessera per VMC: corona della portata e due comandi. |
 | Robot | `custom:casa-mgdd-vacuum-card` | Robot aspirapolvere: corona del completamento, fase, stanza, routine a scomparsa. |
-| Lavatrici | `custom:casa-mgdd-laundry-card` | Pianificatore lavatrici: un blocco per card (`block:` testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori `sensor.lavatrici_*`. |
+| Lavatrici | `custom:casa-mgdd-laundry-card` | Pianificatore lavatrici: tutta la dashboard in una card (`block: pagina`, per una vista panel) oppure un blocco per card (`block:` testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori `sensor.lavatrici_*`. |
 
 ## Installazione via HACS
 
@@ -53,6 +53,7 @@ In `dev/` c'è un banco di prova per la card lavatrici
 (`lavatrici-harness.html` + `lavatrici-fixture.js`, fixture normale, dati assenti,
 simulazione scaduta, tema chiaro/scuro). Va servito via HTTP dalla radice del repo,
 ad esempio `python -m http.server 8765`, poi `http://localhost:8765/dev/lavatrici-harness.html`.
+La pagina intera (`block: pagina`) si prova con `dev/lavatrici-pagina.html`, che imita `<ha-icon>` con il webfont MDI.
 
 ## Uso — esempio `temperature-bento-card`
 

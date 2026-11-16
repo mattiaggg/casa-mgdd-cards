@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harness lavatrici · pagina</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+<style>
+  body { margin: 0; background: #eef0f3; font-family: Inter, -apple-system, "Segoe UI", sans-serif;
+    --primary-text-color: #1c1c1e; --secondary-text-color: #6b6f76; --divider-color: rgba(0,0,0,.08);
+    --card-background-color: #fff; }
+  body.dark { background: #111214; --primary-text-color: #e8e8ea; --secondary-text-color: #9a9da3;
+    --divider-color: rgba(255,255,255,.1); --card-background-color: #1c1d20; }
+  .bar { display: flex; gap: 8px; padding: 10px 16px; font-size: 12px; }
+  ha-icon { display: inline-flex; align-items: center; justify-content: center; }
+  ha-icon i { font-size: var(--mdc-icon-size, 24px); line-height: 1; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <button data-f="normale">Fixture normale</button>
+  <button data-f="assente">Fixture dati assenti</button>
+  <button data-f="scaduta">Simulazione scaduta</button>
+  <button id="dark">Chiaro / scuro</button>
+</div>
+<div id="host"></div>
+<script>
+  window.customCards = window.customCards || [];
+  // In Home Assistant <ha-icon> esiste gia': qui lo si imita con il webfont MDI.
+  customElements.define('ha-icon', class extends HTMLElement {
+    connectedCallback() { this.innerHTML = '<i class="mdi mdi-' + (this.getAttribute('icon') || '').replace('mdi:', '') + '"></i>'; }
+  });
+</script>
+<script src="lavatrici-fixture.js"></script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const el = document.createElement('casa-mgdd-laundry-card');
+  el.setConfig({ type: 'custom:casa-mgdd-laundry-card', block: 'pagina' });
+  document.getElementById('host').appendChild(el);
+  let dark = false;
+  let fixture = 'normale';
+  function apply() {
+    el.hass = { states: LD_FIXTURE[fixture], themes: { darkMode: dark }, language: 'it', _ora: LD_FIXTURE.ora };
+  }
+  document.querySelectorAll('[data-f]').forEach((b) => b.addEventListener('click', () => { fixture = b.dataset.f; apply(); }));
+  document.getElementById('dark').addEventListener('click', () => { dark = !dark; document.body.classList.toggle('dark', dark); apply(); });
+  apply();
+</script>
+</body>
+</html>

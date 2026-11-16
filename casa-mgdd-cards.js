@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card.
  *
- * Version: 1.94.1
+ * Version: 1.95.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -11927,7 +11927,7 @@ class LaundryCard extends HTMLElement {
       const s = hass.states[id];
       out += id + '=' + (s ? s.state + '@' + s.last_updated : 'x') + ';';
     }
-    const live = c.block === 'batteria' ? [c.solare, c.casa, c.rete, c.soc, c.batteria_kw] : [];
+    const live = c.block === 'batteria' || c.block === 'pagina' ? [c.solare, c.casa, c.rete, c.soc, c.batteria_kw] : [];
     return out + mgddStatesSig(hass, live.concat([c.soglia])) + (hass.themes && hass.themes.darkMode ? 'D' : 'L');
   }
 
@@ -11968,7 +11968,7 @@ class LaundryCard extends HTMLElement {
     const fn = LD_BLOCKS[b];
     const dark = !!(this._hass.themes && this._hass.themes.darkMode);
     const inner = fn ? fn.call(this) : '<ha-card class="ld-c"><div class="ld-sub">blocco non valido: ' + mgddEsc(b) + '</div></ha-card>';
-    mgddPaint(this, LD_STYLES, '<div class="ldq' + (dark ? ' ld-dark' : '') + '">' + inner + '</div>');
+    mgddPaint(this, b === 'pagina' ? LD_STYLES_PAGINA : LD_STYLES, '<div class="ldq' + (dark ? ' ld-dark' : '') + '">' + inner + '</div>');
   }
 
   // ---------- pezzi comuni ----------
@@ -12425,9 +12425,321 @@ const LD_STYLES =
   '.ldq .ld-mix i{display:block;height:100%;}' +
   '</style>';
 
+// ----------------------------------------------------------------------------
+// Blocco `pagina`: l'intera dashboard in una card sola (vista "panel").
+// Verdetto e settimana in alto, poi Gemini, batteria con le strisce orarie
+// (da dove arriva la corrente: sole, batteria, Enel) e tre riquadri in fondo.
+// Sotto i 900 px di larghezza le colonne si impilano.
+// ----------------------------------------------------------------------------
+
+const LD_METEO_MDI = {
+  sunny: 'weather-sunny', 'clear-night': 'weather-night', partlycloudy: 'weather-partly-cloudy', cloudy: 'weather-cloudy',
+  fog: 'weather-fog', rainy: 'weather-rainy', pouring: 'weather-pouring', 'lightning-rainy': 'weather-lightning-rainy',
+  lightning: 'weather-lightning', snowy: 'weather-snowy', 'snowy-rainy': 'weather-snowy-rainy',
+};
+const LD_CAT_MDI = { cotoni: 'tshirt-crew-outline', sintetici: 'hanger', delicati: 'feather', stracci: 'broom' };
+const LD_FONTE = { S: { c: 'sole', n: 'sole' }, B: { c: 'bat', n: 'batteria' }, E: { c: 'enel', n: 'Enel' } };
+
+function ldIco(name) {
+  return '<ha-icon icon="mdi:' + name + '"></ha-icon>';
+}
+
+// "stasera alle 22:00", "domani alle 10:00", "mer alle 03:00"
+function ldQuando(d, now) {
+  const dom = new Date(now);
+  dom.setDate(now.getDate() + 1);
+  const g = ldIso(d) === ldIso(now) ? (d.getHours() >= 18 ? 'stasera' : 'oggi')
+    : ldIso(d) === ldIso(dom) ? 'domani' : LD_GIORNI[d.getDay()].slice(0, 3);
+  return g + ' alle ' + ldHM(d);
+}
+
+const LD_PAGINA = {
+  hero() {
+    const s = this._st(this.config.piano);
+    const now = this._now();
+    const label = 'Oggi · ' + LD_GIORNI[now.getDay()] + ' ' + now.getDate() + ' ' + LD_MESI[now.getMonth()];
+    const c = this._piano('consiglio');
+    if (!s || !c || !c.titolo) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
+    const col = s.state;
+    const pill = { verde: this._pill('g', ldIco('check-circle') + 'Si può lavare'), ambra: this._pill('a', ldIco('alert-circle') + 'Solo un lavaggio leggero'),
+      rosso: this._pill('r', ldIco('close-circle') + 'Niente lavatrici') }[col] || '';
+    const titolo = mgddEsc(c.titolo).replace(': ', ':<br>');
+    const acts = (c.suggerimenti || []).map((t) => this._pill('n', mgddEsc(t))).join('');
+    const costi = this._piano('se_lavassi_oggi') || {};
+    const cats = Object.keys(costi).sort((a, b) => costi[a] - costi[b]);
+    const cost = cats.map((k) => {
+      const v = Number(costi[k]) || 0;
+      return '<div><span class="ld-tiny">' + (LD_CAT[k] || LD_CAT.altro).n + '</span><b' + (v <= 0.05 ? ' class="ld-tg"' : '') + '>' +
+        (v <= 0.05 ? '0' : '+' + ldNum(v)) + '</b><span class="ld-tiny">kWh Enel</span></div>';
+    }).join('');
+    return '<ha-card class="ld-c ld-hero ldp-hero ld-h-' + mgddEsc(col) + '"><div class="ld-hd" style="margin:0"><span class="ld-lbl">' + label + '</span>' + pill +
+      '</div><h2>' + titolo + '</h2><div class="ld-sub">' + mgddEsc(c.testo) + '</div>' + (acts ? '<div class="ld-acts">' + acts + '</div>' : '') +
+      (cost ? '<div class="ldp-cost-t ld-tiny">Se lavassi oggi</div><div class="ldp-cost">' + cost + '</div>' : '') + '</ha-card>';
+  },
+
+  settimana() {
+    const label = 'Prossimi giorni';
+    const g = this._piano('giorni') || [];
+    if (!g.length) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
+    const fisso = Number((this._piano('parametri') || {}).consumo_fisso) || 0;
+    const ass = this._piano('assegnazioni') || [];
+    const oggi = ldIso(this._now());
+    const colv = { verde: 'var(--ld-g)', ambra: 'var(--ld-a)', rosso: 'var(--ld-r)' };
+    const tiles = g.map((d) => {
+      const cop = fisso > 0 ? Math.round((Number(d.kwh) / fisso) * 100) : null;
+      const lav = ass.filter((a) => a.data === d.data && !a.sconsigliato).map((a) => '<span class="ldp-chip">' + (LD_CAT[a.cat] || LD_CAT.altro).n + '</span>').join('');
+      const nota = d.data === oggi ? 'oggi' : d.migliore ? 'migliore' : '';
+      return '<div class="ldp-day' + (d.data === oggi ? ' ldp-oggi' : '') + (d.migliore ? ' ldp-best' : '') + '"><div class="ldp-d"><span>' + mgddEsc(d.nome) + ' ' +
+        ldDay(d.data).getDate() + '</span>' + (nota ? '<span class="ld-tiny">' + nota + '</span>' : '') + '</div>' + ldIco(LD_METEO_MDI[d.meteo] || 'weather-cloudy') +
+        '<div class="ldp-k">' + ldNum(d.kwh) + ' <small>kWh</small></div><div class="ld-bar ldp-bar"><i style="width:' + Math.min(100, cop || 0) + '%;background:' +
+        (colv[d.colore] || 'var(--ld-t2)') + '"></i></div><span class="ld-tiny">' + (cop == null ? '—' : 'copre il ' + cop + '%') + '</span>' +
+        (lav ? '<div class="ldp-chips">' + lav + '</div>' : '') + '</div>';
+    }).join('');
+    return this._card('', label, '<span class="ld-tiny">sole previsto · quanta parte dei consumi fissi copre</span>',
+      '<div class="ldp-week" style="--ldp-n:' + g.length + '">' + tiles + '</div>');
+  },
+
+  gemini() {
+    const s = this._st(this.config.ai);
+    const txt = s && s.state === 'ok' && s.attributes.testo ? '<p>' + mgddEsc(s.attributes.testo) + '</p>'
+      : s && s.state === 'errore' ? '<p class="ld-sub">Gemini non ha risposto all\'ultimo aggiornamento del piano.</p>'
+        : '<p class="ld-sub">Il consiglio di Gemini comparirà al prossimo aggiornamento del piano.</p>';
+    return '<ha-card class="ld-c ld-ai ldp-ai">' + ldIco('creation') + txt + '</ha-card>';
+  },
+
+  batteria() {
+    const c = this.config;
+    const now = this._now();
+    const soc = this._num(c.soc);
+    const cap = Number((this._piano('parametri') || {}).capacita) || 13.5;
+    const kw = this._num(c.batteria_kw);
+    const casa = this._num(c.casa);
+    // Powerwall: potenza positiva = scarica
+    const pill = kw == null ? '' : kw < -0.05 ? this._pill('g', ldIco('arrow-up') + 'in carica') : kw > 0.05 ? this._pill('a', ldIco('arrow-down') + 'in scarica') : this._pill('n', 'ferma');
+    const tono = soc == null ? 'n' : soc >= 50 ? 'g' : soc >= 20 ? 'a' : 'r';
+    const fonti = this._bat('fonti') || '';
+    const enelOre = this._bat('enel_ore') || [];
+    const inizio = this._bat('inizio');
+    const ok = fonti.length > 0 && !!inizio;
+    const t0 = ok ? new Date(inizio).getTime() : 0;
+    const esa = ok ? this._bat('esaurimento') : null;
+    const giorni = this._piano('giorni') || [];
+
+    let fatti = '';
+    const fact = (t, v, cls) => '<div class="ldp-fact"><span>' + t + '</span><b' + (cls ? ' class="' + cls + '"' : '') + '>' + v + '</b></div>';
+    if (ok) {
+      if (esa) {
+        const de = new Date(esa);
+        fatti += fact('A zero', ldQuando(de, now), 'ld-tr');
+        const da = Math.max(0, Math.round((de.getTime() - t0) / 3600e3));
+        const rip = fonti.indexOf('S', da);
+        if (rip >= 0) fatti += fact('Torna a caricarsi', ldQuando(new Date(t0 + rip * 3600e3), now));
+      } else {
+        fatti += fact('A zero', 'mai nei prossimi ' + giorni.length + ' giorni', 'ld-tg');
+      }
+      fatti += fact('Enel nei prossimi ' + giorni.length + ' giorni', ldNum(this._bat('enel_tot') || 0) + ' kWh');
+    }
+    const sinistra = '<div class="ldp-now"><div class="ld-hd" style="margin:0"><span class="ld-lbl">Batteria adesso</span>' + pill + '</div>' +
+      '<div class="ldp-big ldp-t' + tono + '"><div class="ldp-cell"><i style="width:' + (soc == null ? 0 : Math.max(0, Math.min(100, soc))) + '%"></i></div><b>' +
+      (soc == null ? '—' : Math.round(soc) + '%') + '</b></div><div class="ld-tiny">' +
+      (soc == null ? 'Livello della batteria non disponibile' : ldNum((soc / 100) * cap) + ' kWh su ' + ldNum(cap) + (casa == null ? '' : ' · la casa sta usando ' + String(casa.toFixed(2)).replace('.', ',') + ' kW')) +
+      '</div><div class="ldp-facts">' + fatti + '</div></div>';
+
+    let destra;
+    if (!ok) {
+      destra = '<div class="ld-hd"><span class="ld-lbl">Da dove arriva la corrente, ora per ora</span></div>' +
+        '<div class="ld-sub">Simulazione non disponibile: manca il livello della batteria o il piano è scaduto.</div>';
+    } else {
+      // una riga per giorno: 24 caselle con la fonte dell'ora, poi fuse in segmenti
+      const righe = [];
+      const perData = {};
+      for (let i = 0; i < fonti.length; i++) {
+        const t = new Date(t0 + i * 3600e3);
+        const k = ldIso(t);
+        if (!perData[k]) { perData[k] = { t, ore: new Array(24).fill(null), enel: 0 }; righe.push(perData[k]); }
+        perData[k].ore[t.getHours()] = fonti[i];
+        perData[k].enel += Number(enelOre[i]) || 0;
+      }
+      const hIn = new Date(t0).getHours();
+      let h = '<div></div><div class="ldp-ax">' + [0, 6, 12, 18, 24].map((x) => '<span style="left:' + (x / 24) * 100 + '%">' + (x === 24 ? '24' : mgddPad2(x) + ':00') + '</span>').join('') + '</div><div></div>';
+      righe.forEach((r, k) => {
+        let segs = '';
+        let a = 0;
+        for (let x = 1; x <= 24; x++) {
+          if (x === 24 || r.ore[x] !== r.ore[a]) {
+            const n = x - a;
+            const f = r.ore[a];
+            if (f == null) {
+              const passato = k === 0 && a < hIn;
+              segs += '<div class="' + (passato ? 'ldp-s-past' : 'ldp-s-vuoto') + '" style="flex:' + n + ' 1 0">' + (passato && n >= 6 ? '<span>già passato</span>' : '') + '</div>';
+            } else {
+              segs += '<div class="ldp-s-' + LD_FONTE[f].c + '" style="flex:' + n + ' 1 0">' + (n >= 3 ? '<span>' + LD_FONTE[f].n + '</span>' : '') + '</div>';
+            }
+            a = x;
+          }
+        }
+        const zero = r.enel < 0.05;
+        h += '<div class="ldp-dn">' + LD_GIORNI[r.t.getDay()].slice(0, 3) + ' ' + r.t.getDate() + (k === 0 ? '<small>da adesso</small>' : '') + '</div><div class="ldp-strip">' + segs +
+          '</div><div class="ldp-tot' + (zero ? ' ld-tg' : '') + '">' + (zero ? '0' : ldNum(r.enel)) + ' kWh<small>da Enel</small></div>';
+      });
+      destra = '<div class="ld-hd"><span class="ld-lbl">Da dove arriva la corrente, ora per ora</span><div class="ldp-leg"><span><i class="ldp-s-sole"></i>sole</span>' +
+        '<span><i class="ldp-s-bat"></i>batteria</span><span><i class="ldp-s-enel"></i>Enel</span></div></div><div class="ldp-st">' + h + '</div>';
+    }
+    return '<ha-card class="ld-c ldp-bat">' + sinistra + '<div class="ldp-next">' + destra + '</div></ha-card>';
+  },
+
+  obiettivo() {
+    const label = 'Obiettivo settimana';
+    const ob = this._piano('obiettivo');
+    if (!ob) return this._vuoto(label, 'Il piano non è ancora stato calcolato.');
+    const cons = (this._piano('parametri') || {}).consumi || {};
+    let T = 0;
+    let F = 0;
+    const rows = ['cotoni', 'sintetici', 'delicati', 'stracci'].map((k) => {
+      const o = ob[k] || { target: 0, fatti: 0 };
+      if (!o.target) return '';
+      const f = Math.min(o.fatti, o.target);
+      T += o.target;
+      F += f;
+      const fatto = f >= o.target;
+      return '<div class="ldp-row' + (fatto ? ' ldp-fatto' : '') + '">' + ldIco(fatto ? 'check-circle' : LD_CAT_MDI[k]) + '<span><b>' + LD_CAT[k].n + '</b>' + (o.target > 1 ? ' × ' + o.target : '') +
+        '</span><span class="ld-tiny">' + (fatto ? 'fatto' : (f > 0 ? f + ' di ' + o.target + ' · ' : '') + ldNum(cons[k]) + ' kWh' + (o.target > 1 ? " l'uno" : '')) + '</span></div>';
+    }).join('');
+    return this._card('', label, this._pill(T && F >= T ? 'g' : 'n', F + ' di ' + T), rows);
+  },
+
+  ultimi() {
+    const label = 'Ultimi lavaggi';
+    // sotto 0,3 kWh non è un lavaggio: sono accensioni brevi della lavatrice
+    const l = (this._attr(this.config.lavaggi, 'lavaggi') || []).filter((w) => (Number(w.kwh_lav) || 0) + (Number(w.kwh_asc) || 0) >= 0.3)
+      .sort((a, b) => (a.fine < b.fine ? 1 : -1)).slice(0, 4);
+    if (!l.length) return this._vuoto(label, 'Nessun lavaggio registrato: compariranno qui appena gli Shelly vedono finire un ciclo.');
+    const rows = l.map((w) => {
+      const d = new Date(w.fine);
+      const c = LD_CAT[w.cat] || LD_CAT.altro;
+      const nome = w.cat === 'altro' && w.programma ? String(w.programma).replace(/^\w+ Pr /, '') : c.n;
+      const pc = (v) => Math.max(0, Math.round((Number(v) || 0) * 100));
+      return '<div class="ldp-row ldp-dt"><span class="ld-tiny">' + LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + d.getDate() + '</span><span><b>' + mgddEsc(nome) + '</b> · ' +
+        ldNum((Number(w.kwh_lav) || 0) + (Number(w.kwh_asc) || 0)) + ' kWh</span><div class="ld-mix ldp-mix"><i style="width:' + pc(w.sole) + '%;background:var(--ld-a)"></i><i style="width:' +
+        pc(w.batteria) + '%;background:var(--ld-g)"></i><i style="width:' + pc(w.enel) + '%;background:var(--ld-r)"></i></div></div>';
+    }).join('');
+    return this._card('', label, '<div class="ldp-leg"><span><i class="ldp-s-sole"></i>sole</span><span><i class="ldp-s-bat"></i>batteria</span><span><i class="ldp-s-enel"></i>Enel</span></div>', rows);
+  },
+
+  stima() {
+    const label = 'Quanto ci prende la stima';
+    const acc = this._piano('accuratezza') || {};
+    const p = this._piano('parametri') || {};
+    const g = (acc.giorni || []).slice(-15);
+    if (!g.length) return this._vuoto(label, 'Servono qualche giorno di dati: la stima si confronta con la produzione reale ogni sera alle 23:55.');
+    const max = Math.max(...g.map((d) => Math.max(Number(d.reale) || 0, Number(d.stima) || 0)), 1);
+    const step = 360 / g.length;
+    const bw = Math.min(9, step * 0.38);
+    const H = (v) => ((Number(v) || 0) / max) * 70;
+    let svg = '<line x1="0" y1="80" x2="360" y2="80" class="ld-grid"/>';
+    g.forEach((d, i) => {
+      const x = i * step + step / 2 - bw - 1;
+      svg += '<rect x="' + x.toFixed(1) + '" y="' + (80 - H(d.reale)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + H(d.reale).toFixed(1) + '" rx="2" fill="#EF9F27"/>' +
+        '<rect x="' + (x + bw + 2).toFixed(1) + '" y="' + (80 - H(d.stima)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + H(d.stima).toFixed(1) +
+        '" rx="2" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="1.2" stroke-dasharray="2 2"/>';
+    });
+    const dl = (i) => { const d = ldDay(g[i].data); return d.getDate() + '/' + (d.getMonth() + 1); };
+    svg += '<g font-size="10" class="ld-svg2"><text x="2" y="94">' + dl(0) + '</text><text x="358" y="94" text-anchor="end">' + dl(g.length - 1) + '</text></g>';
+    const err = acc.errore_pct;
+    const pill = err == null ? '' : this._pill(err <= 20 ? 'g' : err <= 45 ? 'a' : 'r', '±' + Math.round(err) + '% su ' + g.length + ' giorni');
+    return this._card('', label, pill, '<svg viewBox="0 0 360 96" class="ld-chart">' + svg + '</svg><div class="ld-legend" style="margin-top:6px"><span><i style="background:#EF9F27"></i>prodotto reale</span>' +
+      '<span><i class="ld-dash"></i>stimato da iLMeteo</span><span>tetto solare ' + ldNum(p.tetto) + ' kWh</span></div>');
+  },
+
+  piede() {
+    const now = this._now();
+    const agg = this._piano('aggiornato');
+    const bat = this._bat('aggiornato');
+    const quando = (iso) => { const d = new Date(iso); return (ldIso(d) === ldIso(now) ? 'oggi' : LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + d.getDate()) + ' ' + ldHM(d); };
+    return '<div class="ldp-piede ld-tiny">' + (this._piano('meteo_ok') === false ? '<span class="ld-tr">Meteo iLMeteo non disponibile: piano non aggiornato.</span> ' : '') +
+      'Piano aggiornato ' + (agg ? quando(agg) : '—') + ' · batteria ricalcolata ' + (bat ? quando(bat) : '—') + ' · meteo iLMeteo</div>';
+  },
+};
+
+LD_BLOCKS.pagina = function () {
+  const P = LD_PAGINA;
+  return '<div class="ldp"><div class="ldp-top">' + P.hero.call(this) + P.settimana.call(this) + '</div>' + P.gemini.call(this) + P.batteria.call(this) +
+    '<div class="ldp-bot">' + P.obiettivo.call(this) + P.ultimi.call(this) + P.stima.call(this) + '</div>' + P.piede.call(this) + '</div>';
+};
+
+const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
+  '.ldq .ldp{container-type:inline-size;max-width:1500px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:14px;font-variant-numeric:tabular-nums;}' +
+  '.ldq .ldp ha-icon{--mdc-icon-size:20px;width:20px;height:20px;display:inline-flex;flex:none;}' +
+  '.ldq .ldp .ld-pill ha-icon{--mdc-icon-size:14px;width:14px;height:14px;}' +
+  '.ldq .ldp-top{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:14px;}' +
+  '.ldq .ldp-bot{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;}' +
+  // verdetto
+  '.ldq .ldp-hero{display:flex;flex-direction:column;gap:8px;}' +
+  '.ldq .ldp-hero h2{font-size:30px;line-height:1.1;margin:2px 0 0;letter-spacing:-.6px;font-weight:700;}' +
+  '.ldq .ldp-cost-t{margin-top:auto;padding-top:8px;}' +
+  '.ldq .ldp-cost{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:8px;}' +
+  '.ldq .ldp-cost div{background:var(--ld-bg);border:1px solid var(--ld-div);border-radius:12px;padding:8px 10px;}' +
+  '.ldq .ldp-cost b{display:block;font-size:17px;font-weight:700;}' +
+  // settimana
+  '.ldq .ldp-week{display:grid;grid-template-columns:repeat(var(--ldp-n,6),minmax(0,1fr));gap:10px;}' +
+  '.ldq .ldp-day{border-radius:14px;background:var(--ld-neutral);padding:12px 12px 13px;display:flex;flex-direction:column;gap:6px;min-width:0;}' +
+  '.ldq .ldp-oggi{outline:2px solid var(--ld-t1);}.ldq .ldp-best{outline:2px solid var(--ld-g);}' +
+  '.ldq .ldp-d{font-size:13px;font-weight:650;display:flex;justify-content:space-between;gap:4px;}' +
+  '.ldq .ldp-day>ha-icon{--mdc-icon-size:30px;width:30px;height:30px;color:var(--ld-t2);}' +
+  '.ldq .ldp-k{font-size:24px;font-weight:700;letter-spacing:-.5px;white-space:nowrap;}.ldq .ldp-k small{font-size:12px;font-weight:600;color:var(--ld-t2);}' +
+  '.ldq .ldp-bar{height:6px;}' +
+  '.ldq .ldp-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;}' +
+  '.ldq .ldp-chip{font-size:11px;font-weight:650;border-radius:8px;padding:2px 7px;background:var(--ld-gbg);color:var(--ld-g2);}' +
+  // gemini
+  '.ldq .ldp-ai{display:flex;gap:12px;align-items:flex-start;}.ldq .ldp-ai ha-icon{color:var(--ld-p);margin-top:1px;}' +
+  '.ldq .ldp-ai p{margin:0;font-size:14px;line-height:1.55;}' +
+  // batteria
+  '.ldq .ldp-bat{display:grid;grid-template-columns:300px minmax(0,1fr);padding:0;overflow:hidden;}' +
+  '.ldq .ldp-now{padding:18px 20px;border-right:1px solid var(--ld-div);display:flex;flex-direction:column;}' +
+  '.ldq .ldp-next{padding:18px 20px 16px;min-width:0;}' +
+  '.ldq .ldp-big{display:flex;align-items:center;gap:16px;margin:8px 0 4px;--ldp-c:var(--ld-t2);--ldp-ct:var(--ld-t1);}' +
+  '.ldq .ldp-tr{--ldp-c:var(--ld-r);--ldp-ct:var(--ld-r2);}.ldq .ldp-ta{--ldp-c:var(--ld-a);--ldp-ct:var(--ld-a2);}.ldq .ldp-tg{--ldp-c:var(--ld-g);--ldp-ct:var(--ld-g2);}' +
+  '.ldq .ldp-big b{font-size:52px;font-weight:750;letter-spacing:-2px;line-height:1;color:var(--ldp-ct);}' +
+  '.ldq .ldp-cell{position:relative;width:96px;height:44px;border:2.5px solid var(--ld-t1);border-radius:11px;padding:4px;flex:none;}' +
+  '.ldq .ldp-cell::after{content:"";position:absolute;right:-8px;top:12px;width:5px;height:16px;border-radius:0 3px 3px 0;background:var(--ld-t1);}' +
+  '.ldq .ldp-cell i{display:block;height:100%;min-width:7px;border-radius:5px;background:var(--ldp-c);}' +
+  '.ldq .ldp-facts{margin-top:auto;padding-top:14px;}' +
+  '.ldq .ldp-fact{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:9px 0;border-top:1px solid var(--ld-div);font-size:13px;color:var(--ld-t2);}' +
+  '.ldq .ldp-fact b{font-size:15px;color:var(--ld-t1);white-space:nowrap;}.ldq .ldp-fact b.ld-tr{color:var(--ld-r2);}.ldq .ldp-fact b.ld-tg{color:var(--ld-g2);}' +
+  '.ldq .ldp-leg{display:flex;gap:14px;font-size:11.5px;color:var(--ld-t2);align-items:center;}' +
+  '.ldq .ldp-leg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px;}' +
+  // strisce orarie
+  '.ldq .ldp-st{display:grid;grid-template-columns:64px minmax(0,1fr) 92px;column-gap:14px;row-gap:7px;align-items:center;}' +
+  '.ldq .ldp-ax{position:relative;height:16px;font-size:11px;color:var(--ld-t2);}' +
+  '.ldq .ldp-ax span{position:absolute;transform:translateX(-50%);}' +
+  '.ldq .ldp-ax span:first-child{transform:none;}.ldq .ldp-ax span:last-child{transform:translateX(-100%);}' +
+  '.ldq .ldp-dn{font-size:13px;font-weight:650;white-space:nowrap;}.ldq .ldp-dn small{display:block;font-size:11px;font-weight:500;color:var(--ld-t2);}' +
+  '.ldq .ldp-strip{display:flex;gap:2px;height:28px;}' +
+  '.ldq .ldp-strip div{border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:650;color:#fff;overflow:hidden;white-space:nowrap;min-width:0;}' +
+  '.ldq .ldp-s-enel{background:var(--ld-r);}.ldq .ldp-s-bat{background:var(--ld-g);}.ldq .ldp-s-sole{background:var(--ld-a);}' +
+  '.ldq .ldp-strip .ldp-s-sole{color:#5a3705;}' +
+  '.ldq .ldp-strip .ldp-s-past{background:repeating-linear-gradient(135deg,transparent 0 5px,var(--ld-neutral) 5px 6px);color:var(--ld-t2);font-weight:500;}' +
+  '.ldq .ldp-strip .ldp-s-vuoto{background:none;}' +
+  '.ldq .ldp-tot{text-align:right;font-size:14px;font-weight:700;color:var(--ld-r2);white-space:nowrap;}.ldq .ldp-tot.ld-tg{color:var(--ld-g2);}' +
+  '.ldq .ldp-tot small{display:block;font-size:11px;font-weight:500;color:var(--ld-t2);}' +
+  // righe dei riquadri in fondo
+  '.ldq .ldp-row{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--ld-div);font-size:13.5px;}' +
+  '.ldq .ldp-row:first-of-type{border-top:none;}.ldq .ldp-row ha-icon{color:var(--ld-t2);}' +
+  '.ldq .ldp-fatto ha-icon{color:var(--ld-g);}' +
+  '.ldq .ldp-dt{grid-template-columns:52px 1fr auto;}' +
+  '.ldq .ldp-mix{width:90px;height:6px;}' +
+  '.ldq .ldp-piede{padding:0 4px;}' +
+  // schermi stretti
+  '@container (max-width:1100px){.ldq .ldp-top{grid-template-columns:minmax(0,1fr);}}' +
+  '@container (max-width:900px){.ldq .ldp-bot{grid-template-columns:minmax(0,1fr);}.ldq .ldp-bat{grid-template-columns:minmax(0,1fr);}' +
+  '.ldq .ldp-now{border-right:none;border-bottom:1px solid var(--ld-div);}.ldq .ldp-facts{margin-top:0;}}' +
+  '@container (max-width:640px){.ldq .ldp{padding:8px;}.ldq .ldp-week{grid-template-columns:repeat(3,minmax(0,1fr));}.ldq .ldp-hero h2{font-size:24px;}' +
+  '.ldq .ldp-strip span{display:none;}.ldq .ldp-st{grid-template-columns:44px minmax(0,1fr) 62px;column-gap:8px;}.ldq .ldp-leg{display:none;}}' +
+  '</style>');
+
 customElements.define('casa-mgdd-laundry-card', LaundryCard);
 window.customCards.push({
   type: 'casa-mgdd-laundry-card',
   name: 'Casa MGDD Lavatrici',
-  description: 'Pianificatore lavatrici: un blocco per card (block: testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori sensor.lavatrici_*. Config via YAML.',
+  description: 'Pianificatore lavatrici: tutta la dashboard in una card (block: pagina, per una vista panel) oppure un blocco per card (block: testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori sensor.lavatrici_*. Config via YAML.',
 });

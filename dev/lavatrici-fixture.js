@@ -8,15 +8,36 @@
   const kwhGiorno = [10, 5.5, 9, 11, 12.5, 10.5];
   const lav = { 2: 2.2, 3: 4.0, 4: 7.0, 5: 2.7 };
   const soc = [];
+  let fonti = '';
+  const enelOre = [];
   let b = 9.3;
   for (let i = 0; i < 132; i++) {
     const h = (12 + i) % 24;
     const g = Math.floor((12 + i) / 24);
     const sole = h >= 7 && h < 17 ? (kwhGiorno[g] * Math.sin(Math.PI * (h + 0.5 - 7) / 10)) / 6.3 : 0;
     const extra = h >= 15 && h <= 19 ? (lav[g] || 0) / 5 : 0;
-    b = Math.max(0, Math.min(13.5, b + sole - 0.36 - extra));
+    const carico = 0.36 + extra;
+    const nuovo = b + sole - carico;
+    const daEnel = Math.max(0, -nuovo);
+    const daSole = Math.min(sole, carico);
+    const daBat = Math.max(0, carico - daSole - daEnel);
+    fonti += daEnel > 0 && daEnel >= daSole && daEnel >= daBat ? 'E' : daSole >= daBat ? 'S' : 'B';
+    enelOre.push(Math.round(daEnel * 100) / 100);
+    b = Math.max(0, Math.min(13.5, nuovo));
     soc.push(Math.round((b / 13.5) * 100));
   }
+
+  // prelievi Enel ricavati dalla stessa simulazione, cosi' strisce ed eventi coincidono
+  const t0 = new Date(ora).getTime();
+  const isoLoc = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':00:00+01:00'; };
+  const eventi = [];
+  enelOre.forEach((e, i) => {
+    if (e <= 0) return;
+    const u = eventi[eventi.length - 1];
+    if (u && u._f === i) { u.kwh += e; u._f = i + 1; } else eventi.push({ _i: i, _f: i + 1, kwh: e });
+  });
+  eventi.forEach((e) => { e.inizio = isoLoc(t0 + e._i * 3600e3); e.fine = isoLoc(t0 + e._f * 3600e3); e.kwh = Math.round(e.kwh * 10) / 10; });
+  const enelTot = Math.round(enelOre.reduce((a, b) => a + b, 0) * 10) / 10;
 
   const giorni = [
     { data: '2026-11-02', nome: 'Lun', fasce: ['partlycloudy', 'partlycloudy', 'cloudy'], meteo: 'partlycloudy', kwh: 10, colore: 'rosso', fabbisogno: 8.7, lavaggi: [], migliore: false, soc_alba: null, picco: { ora: '15:00', pct: 80 } },
@@ -64,9 +85,9 @@
 
   const batteria = st(69, {
     aggiornato: ora, inizio: ora, soc,
-    eventi: [{ inizio: '2026-11-04T03:00:00+01:00', fine: '2026-11-04T07:00:00+01:00', kwh: 0.6 }],
-    enel_tot: 0.6, esaurimento: '2026-11-04T03:00:00+01:00',
+    eventi, enel_tot: enelTot, esaurimento: eventi.length ? eventi[0].inizio : null,
     picco_oggi: { ora: '15:00', pct: 80 }, alba_domani: 35,
+    fonti, enel_ore: enelOre,
     unit_of_measurement: '%',
   });
 
@@ -116,7 +137,7 @@
     // simulazione scaduta: il sensore c'è ma senza ore (piano vecchio di giorni)
     scaduta: Object.assign({}, comuni, {
       'sensor.lavatrici_piano': piano,
-      'sensor.lavatrici_batteria': st(55, { aggiornato: ora, inizio: ora, soc: [], eventi: [], enel_tot: 0, esaurimento: null, picco_oggi: null, alba_domani: null }),
+      'sensor.lavatrici_batteria': st(55, { aggiornato: ora, inizio: ora, soc: [], eventi: [], enel_tot: 0, esaurimento: null, picco_oggi: null, alba_domani: null, fonti: '', enel_ore: [] }),
       'sensor.lavatrici_lavaggi': lavaggi,
       'sensor.lavatrici_storico': st(0, { giorni: [] }),
       'sensor.powerwall3_charge': st('55', { unit_of_measurement: '%' }),
