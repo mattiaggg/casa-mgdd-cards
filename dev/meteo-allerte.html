@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco meteo e allerte</title>
+<style>
+  body { margin: 0; background: #eef0f3; font-family: Inter, -apple-system, "Segoe UI", sans-serif;
+    --primary-text-color: #1c1c1e; --secondary-text-color: #6b6f76; --divider-color: rgba(0,0,0,.08);
+    --card-background-color: #fff; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; font-size: 12px; }
+  .page { max-width: 640px; margin: 0 auto; padding: 0 16px 40px; display: flex; flex-direction: column; gap: 18px; }
+  h2 { font-size: 12px; font-weight: 600; color: #6b6f76; margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<!-- weather-alert-card con le entita' di DPC Alert 2026.11.1+ (sensori *_risk_level)
+     e, sotto, con i binary_sensor dei luoghi creati prima della 2026.11. -->
+<div class="bar">
+  <button data-f="verde">Tutto verde</button>
+  <button data-f="gialla">Gialla oggi (idraulico)</button>
+  <button data-f="mista">Arancione oggi + rossa domani</button>
+  <button data-f="dopo-mezzanotte">Domani unknown</button>
+</div>
+<div class="page">
+  <div><h2>Sensori *_risk_level + dpc_zone_entity</h2><div id="nuova"></div></div>
+  <div><h2>Binary_sensor senza attributi (configurazione di prima)</h2><div id="vecchia"></div></div>
+</div>
+<script>window.customCards = window.customCards || [];</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const P = '45_945868_12_504888';
+  const RISKS = [['hydraulic', 'idraulico'], ['hydrogeological', 'idrogeologico'], ['thunderstorm', 'temporali']];
+  const DAYS = [['today', 'oggi'], ['tomorrow', 'domani']];
+  const LEVELS = {
+    verde: {},
+    gialla: { today_hydraulic: 'yellow' },
+    mista: { today_thunderstorm: 'orange', tomorrow_hydrogeological: 'red' },
+    'dopo-mezzanotte': { today_hydraulic: 'yellow', tomorrow: 'unknown' },
+  };
+  const now = Date.now();
+  const hourly = Array.from({ length: 8 }, (_, i) => ({
+    datetime: new Date(now + (i + 1) * 3600e3).toISOString(), condition: 'cloudy', temperature: 9 + i * 0.3, precipitation: 0,
+  }));
+  const daily = Array.from({ length: 6 }, (_, i) => ({
+    datetime: new Date(now + i * 86400e3).toISOString(), condition: 'partlycloudy', temperature: 13, templow: 5,
+  }));
+
+  function states(f) {
+    const L = LEVELS[f];
+    const s = {
+      'weather.ilmeteo_site_1': { state: 'cloudy', attributes: { temperature: 9.4 } },
+      'sensor.dpc_alert_zone': { state: 'Bacino del Livenza e del Lemene', attributes: {} },
+    };
+    for (const [d, dIt] of DAYS) {
+      for (const [r, rIt] of RISKS) {
+        const lvl = L[d] || L[d + '_' + r] || (d === 'tomorrow' && L.tomorrow ? L.tomorrow : 'green');
+        s['sensor.dpc_' + d + '_' + r + '_risk_level'] = { state: lvl, attributes: { options: ['green', 'yellow', 'orange', 'red'] } };
+        const bin = lvl === 'unknown' ? 'unknown' : (lvl === 'green' ? 'off' : 'on');
+        s['binary_sensor.' + P + '_' + rIt + '_' + dIt] = { state: bin, attributes: { device_class: 'safety' } };
+      }
+    }
+    return s;
+  }
+
+  function make(parent, config) {
+    const el = document.createElement('weather-alert-card');
+    el.setConfig(Object.assign({ type: 'custom:weather-alert-card', title: 'Sacile', weather_entity: 'weather.ilmeteo_site_1' }, config));
+    document.getElementById(parent).appendChild(el);
+    return el;
+  }
+  const cards = [
+    make('nuova', {
+      dpc_entities: DAYS.flatMap(([d]) => RISKS.map(([r]) => 'sensor.dpc_' + d + '_' + r + '_risk_level')),
+      dpc_zone_entity: 'sensor.dpc_alert_zone',
+    }),
+    make('vecchia', {
+      dpc_entities: DAYS.flatMap(([, dIt]) => RISKS.map(([, rIt]) => 'binary_sensor.' + P + '_' + rIt + '_' + dIt)),
+    }),
+  ];
+  function apply(f) {
+    const hass = {
+      states: states(f),
+      callWS: async (m) => ({ response: { [m.service_data.entity_id]: { forecast: m.service_data.type === 'hourly' ? hourly : daily } } }),
+    };
+    for (const c of cards) c.hass = hass;
+  }
+  document.querySelectorAll('[data-f]').forEach((b) => b.addEventListener('click', () => apply(b.dataset.f)));
+  apply(new URLSearchParams(location.search).get('f') || 'mista');
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card.
  *
- * Version: 1.95.0
+ * Version: 1.96.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -1209,7 +1209,7 @@ class WeatherAlertCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    const ids = [this.config.weather_entity].concat(this.config.dpc_entities || []).filter(Boolean);
+    const ids = [this.config.weather_entity, this.config.dpc_zone_entity].concat(this.config.dpc_entities || []).filter(Boolean);
     const sig = mgddStatesSig(hass, ids);
     if (sig !== this._lastSig) {
       this._lastSig = sig;
@@ -1308,10 +1308,28 @@ class WeatherAlertCard extends HTMLElement {
     return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14a4 4 0 0 1 .5-7.97A5.5 5.5 0 0 1 17 8a4 4 0 0 1 0 6"/><path d="M13 12l-3 4h3l-2 3"/></svg>';
   }
 
+  // Livelli DPC: 2 gialla, 3 arancione, 4 rossa.
   _dpcColors(level) {
     if (level >= 4) return { bg: '#FCEBEB', text: '#791F1F', icon: '#E24B4A' };
-    if (level >= 3) return { bg: '#FCEBEB', text: '#A32D2D', icon: '#E24B4A' };
+    if (level >= 3) return { bg: '#FDE9DA', text: '#8A3A0C', icon: '#E8740C' };
     return { bg: '#FAEEDA', text: '#854F0B', icon: '#EF9F27' };
+  }
+
+  // Nome del rischio e giorno ricavati dall'entity_id: vale sia per gli ID nuovi
+  // (sensor.dpc_today_hydraulic_risk_level) sia per quelli dei luoghi creati
+  // prima della 2026.11 (binary_sensor.<lat>_<lon>_idraulico_oggi).
+  _dpcRiskName(eid) {
+    if (/hydrogeological|idrogeologico/.test(eid)) return 'Rischio idrogeologico';
+    if (/hydraulic|idraulico/.test(eid)) return 'Rischio idraulico';
+    if (/thunderstorm|temporali/.test(eid)) return 'Rischio temporali';
+    return 'Allerta';
+  }
+
+  _dpcDay(eid) {
+    if (/_after_tomorrow(_|$)|_dopodomani(_|$)/.test(eid)) return 'Dopodomani';
+    if (/_tomorrow(_|$)|_domani(_|$)/.test(eid)) return 'Domani';
+    if (/_today(_|$)|_oggi(_|$)/.test(eid)) return 'Oggi';
+    return '';
   }
 
   _buildDemoBanners() {
@@ -1320,10 +1338,10 @@ class WeatherAlertCard extends HTMLElement {
       '<div class="banner" style="background:' + dpcColors.bg + '">' +
       '<div class="banner-icon" style="color:' + dpcColors.icon + '">' + this._iconTriangle(dpcColors.icon) + '</div>' +
       '<div class="banner-body">' +
-      '<div class="banner-title" style="color:' + dpcColors.text + '">Temporali \u2014 ALLERTA ARANCIONE</div>' +
+      '<div class="banner-title" style="color:' + dpcColors.text + '">Rischio temporali \u2014 Allerta arancione</div>' +
       '<div class="banner-sub" style="color:' + dpcColors.text + '">Protezione Civile \u00b7 Bacino del Livenza e del Lemene (demo)</div>' +
       '</div>' +
-      '<span class="banner-tag" style="color:' + dpcColors.text + '">Elevato</span>' +
+      '<span class="banner-tag" style="color:' + dpcColors.text + '">Moderata</span>' +
       '</div>';
     const rainBanner =
       '<div class="banner" style="background:#FCEBEB">' +
@@ -1337,23 +1355,43 @@ class WeatherAlertCard extends HTMLElement {
     return [dpcBanner, rainBanner];
   }
 
+  // dpc_entities accetta:
+  // - i sensori *_risk_level di DPC Alert 2026.11.1+ (stato green/yellow/orange/red):
+  //   banner da gialla in su, livello letto dallo stato;
+  // - i binary_sensor di rischio: banner quando sono "on". Fino alla 2026.11.0
+  //   portavano level/risk/alert/zone_name; dalla 2026.11.1 hanno solo lo stato,
+  //   quindi il livello resta ignoto (etichetta "Attiva").
+  // La zona arriva da dpc_zone_entity (es. sensor.dpc_alert_zone).
   _buildDpcBanners() {
     const entities = this.config.dpc_entities || [];
+    const z = this._state(this.config.dpc_zone_entity);
+    const zone = z && z.state !== 'unknown' && z.state !== 'unavailable' ? z.state : '';
+    const names = { 2: 'gialla', 3: 'arancione', 4: 'rossa' };
+    const tags = { 2: 'Ordinaria', 3: 'Moderata', 4: 'Elevata' };
     const banners = [];
     entities.forEach((eid) => {
       const s = this._state(eid);
-      if (!s || s.state !== 'on') return;
+      if (!s) return;
       const a = s.attributes || {};
-      const level = a.level || 2;
-      const c = this._dpcColors(level);
-      const label = { 2: 'Moderato', 3: 'Elevato', 4: 'Alto' }[level] || 'Attivo';
-      const when = eid.endsWith('_domani') ? 'Domani' : (eid.endsWith('_oggi') ? 'Oggi' : '');
+      let level = 0;
+      if (eid.indexOf('binary_sensor.') === 0) {
+        if (s.state !== 'on') return;
+        level = Number(a.level) || 0;
+      } else {
+        level = { yellow: 2, orange: 3, red: 4 }[s.state] || 0;
+        if (!level) return;
+      }
+      const c = this._dpcColors(level || 2);
+      const alert = a.alert || (level ? 'Allerta ' + names[level] : 'Allerta');
+      const label = tags[level] || 'Attiva';
+      const when = this._dpcDay(eid);
+      const where = a.zone_name || zone;
       banners.push(
         '<div class="banner" style="background:' + c.bg + '">' +
         '<div class="banner-icon" style="color:' + c.icon + '">' + this._iconTriangle(c.icon) + '</div>' +
         '<div class="banner-body">' +
-        '<div class="banner-title" style="color:' + c.text + '">' + (a.risk || 'Allerta') + ' \u2014 ' + (a.alert || '') + (when ? ' \u00b7 ' + when : '') + '</div>' +
-        '<div class="banner-sub" style="color:' + c.text + '">Protezione Civile \u00b7 ' + (a.zone_name || '') + '</div>' +
+        '<div class="banner-title" style="color:' + c.text + '">' + (a.risk || this._dpcRiskName(eid)) + ' \u2014 ' + alert + (when ? ' \u00b7 ' + when : '') + '</div>' +
+        '<div class="banner-sub" style="color:' + c.text + '">Protezione Civile' + (where ? ' \u00b7 ' + where : '') + '</div>' +
         '</div>' +
         '<span class="banner-tag" style="color:' + c.text + '">' + label + '</span>' +
         '</div>'

@@ -54,6 +54,28 @@ In `dev/` c'è un banco di prova per la card lavatrici
 simulazione scaduta, tema chiaro/scuro). Va servito via HTTP dalla radice del repo,
 ad esempio `python -m http.server 8765`, poi `http://localhost:8765/dev/lavatrici-harness.html`.
 La pagina intera (`block: pagina`) si prova con `dev/lavatrici-pagina.html`, che imita `<ha-icon>` con il webfont MDI.
+I banner di allerta della card meteo si provano con `dev/meteo-allerte.html` (verde, gialla, arancione e rossa, domani `unknown`).
+
+## Uso — banner Protezione Civile in `weather-alert-card`
+
+Con DPC Alert 2026.11.1 o successiva i binary_sensor dei rischi hanno solo lo
+stato: livello e zona stanno in entità proprie. Passare i sensori `*_risk_level`
+(banner da allerta gialla in su) e il sensore della zona:
+
+```yaml
+type: custom:weather-alert-card
+weather_entity: weather.ilmeteo_site_1
+dpc_entities:
+  - sensor.dpc_today_hydraulic_risk_level
+  - sensor.dpc_today_hydrogeological_risk_level
+  - sensor.dpc_today_thunderstorm_risk_level
+  - sensor.dpc_tomorrow_hydraulic_risk_level
+  - sensor.dpc_tomorrow_hydrogeological_risk_level
+  - sensor.dpc_tomorrow_thunderstorm_risk_level
+dpc_zone_entity: sensor.dpc_alert_zone
+```
+
+I binary_sensor sono ancora accettati, ma senza livello: il banner dice solo "Attiva".
 
 ## Uso — esempio `temperature-bento-card`
 
