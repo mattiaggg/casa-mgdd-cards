@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card.
  *
- * Version: 1.96.1
+ * Version: 1.97.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -11906,6 +11906,24 @@ const LD_CAT = {
   sconosciuto: { n: 'Sconosciuto', b: '?', i: '🫧' },
 };
 
+// Nomi dei programmi AEG (opzioni di select.*_programuid) in italiano.
+const LD_PROGRAMMI = {
+  'Blanket Pr Duvet': 'Piumoni', 'Cotton Pr Colourpro': 'Colori', 'Cotton Pr Cottons': 'Cotoni', 'Cotton Pr Eco40-60': 'Eco 40-60',
+  'Cotton Pr Towels': 'Asciugamani', 'Cotton Pr Workingclothes': 'Abiti da lavoro', 'Delicate Pr Delicates': 'Delicati', 'Denim Pr Denim': 'Jeans',
+  'Drum Clean Pr Machineclean': 'Pulizia cestello', 'Express Pr Mywash49Min': 'My Program 49 min', 'Mini Pr Silk': 'Seta',
+  'Quick 20 Min Pr 20Min3Kg': 'Rapido 20 min', 'Sanitise60 Pr Antiallergy': 'Antiallergia 60°', 'Softener Pr Rinse': 'Risciacquo',
+  'Spin Pr Drain Spin': 'Scarico e centrifuga', 'Sport Jackets Pr Down Jacket': 'Piumini', 'Sport Jackets Pr Outdoor': 'Outdoor',
+  'Steam Refresh Pr Steam': 'Vapore', 'Synthetic Pr Bedlinenxl': 'Lenzuola XL', 'Synthetic Pr Fleece': 'Pile', 'Synthetic Pr Microfibre': 'Microfibra',
+  'Synthetic Pr Sport': 'Sport', 'Synthetic Pr Synthetics': 'Sintetici', 'Wool Pr Wool': 'Lana',
+};
+
+// Nome da mostrare per un lavaggio: la categoria, o il programma tradotto se la categoria e' "altro".
+function ldNomeLavaggio(w) {
+  const c = LD_CAT[w.cat] || LD_CAT.altro;
+  if (w.cat !== 'altro' || !w.programma) return c.n;
+  return LD_PROGRAMMI[w.programma] || String(w.programma).replace(/^.*? Pr /, '');
+}
+
 const LD_GIORNI = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
 const LD_MESI = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto',
   'settembre', 'ottobre', 'novembre', 'dicembre'];
@@ -11936,6 +11954,51 @@ class LaundryCard extends HTMLElement {
     if (!config || !config.block) throw new Error('Config "block" mancante');
     this.config = Object.assign({}, LD_DEFAULTS, config);
     this._sig = null;
+    this._ldWireTip();
+  }
+
+  // Tooltip dei grafici con data-pts (oggi: "Quanto ci prende la stima"). Gli eventi
+  // stanno sulla card e non sul grafico: mgddPaint ritocca i nodi a ogni aggiornamento
+  // e un ascoltatore sul grafico andrebbe perso. Col mouse segue il passaggio, col
+  // dito si apre al tocco e si richiude da solo dopo 2,5 s, come nei grafici temperature.
+  _ldWireTip() {
+    if (this._ldTip) return;
+    this._ldTip = true;
+    const show = (e) => {
+      const el = e.target && e.target.closest ? e.target.closest('.ldp-acc') : null;
+      if (!el) { this._ldHideTip(); return; }
+      let pts;
+      try { pts = JSON.parse(el.getAttribute('data-pts') || '[]'); } catch (x) { pts = []; }
+      if (!pts.length) return;
+      const r = el.getBoundingClientRect();
+      const i = Math.max(0, Math.min(pts.length - 1, Math.floor(((e.clientX - r.left) / (r.width || 1)) * pts.length)));
+      const pt = pts[i];
+      const tip = el.querySelector('.ldp-tip');
+      const hl = el.querySelector('.ldp-hl');
+      if (!tip || !hl) return;
+      const x = ((i + 0.5) / pts.length) * 100;
+      hl.style.left = (i / pts.length) * 100 + '%';
+      hl.style.width = 100 / pts.length + '%';
+      tip.style.left = x + '%';
+      tip.style.transform = 'translateX(' + (x < 18 ? '-12%' : x > 82 ? '-88%' : '-50%') + ')';
+      tip.innerHTML = '<div class="ldp-tt">' + mgddEsc(pt.d) + '</div>' +
+        '<div class="ldp-tr"><span><i class="ldp-tdot" style="background:#EF9F27"></i>prodotto</span><b>' + mgddEsc(pt.r) + ' kWh</b></div>' +
+        '<div class="ldp-tr"><span><i class="ldp-tdot ldp-tdash"></i>stimato</span><b>' + mgddEsc(pt.s) + ' kWh</b></div>' +
+        (pt.e ? '<div class="ldp-tr"><span>scarto</span><b' + (pt.big ? ' class="ld-tr"' : '') + '>' + mgddEsc(pt.e) + '</b></div>' : '');
+      el.classList.add('ldp-acc-on');
+      this._ldTipEl = el;
+      clearTimeout(this._ldTipT);
+    };
+    this.addEventListener('pointermove', show);
+    this.addEventListener('pointerdown', (e) => {
+      show(e);
+      if (e.pointerType !== 'mouse') { clearTimeout(this._ldTipT); this._ldTipT = setTimeout(() => this._ldHideTip(), 2500); }
+    });
+    this.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this._ldHideTip(); });
+  }
+
+  _ldHideTip() {
+    if (this._ldTipEl) this._ldTipEl.classList.remove('ldp-acc-on');
   }
 
   set hass(hass) {
@@ -12309,7 +12372,7 @@ const LD_BLOCKS = {
     const rows = l.map((w) => {
       const d = new Date(w.fine);
       const c = LD_CAT[w.cat] || LD_CAT.altro;
-      const nome = w.cat === 'altro' && w.programma ? String(w.programma).replace(/^\w+ Pr /, '') : c.n;
+      const nome = ldNomeLavaggio(w);
       const pc = (v) => Math.max(0, Math.round((Number(v) || 0) * 100));
       return '<div class="ld-log"><span class="ld-tiny">' + LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + d.getDate() + '/' + (d.getMonth() + 1) +
         '</span><span><b>' + mgddEsc(nome) + '</b></span><span>' + ldNum((Number(w.kwh_lav) || 0) + (Number(w.kwh_asc) || 0)) + ' kWh</span>' +
@@ -12515,6 +12578,25 @@ const LD_PAGINA = {
       (cost ? '<div class="ldp-cost-t ld-tiny">Se lavassi oggi</div><div class="ldp-cost">' + cost + '</div>' : '') + '</ha-card>';
   },
 
+  // Dalla simulazione oraria della batteria: kWh Enel e carica massima per giorno.
+  _simGiorni() {
+    const fonti = this._bat('fonti') || '';
+    const soc = this._bat('soc') || [];
+    const enel = this._bat('enel_ore') || [];
+    const inizio = this._bat('inizio');
+    const out = {};
+    if (!fonti.length || !inizio) return out;
+    const t0 = new Date(inizio).getTime();
+    for (let i = 0; i < fonti.length; i++) {
+      const t = new Date(t0 + i * 3600e3);
+      const k = ldIso(t);
+      const o = out[k] || (out[k] = { enel: 0, max: -1, ora: null });
+      o.enel += Number(enel[i]) || 0;
+      if ((Number(soc[i]) || 0) > o.max) { o.max = Number(soc[i]) || 0; o.ora = t.getHours(); }
+    }
+    return out;
+  },
+
   settimana() {
     const label = 'Prossimi giorni';
     const g = this._piano('giorni') || [];
@@ -12522,16 +12604,26 @@ const LD_PAGINA = {
     const fisso = Number((this._piano('parametri') || {}).consumo_fisso) || 0;
     const ass = this._piano('assegnazioni') || [];
     const oggi = ldIso(this._now());
+    const sim = LD_PAGINA._simGiorni.call(this);
     const colv = { verde: 'var(--ld-g)', ambra: 'var(--ld-a)', rosso: 'var(--ld-r)' };
     const tiles = g.map((d) => {
       const cop = fisso > 0 ? Math.round((Number(d.kwh) / fisso) * 100) : null;
-      const lav = ass.filter((a) => a.data === d.data && !a.sconsigliato).map((a) => '<span class="ldp-chip">' + (LD_CAT[a.cat] || LD_CAT.altro).n + '</span>').join('');
+      const sg = sim[d.data];
+      const enel = sg ? sg.enel : null;
+      const max = sg ? sg.max : d.picco ? d.picco.pct : null;
+      const aD = ass.filter((a) => a.data === d.data);
+      const buoni = aD.filter((a) => !a.sconsigliato).map((a) => (LD_CAT[a.cat] || LD_CAT.altro).n);
+      const scons = aD.filter((a) => a.sconsigliato).map((a) => (LD_CAT[a.cat] || LD_CAT.altro).n);
+      const verd = buoni.length ? '<div class="ldp-verd ld-pg">' + buoni.join(' + ') + '</div>'
+        : scons.length ? '<div class="ldp-verd ld-pa">' + scons.join(' + ') + ' · sconsigliato</div>' : '<div class="ldp-verd ld-pn">niente lavaggi</div>';
+      const lav = '<div class="ldp-kv"><span>Enel</span><b' + (enel == null ? '' : enel < 0.05 ? ' class="ld-tg"' : ' class="ld-tr"') + '>' +
+        (enel == null ? '—' : enel < 0.05 ? '0' : ldNum(enel) + ' kWh') + '</b></div><div class="ldp-kv"><span>Carica max</span><b>' + (max == null ? '—' : max + '%') + '</b></div>' + verd;
       const nota = d.data === oggi ? 'oggi' : d.migliore ? 'migliore' : '';
       return '<div class="ldp-day' + (d.data === oggi ? ' ldp-oggi' : '') + (d.migliore ? ' ldp-best' : '') + '"><div class="ldp-d"><span>' + mgddEsc(d.nome) + ' ' +
         ldDay(d.data).getDate() + '</span>' + (nota ? '<span class="ld-tiny">' + nota + '</span>' : '') + '</div>' + ldIco(LD_METEO_MDI[d.meteo] || 'weather-cloudy') +
         '<div class="ldp-k">' + ldNum(d.kwh) + ' <small>kWh</small></div><div class="ld-bar ldp-bar"><i style="width:' + Math.min(100, cop || 0) + '%;background:' +
         (colv[d.colore] || 'var(--ld-t2)') + '"></i></div><span class="ld-tiny">' + (cop == null ? '—' : 'copre il ' + cop + '%') + '</span>' +
-        (lav ? '<div class="ldp-chips">' + lav + '</div>' : '') + '</div>';
+        lav + '</div>';
     }).join('');
     return this._card('', label, '<span class="ld-tiny">sole previsto · quanta parte dei consumi fissi copre</span>',
       '<div class="ldp-week" style="--ldp-n:' + g.length + '">' + tiles + '</div>');
@@ -12577,11 +12669,25 @@ const LD_PAGINA = {
       }
       fatti += fact('Enel nei prossimi ' + giorni.length + ' giorni', ldNum(this._bat('enel_tot') || 0) + ' kWh');
     }
+    // Anello: la carica di adesso piena, in trasparenza fin dove arriva oggi secondo la simulazione.
+    const sg = LD_PAGINA._simGiorni.call(this)[ldIso(now)];
+    const pct = soc == null ? null : Math.max(0, Math.min(100, Math.round(soc)));
+    const maxOggi = sg && pct != null && sg.max > pct ? sg.max : null;
+    const C = 263.9;
+    const colA = { g: '#1D9E75', a: '#EF9F27', r: '#E24B4A', n: '#9A9993' }[tono];
+    const anello = '<svg class="ldp-ring" viewBox="0 0 100 100"><circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" stroke-opacity=".09" stroke-width="10"/>' +
+      (maxOggi != null ? '<circle cx="50" cy="50" r="42" fill="none" stroke="#1D9E75" stroke-opacity=".35" stroke-width="10" stroke-dasharray="' + ((maxOggi / 100) * C).toFixed(1) + ' ' + C + '" transform="rotate(-90 50 50)"/>' : '') +
+      (pct != null ? '<circle cx="50" cy="50" r="42" fill="none" stroke="' + colA + '" stroke-width="10" stroke-linecap="round" stroke-dasharray="' + Math.max(0.5, (pct / 100) * C).toFixed(1) + ' ' + C + '" transform="rotate(-90 50 50)"/>' : '') +
+      '<text x="50" y="' + (maxOggi != null ? 51 : 56) + '" text-anchor="middle" font-size="22" font-weight="700" fill="currentColor">' + (pct == null ? '—' : pct + '%') + '</text>' +
+      (maxOggi != null ? '<text x="50" y="66" text-anchor="middle" font-size="9.5" class="ld-svg2">max oggi ' + maxOggi + '%</text>' : '') + '</svg>';
+    const parola = pct == null ? 'Non disponibile' : pct < 5 ? 'Vuota' : pct < 20 ? 'Bassa' : pct < 50 ? 'A metà' : pct < 90 ? 'Carica' : 'Piena';
+    const frase = pct == null ? 'Livello della batteria non disponibile'
+      : maxOggi != null ? 'Oggi arriva al massimo al <b>' + maxOggi + '%</b>' + (sg.ora != null ? ' verso le ' + mgddPad2(sg.ora) + ':00' : '')
+        : ldNum((pct / 100) * cap) + ' kWh su ' + ldNum(cap);
     const sinistra = '<div class="ldp-now"><div class="ld-hd" style="margin:0"><span class="ld-lbl">Batteria adesso</span>' + pill + '</div>' +
-      '<div class="ldp-big ldp-t' + tono + '"><div class="ldp-cell"><i style="width:' + (soc == null ? 0 : Math.max(0, Math.min(100, soc))) + '%"></i></div><b>' +
-      (soc == null ? '—' : Math.round(soc) + '%') + '</b></div><div class="ld-tiny">' +
-      (soc == null ? 'Livello della batteria non disponibile' : ldNum((soc / 100) * cap) + ' kWh su ' + ldNum(cap) + (casa == null ? '' : ' · la casa sta usando ' + String(casa.toFixed(2)).replace('.', ',') + ' kW')) +
-      '</div><div class="ldp-facts">' + fatti + '</div></div>';
+      '<div class="ldp-anello ldp-t' + tono + '">' + anello + '<div><div class="ldp-parola">' + parola + '</div><div class="ld-tiny">' + frase + '</div>' +
+      (casa == null ? '' : '<div class="ld-tiny">La casa sta usando ' + String(casa.toFixed(2)).replace('.', ',') + ' kW</div>') + '</div></div>' +
+      '<div class="ldp-facts">' + fatti + '</div></div>';
 
     let destra;
     if (!ok) {
@@ -12655,7 +12761,7 @@ const LD_PAGINA = {
     const rows = l.map((w) => {
       const d = new Date(w.fine);
       const c = LD_CAT[w.cat] || LD_CAT.altro;
-      const nome = w.cat === 'altro' && w.programma ? String(w.programma).replace(/^\w+ Pr /, '') : c.n;
+      const nome = ldNomeLavaggio(w);
       const pc = (v) => Math.max(0, Math.round((Number(v) || 0) * 100));
       return '<div class="ldp-row ldp-dt"><span class="ld-tiny">' + LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + d.getDate() + '</span><span><b>' + mgddEsc(nome) + '</b> · ' +
         ldNum((Number(w.kwh_lav) || 0) + (Number(w.kwh_asc) || 0)) + ' kWh</span><div class="ld-mix ldp-mix"><i style="width:' + pc(w.sole) + '%;background:var(--ld-a)"></i><i style="width:' +
@@ -12685,7 +12791,16 @@ const LD_PAGINA = {
     svg += '<g font-size="10" class="ld-svg2"><text x="2" y="94">' + dl(0) + '</text><text x="358" y="94" text-anchor="end">' + dl(g.length - 1) + '</text></g>';
     const err = acc.errore_pct;
     const pill = err == null ? '' : this._pill(err <= 20 ? 'g' : err <= 45 ? 'a' : 'r', '±' + Math.round(err) + '% su ' + g.length + ' giorni');
-    return this._card('', label, pill, '<svg viewBox="0 0 360 96" class="ld-chart">' + svg + '</svg><div class="ld-legend" style="margin-top:6px"><span><i style="background:#EF9F27"></i>prodotto reale</span>' +
+    // per il tooltip: giorno, prodotto, stimato e scarto in chiaro
+    const pts = g.map((d) => {
+      const dd = ldDay(d.data);
+      const re = Number(d.reale) || 0;
+      const sc = re > 0 ? Math.round(((Number(d.stima) - re) / re) * 100) : null;
+      return { d: LD_GIORNI[dd.getDay()].slice(0, 3) + ' ' + dd.getDate() + ' ' + LD_MESI[dd.getMonth()].slice(0, 3), r: ldNum(re), s: ldNum(d.stima),
+        e: sc == null ? '' : (sc > 0 ? '+' : '') + sc + '%', big: sc != null && Math.abs(sc) > 30 };
+    });
+    return this._card('', label, pill, '<div class="ldp-acc" data-pts="' + mgddEsc(JSON.stringify(pts)) + '"><div class="ldp-hl"></div><svg viewBox="0 0 360 96" class="ld-chart">' + svg +
+      '</svg><div class="ldp-tip"></div></div><div class="ld-legend" style="margin-top:6px"><span><i style="background:#EF9F27"></i>prodotto reale</span>' +
       '<span><i class="ld-dash"></i>stimato da iLMeteo</span><span>tetto solare ' + ldNum(p.tetto) + ' kWh</span></div>');
   },
 
@@ -12726,6 +12841,10 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-day>ha-icon{--mdc-icon-size:30px;width:30px;height:30px;color:var(--ld-t2);}' +
   '.ldq .ldp-k{font-size:24px;font-weight:700;letter-spacing:-.5px;white-space:nowrap;}.ldq .ldp-k small{font-size:12px;font-weight:600;color:var(--ld-t2);}' +
   '.ldq .ldp-bar{height:6px;}' +
+  '.ldq .ldp-kv{display:flex;justify-content:space-between;gap:6px;font-size:12px;color:var(--ld-t2);padding-top:6px;border-top:1px solid var(--ld-div);}' +
+  '.ldq .ldp-kv b{color:var(--ld-t1);white-space:nowrap;}.ldq .ldp-kv b.ld-tr{color:var(--ld-r2);}.ldq .ldp-kv b.ld-tg{color:var(--ld-g2);}' +
+  '.ldq .ldp-verd{font-size:11.5px;font-weight:650;border-radius:8px;padding:5px 6px;text-align:center;margin-top:2px;overflow-wrap:anywhere;}' +
+  '.ldq .ldp-verd.ld-pg{color:var(--ld-g2);background:var(--ld-gbg);}.ldq .ldp-verd.ld-pa{color:var(--ld-a2);background:var(--ld-abg);}.ldq .ldp-verd.ld-pn{color:var(--ld-t2);background:var(--ld-neutral);}' +
   '.ldq .ldp-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;}' +
   '.ldq .ldp-chip{font-size:11px;font-weight:650;border-radius:8px;padding:2px 7px;background:var(--ld-gbg);color:var(--ld-g2);}' +
   // gemini
@@ -12735,6 +12854,10 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-bat{display:grid;grid-template-columns:300px minmax(0,1fr);padding:0;overflow:hidden;}' +
   '.ldq .ldp-now{padding:18px 20px;border-right:1px solid var(--ld-div);display:flex;flex-direction:column;}' +
   '.ldq .ldp-next{padding:18px 20px 16px;min-width:0;}' +
+  '.ldq .ldp-anello{display:flex;align-items:center;gap:16px;margin:10px 0 2px;--ldp-ct:var(--ld-t1);}' +
+  '.ldq .ldp-ring{width:112px;height:112px;flex:none;color:var(--ld-t1);}' +
+  '.ldq .ldp-parola{font-size:22px;font-weight:750;letter-spacing:-.4px;color:var(--ldp-ct);margin-bottom:4px;}' +
+  '.ldq .ldp-anello .ld-tiny{line-height:1.5;}.ldq .ldp-anello .ld-tiny b{color:var(--ld-t1);}' +
   '.ldq .ldp-big{display:flex;align-items:center;gap:16px;margin:8px 0 4px;--ldp-c:var(--ld-t2);--ldp-ct:var(--ld-t1);}' +
   '.ldq .ldp-tr{--ldp-c:var(--ld-r);--ldp-ct:var(--ld-r2);}.ldq .ldp-ta{--ldp-c:var(--ld-a);--ldp-ct:var(--ld-a2);}.ldq .ldp-tg{--ldp-c:var(--ld-g);--ldp-ct:var(--ld-g2);}' +
   '.ldq .ldp-big b{font-size:52px;font-weight:750;letter-spacing:-2px;line-height:1;color:var(--ldp-ct);}' +
@@ -12767,6 +12890,15 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-dt{grid-template-columns:52px 1fr auto;}' +
   '.ldq .ldp-mix{width:90px;height:6px;}' +
   '.ldq .ldp-piede{padding:0 4px;}' +
+  // tooltip della stima: stessa ricetta dei tooltip dei grafici energia e temperature
+  '.ldq .ldp-acc{position:relative;touch-action:pan-y;}' +
+  '.ldq .ldp-hl{position:absolute;top:0;height:calc(100% - 14px);border-radius:5px;background:var(--ld-neutral);opacity:0;pointer-events:none;transition:opacity .1s;}' +
+  '.ldq .ldp-tip{position:absolute;bottom:calc(100% + 6px);z-index:5;pointer-events:none;min-width:150px;padding:9px 11px 8px;border-radius:11px;' +
+  'background:var(--ld-bg);border:1px solid var(--ld-div);box-shadow:0 6px 20px rgba(0,0,0,.13);font-size:11.5px;opacity:0;transition:opacity .1s;}' +
+  '.ldq .ldp-acc-on .ldp-hl,.ldq .ldp-acc-on .ldp-tip{opacity:1;}' +
+  '.ldq .ldp-tt{font-weight:700;margin-bottom:5px;white-space:nowrap;}' +
+  '.ldq .ldp-tr{display:flex;justify-content:space-between;gap:14px;color:var(--ld-t2);padding:1px 0;white-space:nowrap;}.ldq .ldp-tr b{color:var(--ld-t1);}.ldq .ldp-tr b.ld-tr{color:var(--ld-r2);}' +
+  '.ldq .ldp-tdot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:0;}.ldq .ldp-tdash{border:1px dashed var(--ld-t2);}' +
   // schermi stretti
   '@container (max-width:1100px){.ldq .ldp-top{grid-template-columns:minmax(0,1fr);}}' +
   '@container (max-width:900px){.ldq .ldp-bot{grid-template-columns:minmax(0,1fr);}.ldq .ldp-bat{grid-template-columns:minmax(0,1fr);}' +

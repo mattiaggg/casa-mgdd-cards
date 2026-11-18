@@ -98,6 +98,7 @@
       { inizio: '2026-10-29T12:30:00+01:00', fine: '2026-10-29T17:00:00+01:00', cat: 'cotoni', programma: 'Cotton Pr Cottons', kwh_lav: 1.0, kwh_asc: 2.5, sole: 0.45, batteria: 0.55, enel: 0 },
       { inizio: '2026-10-30T12:00:00+01:00', fine: '2026-10-30T17:30:00+01:00', cat: 'cotoni', programma: 'Cotton Pr Cottons', kwh_lav: 1.3, kwh_asc: 3.1, sole: 0.6, batteria: 0.32, enel: 0.08 },
       { inizio: '2026-10-31T13:00:00+01:00', fine: '2026-10-31T18:00:00+01:00', cat: 'delicati', programma: 'Delicate Pr Delicates', kwh_lav: 0.6, kwh_asc: 1.6, sole: 0.55, batteria: 0.45, enel: 0 },
+      { inizio: '2026-11-01T10:00:00+01:00', fine: '2026-11-01T11:00:00+01:00', cat: 'altro', programma: 'Spin Pr Drain Spin', kwh_lav: 0.78, kwh_asc: 0, sole: 0.53, batteria: 0.47, enel: 0 },
     ],
     medie: { cotoni: 4.0, stracci: 4.5, delicati: 2.2, sintetici: 2.7 },
   });
