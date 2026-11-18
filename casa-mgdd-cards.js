@@ -8,9 +8,10 @@
  * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
- * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card.
+ * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
+ * casa-mgdd-quick-actions-card.
  *
- * Version: 1.98.1
+ * Version: 1.99.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -14712,4 +14713,466 @@ window.customCards.push({
   name: 'Casa MGDD Monitor',
   description:
     'Vista ha-monitor a pagina intera (da usare in una vista panel): page sistema, rete o manutenzione. Entità predefinite dell’installazione di casa, tutte sovrascrivibili.',
+});
+
+// ===== quick-actions-card.js =====
+// "Comandi rapidi" della Home: una tessera per comando, che si aziona facendo
+// scorrere il pomello fino in fondo (slide to unlock) invece che con un tocco.
+// Sostituisce tre tile `toggle` che partivano a ogni tocco accidentale mentre
+// si scorreva la pagina sul telefono.
+//
+// Due tipi di tessera:
+//   - a impulso (Portone, Garage): lo slide esegue `entity` e basta. Non c'e'
+//     uno stato aperto/chiuso da mostrare: lo script o il lock del citofono
+//     danno solo l'input. Dopo lo slide: "Invio..." -> "Comando inviato" per
+//     5 s -> riposo. Sotto il nome resta l'ultima attivita'.
+//   - serratura (Ingresso): con `lock:` la tessera mostra lo stato della
+//     serratura con icona e colore (bloccata verde, sbloccata/aperta ambra,
+//     inceppata rossa, in movimento pulsante). Bloccata o inceppata -> lo slide
+//     esegue `entity` (es. lo script che apre la porta); sbloccata -> lo slide
+//     la blocca con `lock.lock`; aperta (scrocco tirato) -> nessun comando.
+//
+// Il pomello NON prende la posizione dall'HTML ridisegnato da mgddPaint: sta in
+// una variabile CSS sull'host (`--qa-x<i>`), che il ritocco del DOM non tocca.
+// Cosi' un aggiornamento di stato che arriva mentre il dito trascina non
+// rimette il pomello all'inizio.
+
+const QA_P = {
+  lock: 'M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z',
+  open: 'M18,1C15.24,1 13,3.24 13,6V8H4C2.9,8 2,8.89 2,10V20C2,21.11 2.9,22 4,22H16C17.11,22 18,21.11 18,20V10C18,8.9 17.11,8 16,8H15V6C15,4.34 16.34,3 18,3C19.66,3 21,4.34 21,6V8H23V6C23,3.24 20.76,1 18,1M10,13C11.1,13 12,13.89 12,15C12,16.11 11.1,17 10,17C8.9,17 8,16.11 8,15C8,13.9 8.9,13 10,13Z',
+  alert: 'M13,14H11V10H13M13,18H11V16H13M1,21H23L12,2L1,21Z',
+  chev: 'M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z',
+  sync: 'M12,18A6,6 0 0,1 6,12C6,11 6.25,10.03 6.7,9.2L5.24,7.74C4.46,8.97 4,10.43 4,12A8,8 0 0,0 12,20V23L16,19L12,15M12,4V1L8,5L12,9V6A6,6 0 0,1 18,12C18,13 17.75,13.97 17.3,14.8L18.76,16.26C19.54,15.03 20,13.57 20,12A8,8 0 0,0 12,4Z',
+  check: 'M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z',
+  close: 'M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z',
+};
+
+function qaSvg(k) {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="' + QA_P[k] + '"/></svg>';
+}
+
+// Icona predefinita per dominio, se la configurazione non ne indica una.
+const QA_ICON = {
+  script: 'mdi:play-circle-outline',
+  lock: 'mdi:door',
+  button: 'mdi:gesture-tap-button',
+  scene: 'mdi:palette',
+  automation: 'mdi:robot',
+};
+
+// Azione eseguita dallo slide di una tessera a impulso, per dominio.
+const QA_ACTION = {
+  script: ['script', 'turn_on'],
+  lock: ['lock', 'unlock'],
+  button: ['button', 'press'],
+  input_button: ['input_button', 'press'],
+  scene: ['scene', 'turn_on'],
+  automation: ['automation', 'trigger'],
+  switch: ['switch', 'turn_on'],
+};
+
+// "adesso", "12 min fa", "3 ore fa", "ieri", "4 giorni fa".
+function qaAgo(ts) {
+  if (!ts) return '';
+  const m = Math.floor((Date.now() - ts) / 60000);
+  if (m < 1) return 'adesso';
+  if (m < 60) return m + ' min fa';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h === 1 ? '1 ora fa' : h + ' ore fa';
+  const g = Math.floor(h / 24);
+  return g <= 1 || mgddSameDay(ts, 1) ? 'ieri' : g + ' giorni fa';
+}
+
+const QA_DONE_MS = 5000; // quanto resta "Comando inviato"
+const QA_WAIT_MS = 20000; // attesa massima di una risposta di HA
+
+class QuickActionsCard extends HTMLElement {
+  setConfig(config) {
+    if (!config || !Array.isArray(config.items) || !config.items.length) {
+      throw new Error('Config "items" mancante: serve almeno un comando');
+    }
+    config.items.forEach((it, i) => {
+      if (!it || (!it.entity && !it.lock)) throw new Error('items[' + i + ']: serve "entity" oppure "lock"');
+    });
+    this.config = config;
+    this._local = {}; // i -> {phase: busy|done|err, t, from}
+    this._sig = null;
+    this._render();
+  }
+
+  static getStubConfig() {
+    return { items: [{ name: 'Garage', icon: 'mdi:garage', entity: 'script.apri_garage' }] };
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 'full', min_columns: 6 };
+  }
+
+  getCardSize() {
+    return 3;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const sig = mgddStatesSig(hass, this._ids()) + this._attrSig();
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  connectedCallback() {
+    if (!this._wired) {
+      this._wired = true;
+      this.addEventListener('pointerdown', (e) => this._down(e));
+      this.addEventListener('pointermove', (e) => this._move(e));
+      this.addEventListener('pointerup', (e) => this._up(e, false));
+      this.addEventListener('pointercancel', (e) => this._up(e, true));
+      this.addEventListener('keydown', (e) => this._key(e));
+      this.addEventListener('click', (e) => this._click(e));
+    }
+    // i "N min fa" vanno avanti anche se nessuno stato cambia
+    if (!this._tick) this._tick = setInterval(() => this._render(), 30000);
+    if (!this._ro && typeof ResizeObserver !== 'undefined') {
+      this._ro = new ResizeObserver(() => this._place());
+      this._ro.observe(this);
+    }
+    this._render();
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._tick);
+    this._tick = null;
+    if (this._ro) this._ro.disconnect();
+    this._ro = null;
+  }
+
+  // ---------- dati ----------
+
+  _ids() {
+    const ids = [];
+    (this.config ? this.config.items : []).forEach((it) => {
+      if (it.entity) ids.push(it.entity);
+      if (it.lock) ids.push(it.lock);
+    });
+    return ids;
+  }
+
+  // last_triggered di uno script cambia anche quando lo stato, tra un
+  // aggiornamento e l'altro, risulta di nuovo off: lo si aggiunge alla firma.
+  _attrSig() {
+    let out = '';
+    (this.config ? this.config.items : []).forEach((it) => {
+      const s = it.entity && this._st(it.entity);
+      if (s && s.attributes && s.attributes.last_triggered) out += s.attributes.last_triggered;
+    });
+    return out;
+  }
+
+  _st(id) {
+    return (id && this._hass && this._hass.states[id]) || null;
+  }
+
+  _avail(s) {
+    return !!(s && s.state !== 'unavailable' && s.state !== 'unknown');
+  }
+
+  _domain(id) {
+    return String(id || '').split('.')[0];
+  }
+
+  // Ultima attivita' del comando: per uno script l'ultima esecuzione, per un
+  // button lo stato stesso (e' il timestamp dell'ultima pressione), per il
+  // resto l'ultimo cambio di stato.
+  _lastTs(id) {
+    const s = this._st(id);
+    if (!s) return 0;
+    const dom = this._domain(id);
+    let v = s.last_changed;
+    if (dom === 'script' || dom === 'automation') v = s.attributes && s.attributes.last_triggered;
+    else if (dom === 'button' || dom === 'input_button') v = s.state;
+    const t = v ? new Date(v).getTime() : 0;
+    return isNaN(t) ? 0 : t;
+  }
+
+  // ---------- modello della tessera ----------
+
+  _view(i, it) {
+    const loc = this._local[i];
+    const fs = this._st(it.entity || it.lock);
+    const name = it.name || (fs && fs.attributes.friendly_name) || it.entity || it.lock;
+    if (it.lock) return Object.assign({ name: name }, this._lockView(it, loc));
+
+    const s = this._st(it.entity);
+    const icon = '<ha-icon icon="' + mgddEsc(it.icon || QA_ICON[this._domain(it.entity)] || 'mdi:gesture-tap') + '"></ha-icon>';
+    const v = (extra) => Object.assign({ name: name, icon: icon, tone: 'go', on: false, pulse: false, alert: false }, extra);
+    if (loc && loc.phase === 'busy') return v({ on: true, pulse: true, meta: 'Invio…', label: 'Invio…', knob: 'sync', mode: 'busy' });
+    if (loc && loc.phase === 'done') return v({ on: true, meta: 'Comando inviato', metaTone: true, label: 'Inviato', knob: 'check', mode: 'done' });
+    if (loc && loc.phase === 'err') return v({ tone: 'err', on: true, alert: true, meta: 'Errore', metaTone: true, label: 'Errore', knob: 'close', mode: 'done' });
+    // un button senza pressioni ha stato `unknown` ma funziona
+    const dom = this._domain(it.entity);
+    if (!s || (s.state === 'unavailable') || (!this._avail(s) && dom !== 'button' && dom !== 'input_button')) {
+      return v({ tone: 'off', meta: 'Non disponibile', label: it.label || 'Apri', knob: 'chev', mode: 'off' });
+    }
+    return v({ meta: qaAgo(this._lastTs(it.entity)) || '—', label: it.label || 'Apri', knob: 'chev', mode: 'idle' });
+  }
+
+  _lockView(it, loc) {
+    const s = this._st(it.lock);
+    const st = s ? s.state : 'unavailable';
+    const ago = qaAgo(s ? new Date(s.last_changed).getTime() : 0);
+    const v = (tone, icon, extra) =>
+      Object.assign({ tone: tone, icon: qaSvg(icon), on: true, pulse: false, alert: false }, extra);
+    // comando appena inviato e serratura ancora ferma: appena si muove, comanda
+    // il suo stato
+    if (loc && loc.from === st) {
+      const ic = st === 'unlocked' ? 'open' : 'lock';
+      if (loc.phase === 'busy') return v('go', ic, { pulse: true, meta: 'Invio…', label: 'Invio…', knob: 'sync', mode: 'busy' });
+      if (loc.phase === 'done') return v('go', ic, { meta: 'Comando inviato', metaTone: true, label: 'Inviato', knob: 'check', mode: 'done' });
+      if (loc.phase === 'err') return v('err', 'alert', { alert: true, meta: 'Errore', metaTone: true, label: 'Errore', knob: 'close', mode: 'done' });
+    }
+    switch (st) {
+      case 'locked':
+        return v('go', 'lock', { meta: 'Bloccata · ' + ago, label: it.label || 'Apri', knob: 'open', mode: 'idle', act: 'main' });
+      case 'unlocked':
+        return v('warn', 'open', { alert: true, meta: 'Sbloccata · ' + ago, metaTone: true, label: 'Blocca', knob: 'lock', mode: 'idle', act: 'lock' });
+      case 'open':
+        return v('warn', 'open', { alert: true, meta: 'Aperta', metaTone: true, label: 'Aperta', knob: 'lock', mode: 'off' });
+      case 'unlocking':
+      case 'opening': {
+        const t = st === 'opening' ? 'Apertura…' : 'Sblocco…';
+        return v('warn', 'open', { pulse: true, meta: t, metaTone: true, label: t, knob: 'sync', mode: 'busy' });
+      }
+      case 'locking':
+        return v('go', 'lock', { pulse: true, meta: 'Blocco…', metaTone: true, label: 'Blocco…', knob: 'sync', mode: 'busy' });
+      case 'jammed':
+        return v('err', 'alert', { alert: true, pulse: true, meta: 'Inceppata', metaTone: true, label: 'Riprova', knob: 'lock', mode: 'idle', act: 'main' });
+      default:
+        return v('off', 'lock', { on: false, meta: 'Non disponibile', label: it.label || 'Apri', knob: 'open', mode: 'off' });
+    }
+  }
+
+  // ---------- markup ----------
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    // mentre il dito trascina non si ridisegna: lo si fa al rilascio
+    if (this._drag) return;
+    this._views = this.config.items.map((it, i) => this._view(i, it));
+    const tiles = this._views
+      .map((v, i) => {
+        const x = 'var(--qa-x' + i + ',0px)';
+        const idle = v.mode === 'idle';
+        return (
+          '<div class="qa-t t-' + v.tone + (v.alert ? ' qa-alert' : '') + '">' +
+          '<div class="qa-ic' + (v.on ? ' on' : '') + (v.pulse ? ' pulse' : '') + '" data-more="' + i + '">' + v.icon + '</div>' +
+          '<div class="qa-n">' + mgddEsc(v.name) + '</div>' +
+          '<div class="qa-m' + (v.metaTone ? ' c' : '') + '">' + mgddEsc(v.meta) + '</div>' +
+          '<div class="qa-tr" data-mode="' + v.mode + '">' +
+          '<div class="qa-fill" style="width:calc(' + x + ' + 40px)"></div>' +
+          '<div class="qa-lb" style="opacity:calc(1 - var(--qa-p' + i + ',0))">' + mgddEsc(v.label) + '</div>' +
+          '<div class="qa-knob" data-i="' + i + '" role="button" tabindex="' + (idle ? '0' : '-1') + '"' +
+          ' aria-label="' + mgddEsc(v.name + ': ' + v.label) + '" aria-disabled="' + (idle ? 'false' : 'true') + '"' +
+          ' style="transform:translateX(' + x + ')">' + qaSvg(v.knob) + '</div>' +
+          '</div></div>'
+        );
+      })
+      .join('');
+    const cols = this.config.columns || Math.min(this.config.items.length, 3);
+    mgddPaint(
+      this,
+      QA_STYLES,
+      '<div class="qa' + (this._isDark() ? ' qa-dark' : '') + '" style="grid-template-columns:repeat(' + cols + ',minmax(0,1fr))">' + tiles + '</div>'
+    );
+    this._place();
+  }
+
+  // Posizione di riposo dei pomelli: in fondo se il comando e' in corso o
+  // appena inviato, all'inizio altrimenti.
+  _place() {
+    if (!this._views || this._drag) return;
+    this.querySelectorAll('.qa-knob').forEach((k) => {
+      const i = +k.dataset.i;
+      const v = this._views[i];
+      const end = v && (v.mode === 'busy' || v.mode === 'done');
+      this.style.setProperty('--qa-x' + i, (end ? this._max(k) : 0) + 'px');
+      this.style.setProperty('--qa-p' + i, '0');
+    });
+  }
+
+  _max(knob) {
+    return Math.max(0, knob.parentNode.clientWidth - knob.offsetWidth - 8);
+  }
+
+  // ---------- gesto ----------
+
+  _down(e) {
+    const k = e.target.closest && e.target.closest('.qa-knob');
+    if (!k || e.button > 0) return;
+    const i = +k.dataset.i;
+    if (!this._views || !this._views[i] || this._views[i].mode !== 'idle') return;
+    e.preventDefault();
+    try {
+      k.setPointerCapture(e.pointerId);
+    } catch (err) {
+      /* senza cattura il gesto funziona finche' il dito resta sul binario */
+    }
+    this._drag = { i: i, x0: e.clientX, dx: 0, max: this._max(k), id: e.pointerId };
+    this.classList.add('qa-dragging');
+  }
+
+  _move(e) {
+    const d = this._drag;
+    if (!d || e.pointerId !== d.id) return;
+    d.dx = Math.min(d.max, Math.max(0, e.clientX - d.x0));
+    this.style.setProperty('--qa-x' + d.i, d.dx + 'px');
+    this.style.setProperty('--qa-p' + d.i, String(d.max ? Math.min(1, d.dx / (d.max * 0.6)) : 0));
+  }
+
+  _up(e, cancel) {
+    const d = this._drag;
+    if (!d || e.pointerId !== d.id) return;
+    this._drag = null;
+    this.classList.remove('qa-dragging');
+    if (!cancel && d.max > 0 && d.dx >= d.max * 0.9) {
+      this.style.setProperty('--qa-x' + d.i, d.max + 'px');
+      if (navigator.vibrate) navigator.vibrate(15);
+      this._fire(d.i);
+    } else {
+      this._render(); // torna indietro (e recupera un eventuale ridisegno saltato)
+    }
+  }
+
+  // Da tastiera Invio/Spazio sul pomello valgono come slide completo: e' gia'
+  // un gesto voluto, non uno sfioramento.
+  _key(e) {
+    const k = e.target.closest && e.target.closest('.qa-knob');
+    if (!k || (e.key !== 'Enter' && e.key !== ' ')) return;
+    const i = +k.dataset.i;
+    if (!this._views || !this._views[i] || this._views[i].mode !== 'idle') return;
+    e.preventDefault();
+    this._fire(i);
+  }
+
+  // Tocco sull'icona: scheda dell'entita' (la serratura, se c'e').
+  _click(e) {
+    const m = e.target.closest && e.target.closest('[data-more]');
+    if (!m) return;
+    const it = this.config.items[+m.dataset.more];
+    const id = it && (it.lock || it.entity);
+    if (!id) return;
+    const ev = new Event('hass-more-info', { bubbles: true, composed: true });
+    ev.detail = { entityId: id };
+    this.dispatchEvent(ev);
+  }
+
+  // ---------- comando ----------
+
+  _call(i) {
+    const it = this.config.items[i];
+    const v = this._views[i];
+    if (it.lock && v.act === 'lock') return ['lock', 'lock', { entity_id: it.lock }];
+    if (!it.entity) return ['lock', 'open', { entity_id: it.lock }];
+    if (it.action) {
+      const p = String(it.action).split('.');
+      return [p[0], p[1], Object.assign({ entity_id: it.entity }, it.data || {})];
+    }
+    const a = QA_ACTION[this._domain(it.entity)];
+    return a ? [a[0], a[1], Object.assign({ entity_id: it.entity }, it.data || {})] : null;
+  }
+
+  _fire(i) {
+    const it = this.config.items[i];
+    const c = this._call(i);
+    if (!c || !this._hass) return;
+    const loc = { phase: 'busy', t: Date.now(), from: it.lock ? (this._st(it.lock) || {}).state : null };
+    this._local[i] = loc;
+    this._render();
+    const clear = (ms) =>
+      setTimeout(() => {
+        if (this._local[i] !== loc) return;
+        delete this._local[i];
+        this._render();
+      }, ms);
+    Promise.resolve()
+      .then(() => this._hass.callService(c[0], c[1], c[2]))
+      .then(() => {
+        if (this._local[i] !== loc) return;
+        loc.phase = 'done';
+        this._render();
+        clear(QA_DONE_MS);
+      })
+      .catch((err) => {
+        if (this._local[i] !== loc) return;
+        loc.phase = 'err';
+        this._render();
+        clear(QA_DONE_MS);
+        console.warn('casa-mgdd-quick-actions-card: ' + c[0] + '.' + c[1], err);
+      });
+    clear(QA_WAIT_MS); // rete di sicurezza se HA non risponde mai
+  }
+}
+
+const QA_STYLES =
+  '<style>' +
+  '.qa{display:grid;gap:8px;font-family:Inter,-apple-system,"Segoe UI",Roboto,sans-serif;' +
+  '--go:#12a05c;--go-bg:rgba(18,160,92,.14);--warn:#c47d10;--warn-bg:rgba(196,125,16,.14);' +
+  '--err:#d23c3c;--err-bg:rgba(210,60,60,.13);--qa-k:#fff;--qa-tr:rgba(127,127,127,.13)}' +
+  '.qa.qa-dark{--go:#34c77b;--go-bg:rgba(52,199,123,.18);--warn:#f2a93b;--warn-bg:rgba(242,169,59,.18);' +
+  '--err:#ef5a5a;--err-bg:rgba(239,90,90,.18);--qa-k:#0d0d0f;--qa-tr:rgba(255,255,255,.07)}' +
+  '.qa-t{--acc:var(--go);--acc-bg:var(--go-bg);min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px;' +
+  'padding:12px 8px 8px;border-radius:var(--ha-card-border-radius,12px);' +
+  'background:var(--ha-card-background,var(--card-background-color,#1c1c1c));' +
+  'border:1px solid var(--ha-card-border-color,var(--divider-color,rgba(127,127,127,.2)));' +
+  'box-shadow:var(--ha-card-box-shadow,none);transition:border-color .3s}' +
+  '.qa-t.t-warn{--acc:var(--warn);--acc-bg:var(--warn-bg)}' +
+  '.qa-t.t-err{--acc:var(--err);--acc-bg:var(--err-bg)}' +
+  '.qa-t.t-off{--acc:var(--secondary-text-color,#888);--acc-bg:var(--qa-tr)}' +
+  '.qa-t.qa-alert{border-color:var(--acc)}' +
+  '.qa-ic{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:4px;cursor:pointer;' +
+  'background:var(--qa-tr);color:var(--secondary-text-color,#9a9ba1);transition:color .3s,background .3s;--mdc-icon-size:20px}' +
+  '.qa-ic svg{width:20px;height:20px}' +
+  '.qa-ic.on{color:var(--acc);background:var(--acc-bg)}' +
+  '.qa-ic.pulse{animation:qa-halo 1.4s ease-out infinite}' +
+  '@keyframes qa-halo{0%{box-shadow:0 0 0 0 var(--acc)}100%{box-shadow:0 0 0 9px transparent}}' +
+  '.qa-n{font-size:13px;font-weight:600;color:var(--primary-text-color);text-align:center;max-width:100%;' +
+  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+  '.qa-m{font-size:11px;color:var(--secondary-text-color);margin-bottom:8px;max-width:100%;' +
+  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+  '.qa-m.c{color:var(--acc)}' +
+  '.qa-tr{position:relative;width:100%;height:40px;border-radius:20px;background:var(--qa-tr);overflow:hidden;' +
+  'touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}' +
+  '.qa-fill{position:absolute;left:0;top:0;bottom:0;border-radius:20px;background:var(--acc);opacity:.22;' +
+  'transition:width .35s cubic-bezier(.2,.8,.2,1)}' +
+  '.qa-lb{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding-left:30px;' +
+  'font-size:11.5px;font-weight:500;color:var(--secondary-text-color);white-space:nowrap;pointer-events:none}' +
+  '.qa-tr[data-mode=idle] .qa-lb{background:linear-gradient(90deg,var(--secondary-text-color) 0%,var(--primary-text-color) 50%,var(--secondary-text-color) 100%);' +
+  'background-size:200% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:qa-shine 2.6s linear infinite}' +
+  '@keyframes qa-shine{from{background-position:100% 0}to{background-position:-100% 0}}' +
+  '.qa-tr[data-mode=busy] .qa-lb,.qa-tr[data-mode=done] .qa-lb{padding-left:0;padding-right:32px;color:var(--primary-text-color)}' +
+  '.qa-tr[data-mode=done] .qa-fill{opacity:.35}' +
+  '.qa-knob{position:absolute;top:4px;left:4px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;' +
+  'background:var(--acc);color:var(--qa-k);cursor:grab;box-shadow:0 2px 8px rgba(0,0,0,.3);outline:none;' +
+  'transition:transform .35s cubic-bezier(.2,.8,.2,1),background .3s}' +
+  '.qa-knob:focus-visible{box-shadow:0 0 0 3px var(--acc-bg),0 0 0 5px var(--acc)}' +
+  '.qa-knob svg{width:18px;height:18px}' +
+  '.qa-tr[data-mode=busy] .qa-knob svg{animation:qa-spin 1s linear infinite}' +
+  '@keyframes qa-spin{to{transform:rotate(360deg)}}' +
+  '.qa-tr[data-mode=off] .qa-knob{background:var(--secondary-text-color,#888);cursor:not-allowed;opacity:.6}' +
+  '.qa-tr[data-mode=off] .qa-lb{opacity:.5 !important}' +
+  '.qa-dragging .qa-knob,.qa-dragging .qa-fill{transition:none}' +
+  '.qa-dragging .qa-knob{cursor:grabbing}' +
+  '@media (prefers-reduced-motion:reduce){.qa-ic.pulse,.qa-tr .qa-lb,.qa-tr .qa-knob svg{animation:none !important}}' +
+  '</style>';
+
+customElements.define('casa-mgdd-quick-actions-card', QuickActionsCard);
+window.customCards.push({
+  type: 'casa-mgdd-quick-actions-card',
+  name: 'Casa MGDD Comandi rapidi',
+  description:
+    'Comandi da azionare con uno slide (slide to unlock): script, citofono, garage. Con `lock:` la tessera mostra anche lo stato della serratura.',
 });

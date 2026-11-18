@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco comandi rapidi</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+<style>
+  body { margin: 0; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  body.dark { background: #111; --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --divider-color: rgba(225,225,225,.12); }
+  body.light { background: #fafafa; --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272; --divider-color: rgba(0,0,0,.12); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; font-size: 12px; background: #222; color: #ddd; }
+  .bar button { font: inherit; }
+  .wrap { max-width: 520px; margin: 16px auto; padding: 0 16px; }
+  h3 { font-weight: 500; color: var(--primary-text-color); margin: 0 0 10px; }
+  #log { font: 12px monospace; color: var(--secondary-text-color); margin-top: 16px; white-space: pre-wrap; }
+  ha-icon { display: inline-flex; align-items: center; justify-content: center; }
+  ha-icon i { font-size: var(--mdc-icon-size, 24px); line-height: 1; }
+</style>
+</head>
+<body class="dark">
+<div class="bar">
+  <span>Nuki:</span>
+  <button data-n="locked">bloccata</button>
+  <button data-n="unlocked">sbloccata</button>
+  <button data-n="open">aperta</button>
+  <button data-n="unlocking">sblocco</button>
+  <button data-n="jammed">inceppata</button>
+  <button data-n="unavailable">non disp.</button>
+  <span>|</span>
+  <button id="fail">Servizi: OK</button>
+  <button id="dark">Chiaro / scuro</button>
+</div>
+<div class="wrap">
+  <h3>Comandi Rapidi</h3>
+  <div id="host"></div>
+  <div id="log"></div>
+</div>
+<script>
+  window.customCards = window.customCards || [];
+  // In Home Assistant <ha-icon> esiste gia': qui lo si imita con il webfont MDI.
+  customElements.define('ha-icon', class extends HTMLElement {
+    static get observedAttributes() { return ['icon']; }
+    connectedCallback() { this._draw(); }
+    attributeChangedCallback() { this._draw(); }
+    _draw() { this.innerHTML = '<i class="mdi mdi-' + (this.getAttribute('icon') || '').replace('mdi:', '') + '"></i>'; }
+  });
+</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+  const states = {
+    'lock.soggiorno_nuki_ultra': { state: 'locked', last_changed: ago(19 * 60), attributes: { friendly_name: 'Nuki Ultra' } },
+    'script.nuki_apri_porta2': { state: 'off', last_changed: ago(600), attributes: { last_triggered: ago(19 * 60) } },
+    'lock.ring_intercom_amazon_lock': { state: 'locked', last_changed: ago(33), attributes: { friendly_name: 'Portone Condominiale' } },
+    'script.apri_garage': { state: 'off', last_changed: ago(400), attributes: { last_triggered: ago(7 * 60) } },
+  };
+  let dark = true;
+  let fail = false;
+  const log = (s) => { document.getElementById('log').textContent = new Date().toLocaleTimeString() + '  ' + s + '\n' + document.getElementById('log').textContent; };
+  const set = (id, st) => { states[id] = Object.assign({}, states[id], { state: st, last_changed: new Date().toISOString() }); push(); };
+  const el = document.createElement('casa-mgdd-quick-actions-card');
+  el.setConfig({
+    type: 'custom:casa-mgdd-quick-actions-card',
+    items: [
+      { name: 'Ingresso', entity: 'script.nuki_apri_porta2', lock: 'lock.soggiorno_nuki_ultra' },
+      { name: 'Porta Condominio', icon: 'mdi:home-city', entity: 'lock.ring_intercom_amazon_lock' },
+      { name: 'Garage', icon: 'mdi:garage', entity: 'script.apri_garage' },
+    ],
+  });
+  document.getElementById('host').appendChild(el);
+  function push() {
+    el.hass = {
+      states: Object.assign({}, states),
+      themes: { darkMode: dark },
+      callService: (d, s, data) => new Promise((res, rej) => {
+        log(d + '.' + s + ' ' + JSON.stringify(data));
+        setTimeout(() => {
+          if (fail) return rej(new Error('servizio fallito (simulato)'));
+          const id = data.entity_id;
+          if (d === 'script') { states[id].attributes = { last_triggered: new Date().toISOString() }; push(); }
+          // lo script della Nuki fa lock.open: si simula la serratura che si muove
+          if (id === 'script.nuki_apri_porta2') {
+            setTimeout(() => set('lock.soggiorno_nuki_ultra', 'opening'), 300);
+            setTimeout(() => set('lock.soggiorno_nuki_ultra', 'open'), 1800);
+            setTimeout(() => set('lock.soggiorno_nuki_ultra', 'unlocked'), 3500);
+          }
+          if (d === 'lock' && s === 'lock') {
+            setTimeout(() => set(id, 'locking'), 300);
+            setTimeout(() => set(id, 'locked'), 2000);
+          }
+          if (id === 'lock.ring_intercom_amazon_lock') {
+            set(id, 'unlocked');
+            setTimeout(() => set(id, 'locked'), 3000);
+          }
+          res();
+        }, 600);
+      }),
+    };
+  }
+  window.addEventListener('hass-more-info', (e) => log('more-info ' + e.detail.entityId));
+  document.querySelectorAll('[data-n]').forEach((b) => b.addEventListener('click', () => set('lock.soggiorno_nuki_ultra', b.dataset.n)));
+  document.getElementById('fail').addEventListener('click', (e) => { fail = !fail; e.target.textContent = 'Servizi: ' + (fail ? 'ERRORE' : 'OK'); });
+  document.getElementById('dark').addEventListener('click', () => { dark = !dark; document.body.className = dark ? 'dark' : 'light'; push(); });
+  push();
+</script>
+</body>
+</html>

@@ -32,6 +32,7 @@ Tutte si configurano in YAML; solo le due card temperatura hanno l'editor visual
 | Robot | `custom:casa-mgdd-vacuum-card` | Robot aspirapolvere: corona del completamento, fase, stanza, routine a scomparsa. |
 | Lavatrici | `custom:casa-mgdd-laundry-card` | Pianificatore lavatrici: tutta la dashboard in una card (`block: pagina`, per una vista panel) oppure un blocco per card (`block:` testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori `sensor.lavatrici_*`. |
 | Monitor | `custom:casa-mgdd-monitor-card` | Vista ha-monitor a pagina intera, da mettere in una vista panel: `page:` sistema (versioni, host, salute, backup, app, servizi), rete (UniFi, UPS, speedtest, AdGuard) o manutenzione (cose da fare, entità non disponibili per dispositivo, automazioni ferme, aggiornamenti, batterie). Sotto i 600 px la pagina sistema passa al layout da telefono. |
+| Comandi rapidi | `custom:casa-mgdd-quick-actions-card` | Una tessera per comando, azionata con uno slide fino in fondo invece che con un tocco. `items:` con `name`, `icon`, `entity` (script, lock, button, scene, automation, switch; `action:` + `data:` per un servizio diverso). Con `lock:` la tessera mostra lo stato della serratura (verde bloccata, ambra sbloccata/aperta, rossa inceppata) e da sbloccata lo slide la blocca. |
 
 ## Installazione via HACS
 
@@ -57,6 +58,7 @@ ad esempio `python -m http.server 8765`, poi `http://localhost:8765/dev/lavatric
 La pagina intera (`block: pagina`) si prova con `dev/lavatrici-pagina.html`, che imita `<ha-icon>` con il webfont MDI.
 I banner di allerta della card meteo si provano con `dev/meteo-allerte.html` (verde, gialla, arancione e rossa, domani `unknown`).
 Le tre pagine del monitor si provano con `dev/monitor.html` (`?page=sistema|rete|manutenzione`, dati normali o con allarmi, chiaro/scuro, ID sì/no); i dati finti stanno in `dev/monitor-fixture.js`.
+I comandi rapidi si provano con `dev/comandi.html`: stati della Nuki a pulsante, servizi che rispondono o falliscono, chiaro/scuro; le chiamate ai servizi finiscono nel registro sotto la card.
 
 ## Uso — banner Protezione Civile in `weather-alert-card`
 
