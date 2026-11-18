@@ -31,6 +31,7 @@ Tutte si configurano in YAML; solo le due card temperatura hanno l'editor visual
 | VMC | `custom:casa-mgdd-vmc-card` | Una tessera per VMC: corona della portata e due comandi. |
 | Robot | `custom:casa-mgdd-vacuum-card` | Robot aspirapolvere: corona del completamento, fase, stanza, routine a scomparsa. |
 | Lavatrici | `custom:casa-mgdd-laundry-card` | Pianificatore lavatrici: tutta la dashboard in una card (`block: pagina`, per una vista panel) oppure un blocco per card (`block:` testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori `sensor.lavatrici_*`. |
+| Monitor | `custom:casa-mgdd-monitor-card` | Vista ha-monitor a pagina intera, da mettere in una vista panel: `page:` sistema (versioni, host, salute, backup, app, servizi), rete (UniFi, UPS, speedtest, AdGuard) o manutenzione (cose da fare, entità non disponibili per dispositivo, automazioni ferme, aggiornamenti, batterie). Sotto i 600 px la pagina sistema passa al layout da telefono. |
 
 ## Installazione via HACS
 
@@ -55,6 +56,7 @@ simulazione scaduta, tema chiaro/scuro). Va servito via HTTP dalla radice del re
 ad esempio `python -m http.server 8765`, poi `http://localhost:8765/dev/lavatrici-harness.html`.
 La pagina intera (`block: pagina`) si prova con `dev/lavatrici-pagina.html`, che imita `<ha-icon>` con il webfont MDI.
 I banner di allerta della card meteo si provano con `dev/meteo-allerte.html` (verde, gialla, arancione e rossa, domani `unknown`).
+Le tre pagine del monitor si provano con `dev/monitor.html` (`?page=sistema|rete|manutenzione`, dati normali o con allarmi, chiaro/scuro, ID sì/no); i dati finti stanno in `dev/monitor-fixture.js`.
 
 ## Uso — banner Protezione Civile in `weather-alert-card`
 

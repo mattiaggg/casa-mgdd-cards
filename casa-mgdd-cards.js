@@ -8,9 +8,9 @@
  * casa-mgdd-sensors-card, casa-mgdd-energy-live-card,
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
- * casa-mgdd-vacuum-card, casa-mgdd-laundry-card.
+ * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card.
  *
- * Version: 1.97.0
+ * Version: 1.98.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -12912,4 +12912,1775 @@ window.customCards.push({
   type: 'casa-mgdd-laundry-card',
   name: 'Casa MGDD Lavatrici',
   description: 'Pianificatore lavatrici: tutta la dashboard in una card (block: pagina, per una vista panel) oppure un blocco per card (block: testata, oggi, batteria, enel, se-lavassi, gemini, settimana, grafico, perche, obiettivo, ultimi, programmi, stima). Legge i sensori sensor.lavatrici_*. Config via YAML.',
+});
+
+// ===== casa-mgdd-monitor-card.js =====
+// Vista ha-monitor: una card per pagina, disegnata come il mockup del
+// 2026-11-18 (canvas "HA Monitor – mockup"). `page:` sceglie quale:
+//   sistema       cruscotto: versioni, host, salute, backup, app, servizi
+//   rete          connettivita', dispositivi UniFi, UPS, speedtest, AdGuard
+//   manutenzione  cose da fare, entita' non disponibili, automazioni ferme,
+//                 aggiornamenti, batterie
+// Va messa in una vista `panel`: la card disegna da se' sfondo, margini e
+// colonne, e sotto `phone_width` (600 px) la pagina sistema passa al layout
+// compatto da telefono.
+//
+// Diversamente dalla casa-mgdd-system-card (sei sezioni componibili in una
+// griglia), qui la pagina e' una sola: la richiesta era riprodurre il mockup
+// identico, e il mockup e' una pagina intera con il suo ritmo e la sua palette.
+//
+// Da dove vengono i numeri:
+//  - conteggi (non disponibili, app, batterie, aggiornamenti, automazioni) da
+//    `hass.states` + registro entita'/dispositivi del frontend, rifatti al
+//    massimo ogni 30 s;
+//  - grafici da `recorder/statistics_during_period` (ogni 5 min);
+//  - esito dei backup dei 14 giorni dalla cronologia dell'entita' evento;
+//  - riparazioni da `repairs/list_issues`, notifiche dalla sottoscrizione
+//    `persistent_notification/subscribe` (come nella system card).
+// Se una chiamata fallisce la parte relativa sparisce o dice che non ha dati;
+// non si inventa nulla.
+
+const MON_DEFAULTS = {
+  host_label: 'Beelink MINI-S13 Pro · Intel N150',
+  paths: {
+    sistema: '/lovelace/ha-monitor',
+    rete: '/lovelace/ha-monitor-rete',
+    manutenzione: '/lovelace/ha-monitor-manutenzione',
+  },
+  host: {
+    cpu: 'sensor.system_monitor_processor_use',
+    cpu_label: 'N150 · 4 core',
+    cpu_temp: 'sensor.system_monitor_processor_temperature',
+    memory: 'sensor.system_monitor_memory_usage',
+    memory_used: 'sensor.system_monitor_memory_use',
+    memory_free: 'sensor.system_monitor_memory_free',
+    disk_use: 'sensor.system_monitor_disk_use',
+    disk_free: 'sensor.system_monitor_disk_free',
+    last_boot: 'sensor.system_monitor_last_boot',
+  },
+  versions: {
+    core: 'update.home_assistant_core_update',
+    supervisor: 'update.home_assistant_supervisor_update',
+    os: 'update.home_assistant_operating_system_update',
+    cards: 'update.casa_mgdd_cards_update',
+  },
+  backup: {
+    event: 'event.backup_backup_automatico',
+    state: 'sensor.backup_backup_manager_state',
+    last_ok: 'sensor.backup_last_successful_automatic_backup',
+    last_try: 'sensor.backup_last_attempted_automatic_backup',
+    next: 'sensor.backup_next_scheduled_automatic_backup',
+    size: 'sensor.backup_dimensione_ultimo_backup_automatico_riuscito',
+  },
+  zigbee: {
+    connection: 'binary_sensor.zigbee2mqtt_bridge_connection_state',
+    version: 'sensor.zigbee2mqtt_bridge_version',
+    coordinator: 'sensor.zigbee2mqtt_bridge_coordinator_version',
+    permit_join: 'switch.zigbee2mqtt_bridge_permit_join',
+    log_level: 'select.zigbee2mqtt_bridge_log_level',
+  },
+  frigate: {
+    status: 'sensor.frigate_status',
+    uptime: 'sensor.frigate_uptime',
+    server: 'update.frigate_server',
+  },
+  ai: {
+    task: 'ai_task.google_ai_task',
+    plan: 'sensor.lavatrici_piano',
+  },
+  network: {
+    wan_ip: 'sensor.cp4_k68150223_ip_wan',
+    speed_down: 'sensor.speedtest_scarica',
+    speed_up: 'sensor.speedtest_carica',
+    speed_ping: 'sensor.speedtest_ping',
+    clients: 'sensor.mg_dd_clients',
+    guests: 'sensor.mg_dd_guest_clients',
+    gateway_ping: 'binary_sensor.ping_powerwall3',
+    gateway_rtt: 'sensor.ping_powerwall3_round_trip_time_average',
+    gateway_loss: 'sensor.ping_powerwall3_perdita_di_pacchetti',
+    gateway_name: 'Gateway Powerwall',
+  },
+  topology: ['Internet', 'Express 7', 'USW Flex 2.5G', 'U7 Mesh · UPS Tower · HA · raspberry5'],
+  unifi: [
+    {
+      name: 'Express 7',
+      state: 'sensor.express_7_state',
+      cpu: 'sensor.express_7_cpu_utilization',
+      memory: 'sensor.express_7_memory_utilization',
+      uptime: 'sensor.express_7_tempo_di_attivita',
+      firmware: 'update.express_7_firmware',
+    },
+    {
+      name: 'USW Flex 2.5G 5',
+      state: 'sensor.usw_flex_2_5g_5_state',
+      cpu: 'sensor.usw_flex_2_5g_5_cpu_utilization',
+      memory: 'sensor.usw_flex_2_5g_5_memory_utilization',
+      uptime: 'sensor.usw_flex_2_5g_5_tempo_di_attivita',
+      firmware: 'update.usw_flex_2_5g_5_firmware',
+    },
+    {
+      name: 'U7 Mesh',
+      state: 'device_tracker.uapa69e',
+      cpu: 'sensor.u7_mesh_cpu_utilization',
+      memory: 'sensor.u7_mesh_memory_utilization',
+      firmware: 'update.firmware',
+    },
+  ],
+  ups: {
+    name: 'UPS Tower',
+    online: 'binary_sensor.ups_tower_rete',
+    battery: 'sensor.ups_tower_livello_della_batteria',
+    runtime: 'sensor.ups_tower_durata_della_batteria',
+    power: 'sensor.ups_tower_potenza_di_uscita',
+    voltage: 'sensor.ups_tower_tensione_di_uscita',
+    current: 'sensor.ups_tower_corrente_di_uscita',
+    power_factor: 'sensor.ups_tower_fattore_di_potenza_di_uscita',
+    bypass: 'sensor.ups_tower_tensione_di_bypass',
+    outlets: 'switch.ups_tower_outlet_',
+  },
+  adguard: {
+    queries: 'sensor.adguard_home_query_dns',
+    blocked: 'sensor.adguard_home_query_dns_bloccate',
+    ratio: 'sensor.adguard_home_rapporto_di_query_dns_bloccate',
+    latency: 'sensor.adguard_home_velocita_di_elaborazione_media',
+    safe: 'sensor.adguard_home_navigazione_sicura_bloccata',
+  },
+  hosts: [
+    { name: 'raspberry5 (WoL watch)', entity: 'device_tracker.raspberry5' },
+    { name: 'Gateway Daikin zona giorno', entity: 'sensor.daikin_zona_giorno_gateway_ip_address' },
+    { name: 'Gateway Daikin zona notte', entity: 'sensor.daikin_zona_notte_gateway_ip_address' },
+    { name: 'Shelly Pro EM 50', entity: 'sensor.shellyproem50_uptime' },
+  ],
+  access: [
+    { name: 'Tunnel Cloudflared', entity: 'update.cloudflared_update' },
+    { name: 'Server MCP', entity: 'update.home_assistant_mcp_server_update' },
+    { name: 'App iPhone Mattia', entity: 'sensor.iphone18pro_mattia_iphone17pro_mattia2_app_version' },
+    { name: 'App iPhone Deborah', entity: 'sensor.iphone_di_deborah_app_version' },
+  ],
+  battery_check: {
+    button: 'input_button.check_battery_status',
+    result: 'input_text.check_battery_result',
+  },
+  // batterie da non contare: la Powerwall e' un accumulo, i telefoni oscillano
+  battery_exclude: 'powerwall|iphone',
+};
+
+const MON_TH = {
+  cpu: 85, // %
+  cpu_temp_warn: 75, // °C
+  cpu_temp_crit: 85, // °C
+  temp_min: 30, // inizio scala della barra temperatura
+  temp_max: 100, // fine scala
+  memory: 85, // %
+  disk: 80, // % occupato
+  device_load: 75, // % CPU/RAM di un dispositivo UniFi sopra cui la barra diventa gialla
+  battery_crit: 20,
+  battery_warn: 30,
+  battery_low: 50,
+  backup_age: 30, // ore dall'ultimo backup riuscito
+  silent_days: 30, // dispositivo muto da piu' giorni: "da rimuovere"
+};
+
+const MON_PAGES = { sistema: 1, rete: 1, manutenzione: 1 };
+const MON_DOM_COLORS = ['#6cb4ff', '#a98bff', '#f2b544', '#5fd39a', '#ff9a6b'];
+const MON_GIORNI = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
+const MON_MESI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+const MON_CORE_UPD = [
+  'update.home_assistant_core_update',
+  'update.home_assistant_supervisor_update',
+  'update.home_assistant_operating_system_update',
+];
+
+function monNum(v, dec) {
+  if (v == null || isNaN(v)) return '—';
+  const d = dec || 0;
+  return Number(v).toLocaleString('it-IT', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+// "8 g 18 h", "5 h 12 min", "4 min"
+function monDur(ms) {
+  if (ms == null || isNaN(ms)) return '—';
+  if (ms < 0) ms = 0;
+  const m = Math.floor(ms / 60000);
+  const d = Math.floor(m / 1440);
+  const h = Math.floor((m % 1440) / 60);
+  if (d >= 60) return Math.round(d / 30) + ' mesi';
+  if (d > 0) return d + ' g' + (h ? ' ' + h + ' h' : '');
+  if (h > 0) return h + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
+  return (m % 60) + ' min';
+}
+
+function monHM(ts) {
+  const d = new Date(ts);
+  return mgddPad2(d.getHours()) + ':' + mgddPad2(d.getMinutes());
+}
+
+// "oggi 05:08", "domani 05:39", "ieri 22:15", "8 nov 04:10"
+function monWhen(ts) {
+  if (ts == null || isNaN(ts)) return '—';
+  const d = new Date(ts);
+  const now = new Date();
+  const k = (x) => x.getFullYear() * 10000 + x.getMonth() * 100 + x.getDate();
+  const diff = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) -
+    new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+  let day;
+  if (k(d) === k(now)) day = 'oggi';
+  else if (diff === 1) day = 'domani';
+  else if (diff === -1) day = 'ieri';
+  else day = d.getDate() + ' ' + MON_MESI[d.getMonth()];
+  return day + ' ' + monHM(ts);
+}
+
+// "Porta Cucina Batteria" -> "Porta Cucina" (stessa ripulitura della system card)
+function monBattName(fn) {
+  return String(fn || '')
+    .replace(/\s*(watch\s*)?(battery|batteria)(\s*level)?\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function monStart(r) {
+  if (r == null) return NaN;
+  if (typeof r.start === 'number') return r.start;
+  return Date.parse(r.start);
+}
+
+class MonitorCard extends HTMLElement {
+  constructor() {
+    super();
+    this._onClick = this._onClick.bind(this);
+  }
+
+  setConfig(config) {
+    const c = config || {};
+    const page = c.page || 'sistema';
+    if (!MON_PAGES[page]) throw new Error('"page" deve essere uno fra: ' + Object.keys(MON_PAGES).join(', '));
+    const merge = (k) => Object.assign({}, MON_DEFAULTS[k], c[k] || {});
+    this.config = {
+      page: page,
+      show_ids: c.show_ids !== false,
+      host_label: c.host_label != null ? c.host_label : MON_DEFAULTS.host_label,
+      phone_width: c.phone_width || 600,
+      paths: merge('paths'),
+      host: merge('host'),
+      versions: merge('versions'),
+      backup: merge('backup'),
+      zigbee: merge('zigbee'),
+      frigate: merge('frigate'),
+      ai: merge('ai'),
+      network: merge('network'),
+      ups: merge('ups'),
+      adguard: merge('adguard'),
+      battery_check: merge('battery_check'),
+      topology: c.topology || MON_DEFAULTS.topology,
+      unifi: c.unifi || MON_DEFAULTS.unifi,
+      hosts: c.hosts || MON_DEFAULTS.hosts,
+      access: c.access || MON_DEFAULTS.access,
+      battery_exclude: c.battery_exclude != null ? c.battery_exclude : MON_DEFAULTS.battery_exclude,
+      thresholds: Object.assign({}, MON_TH, c.thresholds || {}),
+    };
+    this._scan = null;
+    this._scanAt = 0;
+    this._statAt = 0;
+    this._histAt = 0;
+    this._repAt = 0;
+    this._stats = {};
+    this._bkHist = null;
+    this._repairs = null;
+    if (this._hass) this._schedule();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this.isConnected) this._subscribeNotifications();
+    this._maybeScan();
+    this._maybeFetch();
+    this._schedule();
+  }
+
+  connectedCallback() {
+    this.addEventListener('click', this._onClick);
+    if (!this._ro && typeof ResizeObserver !== 'undefined') {
+      this._ro = new ResizeObserver((entries) => {
+        const w = entries[0] && entries[0].contentRect ? entries[0].contentRect.width : 0;
+        const narrow = w > 0 && w < (this.config ? this.config.phone_width : 600);
+        if (narrow !== this._narrow) {
+          this._narrow = narrow;
+          this._schedule();
+        }
+      });
+      this._ro.observe(this);
+    }
+    if (this._hass) {
+      this._subscribeNotifications();
+      this._schedule();
+    }
+  }
+
+  disconnectedCallback() {
+    this.removeEventListener('click', this._onClick);
+    if (this._ro) {
+      this._ro.disconnect();
+      this._ro = null;
+    }
+    if (this._renderT) {
+      clearTimeout(this._renderT);
+      this._renderT = null;
+    }
+    if (this._unsubNotif) {
+      try {
+        this._unsubNotif();
+      } catch (e) {
+        /* connessione gia' chiusa */
+      }
+      this._unsubNotif = null;
+    }
+    this._notifPending = false;
+  }
+
+  getCardSize() {
+    return 20;
+  }
+
+  getGridOptions() {
+    return { columns: 'full', rows: 'auto' };
+  }
+
+  // Al massimo un ridisegno ogni 1,5 s: la pagina legge decine di sensori e
+  // quelli di potenza cambiano di continuo. mgddPaint poi non tocca nulla se
+  // il risultato e' identico.
+  _schedule() {
+    if (this._renderT) return;
+    const wait = this._lastRender ? Math.max(0, 1500 - (Date.now() - this._lastRender)) : 0;
+    this._renderT = setTimeout(() => {
+      this._renderT = null;
+      this._lastRender = Date.now();
+      this._render();
+    }, wait);
+  }
+
+  // ---------- interazione ----------
+
+  _onClick(ev) {
+    const t = ev.target && ev.target.closest ? ev.target.closest('[data-nav],[data-more],[data-go],[data-press]') : null;
+    if (!t || !this.contains(t)) return;
+    ev.preventDefault();
+    if (t.dataset.nav) {
+      this._navigate(this.config.paths[t.dataset.nav]);
+    } else if (t.dataset.go) {
+      this._navigate(t.dataset.go);
+    } else if (t.dataset.more) {
+      const ev2 = new Event('hass-more-info', { bubbles: true, composed: true });
+      ev2.detail = { entityId: t.dataset.more };
+      this.dispatchEvent(ev2);
+    } else if (t.dataset.press && this._hass) {
+      this._hass.callService('input_button', 'press', { entity_id: t.dataset.press });
+    }
+  }
+
+  _navigate(path) {
+    if (!path) return;
+    history.pushState(null, '', path);
+    const ev = new Event('location-changed', { bubbles: true, composed: true });
+    ev.detail = { replace: false };
+    window.dispatchEvent(ev);
+  }
+
+  // ---------- lettura stati ----------
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  _st(id) {
+    return (id && this._hass && this._hass.states[id]) || null;
+  }
+
+  _ok(id) {
+    const s = this._st(id);
+    return !!s && s.state !== 'unknown' && s.state !== 'unavailable';
+  }
+
+  _num(id) {
+    const s = this._st(id);
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return isNaN(v) ? null : v;
+  }
+
+  _txt(id) {
+    return this._ok(id) ? this._st(id).state : null;
+  }
+
+  _ts(id) {
+    const s = this._txt(id);
+    if (!s) return null;
+    const t = Date.parse(s);
+    return isNaN(t) ? null : t;
+  }
+
+  _attr(id, a) {
+    const s = this._st(id);
+    return s && s.attributes ? s.attributes[a] : undefined;
+  }
+
+  _name(id) {
+    const s = this._st(id);
+    return (s && s.attributes && s.attributes.friendly_name) || id;
+  }
+
+  // valore + unita' come le scrive l'entita'
+  _val(id, dec) {
+    const v = this._num(id);
+    if (v == null) return this._txt(id) || '—';
+    const u = this._attr(id, 'unit_of_measurement');
+    return monNum(v, dec) + (u ? ' ' + u : '');
+  }
+
+  // GB da un sensore di dati in qualunque unita'
+  _gb(id) {
+    const v = this._num(id);
+    if (v == null) return null;
+    const u = String(this._attr(id, 'unit_of_measurement') || 'GB');
+    const f = { B: 1e-9, kB: 1e-6, KB: 1e-6, MB: 1e-3, GB: 1, TB: 1000, KiB: 1.024e-6, MiB: 1.048576e-3, GiB: 1.073741824, TiB: 1099.511627776 }[u];
+    return v * (f == null ? 1 : f);
+  }
+
+  _id(text) {
+    return text ? '<span class="mn-id">' + mgddEsc(text) + '</span>' : '';
+  }
+
+  // ---------- scansione ----------
+
+  _maybeScan() {
+    const now = Date.now();
+    if (this._scan && now - this._scanAt < 30000) return;
+    if (!this._hass || !this._hass.states) return;
+    this._scanAt = now;
+    try {
+      this._scan = this._doScan(now);
+    } catch (e) {
+      this._scan = null;
+    }
+  }
+
+  _doScan(now) {
+    const h = this._hass;
+    const st = h.states;
+    const ents = h.entities || {};
+    const devs = h.devices || {};
+    const T = this.config.thresholds;
+    let excl = null;
+    try {
+      excl = this.config.battery_exclude ? new RegExp(this.config.battery_exclude, 'i') : null;
+    } catch (e) {
+      excl = null;
+    }
+    const devName = (did) => {
+      const d = devs[did];
+      return d ? d.name_by_user || d.name || did : did;
+    };
+
+    const byDev = {};
+    const domains = {};
+    const unavDom = {};
+    const unav = [];
+    let unknown = 0;
+    let total = 0;
+    const upd = { on: [], off: 0, unav: [] };
+    const aut = { on: 0, off: [], unav: [] };
+    let scripts = 0;
+    let scriptsOn = 0;
+    const batt = [];
+    let battUnav = 0;
+    const stopped = [];
+
+    Object.keys(st).forEach((id) => {
+      const s = st[id];
+      const dom = id.slice(0, id.indexOf('.'));
+      total++;
+      domains[dom] = 1;
+      const e = ents[id];
+      const did = e && e.device_id;
+      if (did) (byDev[did] = byDev[did] || []).push(id);
+      if (s.state === 'unavailable') {
+        unav.push(id);
+        unavDom[dom] = (unavDom[dom] || 0) + 1;
+      } else if (s.state === 'unknown') {
+        unknown++;
+      }
+      const a = s.attributes || {};
+      if (dom === 'update') {
+        if (s.state === 'on') upd.on.push(id);
+        else if (s.state === 'unavailable') upd.unav.push(id);
+        else upd.off++;
+      } else if (dom === 'automation') {
+        if (s.state === 'on') aut.on++;
+        else if (s.state === 'off') aut.off.push(id);
+        else if (s.state === 'unavailable') aut.unav.push(id);
+      } else if (dom === 'script') {
+        scripts++;
+        if (s.state === 'on') scriptsOn++;
+      } else if (dom === 'sensor' && a.device_class === 'battery') {
+        if (excl && (excl.test(id) || excl.test(a.friendly_name || ''))) return;
+        const v = parseFloat(s.state);
+        if (isNaN(v)) {
+          if (s.state === 'unavailable') battUnav++;
+        } else {
+          batt.push({ id: id, did: did, val: v });
+        }
+      } else if (dom === 'binary_sensor' && a.device_class === 'running' && s.state === 'off' && e && e.platform === 'hassio') {
+        stopped.push({ id: id, name: did ? devName(did) : a.friendly_name || id });
+      }
+    });
+
+    // batterie: una per dispositivo (la Nuki ne espone due), la piu' scarica
+    const seen = {};
+    const battDev = [];
+    batt.sort((a, b) => a.val - b.val).forEach((b) => {
+      const k = b.did || b.id;
+      if (seen[k]) return;
+      seen[k] = 1;
+      const fn = (st[b.id].attributes || {}).friendly_name || b.id;
+      battDev.push({ id: b.id, val: b.val, name: b.did ? devName(b.did) : monBattName(fn) });
+    });
+
+    // entita' non disponibili raggruppate per dispositivo
+    const groups = {};
+    unav.forEach((id) => {
+      const e = ents[id];
+      const did = e && e.device_id;
+      const key = did || '~' + id.slice(0, id.indexOf('.'));
+      let g = groups[key];
+      if (!g) {
+        g = groups[key] = {
+          name: did ? devName(did) : '(senza dispositivo: ' + id.slice(0, id.indexOf('.')) + ')',
+          did: did,
+          ids: [],
+          since: Infinity,
+        };
+      }
+      g.ids.push(id);
+      const t = Date.parse(st[id].last_changed);
+      if (!isNaN(t) && t < g.since) g.since = t;
+    });
+    const devRows = Object.keys(groups)
+      .map((k) => {
+        const g = groups[k];
+        const tot = g.did ? (byDev[g.did] || []).length : g.ids.length;
+        const all = !!g.did && g.ids.length >= tot;
+        const days = (now - g.since) / 86400000;
+        let verdict = 'atteso';
+        if (!g.did) verdict = 'verificare';
+        else if (all) verdict = days > T.silent_days ? 'rimuovere' : 'verificare';
+        return { name: g.name, n: g.ids.length, tot: tot, all: all, since: g.since, verdict: verdict, ids: g.ids };
+      })
+      .sort((a, b) => b.n - a.n);
+
+    // app: le entita' update dell'integrazione Supervisor, tranne core/supervisor/os
+    const apps = [];
+    Object.keys(st).forEach((id) => {
+      if (id.indexOf('update.') !== 0 || MON_CORE_UPD.indexOf(id) >= 0) return;
+      const e = ents[id];
+      if (!e || e.platform !== 'hassio') return;
+      const did = e.device_id;
+      const mine = (did && byDev[did]) || [];
+      const pick = (re) => mine.filter((x) => re.test(x))[0] || null;
+      const run = pick(/^binary_sensor\..*(_running|_in_esecuzione)$/);
+      const cpu = pick(/^sensor\..*(_cpu_percent|_percentuale_cpu)$/);
+      const mem = pick(/^sensor\..*(_memory_percent|_percentuale_di_memoria)$/);
+      const memV = mem ? parseFloat(st[mem].state) : NaN;
+      apps.push({
+        upd: id,
+        name: did ? devName(did) : (st[id].attributes || {}).title || id,
+        run: run,
+        cpu: cpu,
+        mem: mem,
+        memV: isNaN(memV) ? -1 : memV,
+      });
+    });
+    apps.sort((a, b) => b.memV - a.memV || a.name.localeCompare(b.name));
+
+    const unavDomList = Object.keys(unavDom)
+      .map((d) => ({ d: d, n: unavDom[d] }))
+      .sort((a, b) => b.n - a.n);
+
+    return {
+      at: now,
+      total: total,
+      domains: Object.keys(domains).length,
+      unav: unav.length,
+      unknown: unknown,
+      unavDom: unavDomList,
+      devRows: devRows,
+      upd: upd,
+      aut: aut,
+      scripts: scripts,
+      scriptsOn: scriptsOn,
+      batt: battDev,
+      battUnav: battUnav,
+      apps: apps,
+      stopped: stopped,
+    };
+  }
+
+  // ---------- dati dal recorder ----------
+
+  _maybeFetch() {
+    if (!this._hass || !this._hass.callWS) return;
+    const now = Date.now();
+    if (!this._statAt || now - this._statAt > 5 * 60000) {
+      this._statAt = now;
+      this._fetchStats();
+    }
+    if (this.config.page === 'sistema' && (!this._histAt || now - this._histAt > 30 * 60000)) {
+      this._histAt = now;
+      this._fetchBackupHist();
+    }
+    if (this.config.page !== 'rete' && (!this._repAt || now - this._repAt > 5 * 60000)) {
+      this._repAt = now;
+      this._fetchRepairs();
+    }
+  }
+
+  async _statsWS(ids, period, startMs, types) {
+    ids = ids.filter((x) => x && this._st(x));
+    if (!ids.length) return null;
+    const req = {
+      type: 'recorder/statistics_during_period',
+      start_time: new Date(startMs).toISOString(),
+      statistic_ids: ids,
+      period: period,
+      types: types,
+    };
+    try {
+      return await this._hass.callWS(req);
+    } catch (e) {
+      delete req.types;
+      try {
+        return await this._hass.callWS(req);
+      } catch (e2) {
+        return null;
+      }
+    }
+  }
+
+  async _fetchStats() {
+    const c = this.config;
+    const now = Date.now();
+    const out = {};
+    if (c.page === 'sistema') {
+      const r = await this._statsWS([c.host.cpu, c.host.cpu_temp], 'hour', now - 24 * 3600000, ['mean', 'max']);
+      if (r) {
+        out.cpu = r[c.host.cpu] || null;
+        out.temp = r[c.host.cpu_temp] || null;
+      }
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      const r2 = await this._statsWS([c.backup.size], 'day', d.getTime() - 13 * 86400000, ['max']);
+      if (r2) out.size = r2[c.backup.size] || null;
+    } else if (c.page === 'rete') {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      const n = c.network;
+      const r = await this._statsWS([n.speed_down, n.speed_up], 'day', d.getTime() - 6 * 86400000, ['mean']);
+      if (r) {
+        out.down = r[n.speed_down] || null;
+        out.up = r[n.speed_up] || null;
+      }
+      const r2 = await this._statsWS([n.clients], 'hour', d.getTime(), ['max']);
+      if (r2) out.clients = r2[n.clients] || null;
+    }
+    this._stats = out;
+    this._schedule();
+  }
+
+  async _fetchBackupHist() {
+    const id = this.config.backup.event;
+    if (!id || !this._st(id)) return;
+    try {
+      const res = await this._hass.callWS({
+        type: 'history/history_during_period',
+        start_time: new Date(Date.now() - 15 * 86400000).toISOString(),
+        entity_ids: [id],
+        minimal_response: false,
+        no_attributes: false,
+        significant_changes_only: false,
+      });
+      const rows = (res && res[id]) || [];
+      let attrs = {};
+      const out = [];
+      rows.forEach((r) => {
+        if (r.a) attrs = Object.assign({}, attrs, r.a);
+        const s = r.s != null ? r.s : r.state;
+        const t = Date.parse(s);
+        if (isNaN(t)) return;
+        const typ = (r.a && r.a.event_type) || attrs.event_type;
+        if (typ !== 'completed' && typ !== 'failed') return;
+        out.push({ t: t, type: typ, reason: (r.a && r.a.failed_reason) || attrs.failed_reason || null });
+      });
+      this._bkHist = out;
+    } catch (e) {
+      this._bkHist = null;
+    }
+    this._schedule();
+  }
+
+  async _fetchRepairs() {
+    try {
+      const res = await this._hass.callWS({ type: 'repairs/list_issues' });
+      this._repairs = ((res && res.issues) || []).filter((i) => !i.ignored && !i.dismissed_version);
+    } catch (e) {
+      this._repairs = null;
+    }
+    this._schedule();
+  }
+
+  _subscribeNotifications() {
+    if (this._unsubNotif || this._notifPending || !this._hass || !this._hass.connection) return;
+    if (this.config.page === 'rete') return;
+    this._notifPending = true;
+    let p = null;
+    try {
+      p = this._hass.connection.subscribeMessage(
+        (msg) => {
+          if (!msg) return;
+          if (msg.type === 'current' || !this._notif) this._notif = {};
+          const items = msg.notifications || {};
+          if (msg.type === 'removed') Object.keys(items).forEach((k) => delete this._notif[k]);
+          else Object.keys(items).forEach((k) => (this._notif[k] = items[k]));
+          this._schedule();
+        },
+        { type: 'persistent_notification/subscribe' }
+      );
+    } catch (e) {
+      p = null;
+    }
+    if (p && p.then) {
+      p.then(
+        (un) => {
+          this._notifPending = false;
+          if (this.isConnected) this._unsubNotif = un;
+          else un();
+        },
+        () => {
+          this._notifPending = false;
+        }
+      );
+    } else {
+      this._notifPending = false;
+    }
+  }
+
+  // ---------- cose da guardare ----------
+
+  // Stesse regole per la pillola in testa al cruscotto, la lista del telefono
+  // e la lista "Da fare" della manutenzione.
+  _issues() {
+    const c = this.config;
+    const T = c.thresholds;
+    const sc = this._scan;
+    const now = Date.now();
+    const out = [];
+    const add = (lvl, title, desc, id, action) => out.push({ lvl: lvl, title: title, desc: desc, id: id, action: action });
+    if (!sc) return out;
+
+    sc.aut.unav.forEach((id) => {
+      const aid = this._attr(id, 'id');
+      add('a', 'Automazione «' + this._name(id) + '» non disponibile',
+        'Di solito è un errore di configurazione al caricamento: finché resta così non parte.',
+        id, aid ? { label: 'Apri tracce', path: '/config/automation/trace/' + aid } : null);
+    });
+    sc.stopped.forEach((s) => add('a', 'App «' + s.name + '» ferma', 'Il Supervisor la vede spenta.', s.id, { label: 'Apri app', path: '/config/apps' }));
+    const z = c.zigbee.connection;
+    if (z && this._st(z) && this._st(z).state !== 'on') {
+      add('a', 'Bridge Zigbee2MQTT non connesso', 'I dispositivi Zigbee non rispondono finché il bridge non torna.', z);
+    }
+    const ok = this._ts(c.backup.last_ok);
+    if (c.backup.last_ok && this._st(c.backup.last_ok) && (!ok || now - ok > T.backup_age * 3600000)) {
+      add('a', 'Backup automatico non riuscito da ' + (ok ? monDur(now - ok) : 'sempre'),
+        'Ultimo backup riuscito: ' + (ok ? monWhen(ok) : 'mai') + '.', c.backup.last_ok, { label: 'Apri backup', path: '/config/backup' });
+    }
+    if (this._attr(c.backup.event, 'event_type') === 'failed') {
+      add('a', 'Ultimo backup fallito', 'Motivo: ' + (this._attr(c.backup.event, 'failed_reason') || 'non indicato') + '.', c.backup.event);
+    }
+    const t = this._num(c.host.cpu_temp);
+    if (t != null && t >= T.cpu_temp_crit) add('a', 'Temperatura CPU a ' + monNum(t) + ' °C', 'Sopra la soglia critica di ' + T.cpu_temp_crit + ' °C.', c.host.cpu_temp);
+    else if (t != null && t >= T.cpu_temp_warn) add('m', 'Temperatura CPU a ' + monNum(t) + ' °C', 'Sopra la soglia di attenzione di ' + T.cpu_temp_warn + ' °C.', c.host.cpu_temp);
+    const du = this._gb(c.host.disk_use);
+    const df = this._gb(c.host.disk_free);
+    if (du != null && df != null && du + df > 0 && (100 * du) / (du + df) >= T.disk) {
+      add('m', 'Disco al ' + monNum((100 * du) / (du + df)) + ' %', 'Liberi ' + monNum(df) + ' GB.', c.host.disk_use);
+    }
+    const ram = this._num(c.host.memory);
+    if (ram != null && ram >= T.memory) add('m', 'RAM al ' + monNum(ram) + ' %', 'Sopra la soglia di ' + T.memory + ' %.', c.host.memory);
+
+    sc.upd.on.forEach((id) => {
+      add('m', 'Aggiornamento: ' + String(this._attr(id, 'title') || this._name(id)).replace(/\s*update\s*$/i, ''),
+        (this._attr(id, 'installed_version') || '?') + ' → ' + (this._attr(id, 'latest_version') || '?'), id,
+        { label: 'Apri aggiornamenti', path: '/config/updates' });
+    });
+    (this._repairs || []).forEach((r) => {
+      const lvl = r.severity === 'critical' || r.severity === 'error' ? 'a' : 'm';
+      add(lvl, 'Riparazione: ' + r.domain + ' · ' + (r.translation_key || r.issue_id),
+        'Segnalata da Home Assistant in Impostazioni › Riparazioni.', 'repairs/' + r.domain + '/' + r.issue_id,
+        { label: 'Apri riparazioni', path: '/config/repairs' });
+    });
+    if (this._notif) {
+      Object.keys(this._notif).forEach((k) => {
+        const n = this._notif[k];
+        const msg = String(n.message || '').replace(/\s+/g, ' ');
+        add('m', n.title || 'Notifica', msg.length > 160 ? msg.slice(0, 157) + '…' : msg, 'persistent_notification/' + k);
+      });
+    }
+    sc.batt.forEach((b) => {
+      if (b.val >= T.battery_low) return;
+      const lvl = b.val < T.battery_crit ? 'a' : b.val < T.battery_warn ? 'm' : 'b';
+      add(lvl, 'Batteria ' + b.name + ' al ' + monNum(b.val) + ' %',
+        lvl === 'a' ? 'Da cambiare subito.' : lvl === 'm' ? 'Da cambiare a breve.' : 'Sotto il ' + T.battery_low + ' %: da tenere d’occhio.', b.id);
+    });
+    const muti = sc.devRows.filter((r) => r.all && r.verdict !== 'atteso');
+    if (muti.length === 1) {
+      const r = muti[0];
+      add('b', 'Dispositivo «' + r.name + '» muto da ' + monDur(now - r.since),
+        'Tutte le sue ' + r.n + ' entità sono non disponibili.', r.ids[0]);
+    } else if (muti.length > 1) {
+      add('b', muti.length + ' dispositivi muti',
+        muti.slice(0, 4).map((r) => r.name).join(', ') +
+          (muti.length === 5 ? ' e un altro' : muti.length > 5 ? ' e altri ' + (muti.length - 4) : '') + ': tutte le entità non disponibili.',
+        null, c.page === 'manutenzione' ? null : { label: 'Vedi', nav: 'manutenzione' });
+    }
+    const ord = { a: 0, m: 1, b: 2 };
+    return out.sort((x, y) => ord[x.lvl] - ord[y.lvl]);
+  }
+
+  _pill(issues) {
+    const a = issues.filter((i) => i.lvl === 'a').length;
+    const m = issues.filter((i) => i.lvl === 'm').length;
+    const n = issues.length;
+    const cls = a ? 'crit' : m ? 'warn' : n ? 'warn' : 'ok';
+    const txt = n === 0 ? 'Tutto regolare' : n === 1 ? '1 cosa da guardare' : n + ' cose da guardare';
+    return '<button type="button" class="mn-pill ' + cls + '" data-nav="manutenzione"><i></i>' + txt + '</button>';
+  }
+
+  // ---------- intestazione comune ----------
+
+  _head(title, sub, extra) {
+    const p = this.config.page;
+    const nav = [
+      ['sistema', 'Sistema'],
+      ['rete', 'Rete'],
+      ['manutenzione', 'Manutenzione'],
+    ]
+      .map((x) => '<button type="button" data-nav="' + x[0] + '"' + (x[0] === p ? ' class="on" aria-current="page"' : '') + '>' + x[1] + '</button>')
+      .join('');
+    return (
+      '<header class="mn-head"><div class="mn-ttl"><h1 class="mn-h1">' + mgddEsc(title) + '</h1>' +
+      '<p class="mn-sub">' + mgddEsc(sub) + '</p></div>' +
+      '<div class="mn-tools">' + (extra || '') + '<nav class="mn-nav" aria-label="Sezioni monitor">' + nav + '</nav></div></header>'
+    );
+  }
+
+  _render() {
+    if (!this._hass || !this.config) return;
+    this._maybeScan();
+    // primo disegno: il ResizeObserver non ha ancora risposto, si misura il
+    // contenitore per non mostrare un attimo il layout desktop sul telefono
+    if (this._narrow === undefined) {
+      const w = (this.parentElement && this.parentElement.clientWidth) || window.innerWidth || 0;
+      this._narrow = w > 0 && w < this.config.phone_width;
+    }
+    let body;
+    try {
+      const p = this.config.page;
+      if (p === 'rete') body = this._pageRete();
+      else if (p === 'manutenzione') body = this._pageManut();
+      else body = this._narrow ? this._pagePhone() : this._pageSistema();
+    } catch (e) {
+      body = '<div class="mn-card"><h2 class="mn-h2">Errore nella card</h2><p class="mn-txt">' + mgddEsc(e && e.message) + '</p></div>';
+    }
+    const cls = 'mn ' + (this._isDark() ? 'mn-dark' : 'mn-light') + (this.config.show_ids ? '' : ' noid') + (this._narrow ? ' mn-narrow' : '');
+    mgddPaint(this, MON_STYLES, '<div class="' + cls + '"><div class="mn-wrap">' + body + '</div></div>');
+  }
+
+  // ================= pagina SISTEMA =================
+
+  _updChip(label, id) {
+    if (!id || !this._st(id)) return '';
+    const s = this._st(id);
+    const inst = this._attr(id, 'installed_version');
+    let sub = '';
+    let cls = '';
+    if (s.state === 'on') {
+      sub = '→ ' + (this._attr(id, 'latest_version') || '');
+      cls = 'warn';
+    } else if (s.state === 'off') {
+      sub = 'aggiornato';
+      cls = 'ok';
+    }
+    return this._chip(label, mgddEsc(inst || '—'), sub, cls, id, id);
+  }
+
+  _chip(k, v, sub, subCls, more, idText) {
+    return (
+      '<button type="button" class="mn-chip"' + (more ? ' data-more="' + mgddEsc(more) + '"' : '') + '>' +
+      '<span class="k">' + mgddEsc(k) + '</span>' +
+      '<span class="v">' + v + (sub ? ' <small class="' + (subCls || '') + '">' + mgddEsc(sub) + '</small>' : '') + '</span>' +
+      this._id(idText) + '</button>'
+    );
+  }
+
+  _spark(rows, w, h) {
+    const vals = (rows || []).map((r) => r.mean).filter((v) => v != null);
+    if (vals.length < 2) return '<div class="mn-spark-empty">statistiche non ancora disponibili</div>';
+    const max = Math.max(100, Math.max.apply(null, vals));
+    const step = w / (vals.length - 1);
+    const pts = vals.map((v, i) => (i * step).toFixed(1) + ',' + (h - 4 - (v / max) * (h - 8)).toFixed(1)).join(' ');
+    return '<svg class="mn-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true"><polyline fill="none" stroke="var(--ac)" stroke-width="2" vector-effect="non-scaling-stroke" points="' + pts + '"></polyline></svg>';
+  }
+
+  _peak(rows) {
+    let best = null;
+    (rows || []).forEach((r) => {
+      const v = r.max != null ? r.max : r.mean;
+      if (v != null && (!best || v > best.v)) best = { v: v, t: monStart(r) };
+    });
+    return best;
+  }
+
+  _avg(rows) {
+    const v = (rows || []).map((r) => r.mean).filter((x) => x != null);
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  }
+
+  _tCls(t) {
+    const T = this.config.thresholds;
+    if (t == null) return '';
+    return t >= T.cpu_temp_crit ? 'crit' : t >= T.cpu_temp_warn ? 'warn' : 'ok';
+  }
+
+  _hostTiles() {
+    const c = this.config;
+    const H = c.host;
+    const T = c.thresholds;
+    const st = this._stats || {};
+    const tiles = [];
+
+    // CPU
+    const cpu = this._num(H.cpu);
+    const pk = this._peak(st.cpu);
+    tiles.push(
+      '<div class="mn-card" data-more="' + mgddEsc(H.cpu) + '">' +
+      '<div class="mn-row"><h2 class="mn-h2s">Processore</h2><span class="mn-small">' + mgddEsc(H.cpu_label || '') + '</span></div>' +
+      '<div class="mn-big' + (cpu != null && cpu >= T.cpu ? ' warn' : '') + '"><b>' + monNum(cpu) + '</b><span>%</span></div>' +
+      this._spark(st.cpu, 240, 48) +
+      '<span class="mn-small">' + (pk ? 'ultime 24 h · picco ' + monNum(pk.v) + ' % alle ' + monHM(pk.t) : 'ultime 24 h') + '</span>' +
+      this._id(H.cpu) + '</div>'
+    );
+
+    // temperatura
+    const t = this._num(H.cpu_temp);
+    const tc = this._tCls(t);
+    const span = T.temp_max - T.temp_min;
+    const pct = (v) => Math.max(0, Math.min(100, ((v - T.temp_min) / span) * 100));
+    const pw = pct(T.cpu_temp_warn);
+    const pc = pct(T.cpu_temp_crit);
+    const avg = this._avg(st.temp);
+    const tpk = this._peak(st.temp);
+    tiles.push(
+      '<div class="mn-card" data-more="' + mgddEsc(H.cpu_temp) + '">' +
+      '<div class="mn-row"><h2 class="mn-h2s">Temperatura CPU</h2><span class="mn-small mn-' + tc + 't">' +
+      (tc === 'crit' ? 'critica' : tc === 'warn' ? 'alta' : tc === 'ok' ? 'normale' : '') + '</span></div>' +
+      '<div class="mn-big ' + (tc === 'ok' ? '' : tc) + '"><b>' + monNum(t, t != null && t % 1 ? 1 : 0) + '</b><span>°C</span></div>' +
+      '<div class="mn-tbar" style="background:linear-gradient(90deg,var(--tok) 0%,var(--tok) ' + pw + '%,var(--twarn) ' + pw + '%,var(--twarn) ' + pc + '%,var(--tcrit) ' + pc + '%)">' +
+      (t != null ? '<i style="left:' + pct(t).toFixed(1) + '%"></i>' : '') + '</div>' +
+      '<div class="mn-scale"><span>' + T.temp_min + '</span><span>' + T.cpu_temp_warn + ' · attenzione</span><span>' + T.cpu_temp_crit + ' · critico</span><span>' + T.temp_max + '</span></div>' +
+      '<span class="mn-small">' + (avg != null ? 'media 24 h ' + monNum(avg) + ' °C · massima ' + monNum(tpk ? tpk.v : null) + ' °C' : 'ultime 24 h: statistiche non ancora disponibili') + '</span>' +
+      this._id(H.cpu_temp) + '</div>'
+    );
+
+    // memoria
+    const mu = this._gb(H.memory_used);
+    const mf = this._gb(H.memory_free);
+    let mp = this._num(H.memory);
+    if (mp == null && mu != null && mf != null && mu + mf > 0) mp = (100 * mu) / (mu + mf);
+    tiles.push(
+      '<div class="mn-card" data-more="' + mgddEsc(H.memory) + '">' +
+      '<div class="mn-row"><h2 class="mn-h2s">Memoria</h2><span class="mn-small">' + (mu != null && mf != null ? monNum(mu + mf, 1) + ' GB' : '') + '</span></div>' +
+      '<div class="mn-mem"><div class="mn-donut" style="background:conic-gradient(' + (mp != null && mp >= T.memory ? 'var(--warn)' : 'var(--ac)') + ' 0 ' + (mp || 0).toFixed(1) + '%,var(--bd) 0)"><div>' + monNum(mp) + ' %</div></div>' +
+      '<div class="mn-memtx"><span><strong>' + monNum(mu, 1) + ' GB</strong> in uso</span><span><strong>' + monNum(mf, 1) + ' GB</strong> libera</span></div></div>' +
+      this._id(H.memory + ' · ' + (H.memory_used || '').replace('sensor.system_monitor', '') + ' · ' + (H.memory_free || '').replace('sensor.system_monitor', '')) + '</div>'
+    );
+
+    // disco
+    const du = this._gb(H.disk_use);
+    const df = this._gb(H.disk_free);
+    const dp = du != null && df != null && du + df > 0 ? (100 * du) / (du + df) : null;
+    tiles.push(
+      '<div class="mn-card" data-more="' + mgddEsc(H.disk_use) + '">' +
+      '<div class="mn-row"><h2 class="mn-h2s">Disco</h2><span class="mn-small">' + (dp != null ? monNum(du + df) + ' GB' : '') + '</span></div>' +
+      '<div class="mn-big' + (dp != null && dp >= T.disk ? ' warn' : '') + '"><b>' + monNum(dp) + '</b><span>%</span></div>' +
+      '<div class="mn-bar"><i style="width:' + (dp || 0).toFixed(1) + '%' + (dp != null && dp >= T.disk ? ';background:var(--warn)' : '') + '"></i></div>' +
+      '<div class="mn-kv"><span><strong>' + monNum(du) + ' GB</strong> usati</span><span><strong>' + monNum(df) + ' GB</strong> liberi</span></div>' +
+      this._id(H.disk_use + ' · ' + (H.disk_free || '').replace('sensor.system_monitor', '')) + '</div>'
+    );
+    return '<section class="mn-grid g4" aria-label="Host">' + tiles.join('') + '</section>';
+  }
+
+  _health() {
+    const sc = this._scan;
+    const T = this.config.thresholds;
+    if (!sc) return '<div class="mn-card"><h2 class="mn-h2">Salute dell’installazione</h2><p class="mn-txt">Lettura in corso…</p></div>';
+    const box = (k, n, d, cls, nav) =>
+      '<div class="mn-box' + (nav ? ' mn-click" data-nav="' + nav : '') + '"><span class="k">' + k + '</span><span class="n ' + (cls || '') + '">' + n + '</span><span class="d">' + d + '</span></div>';
+    const nNotif = this._notif ? Object.keys(this._notif).length : null;
+    const nRep = this._repairs ? this._repairs.length : null;
+    const lowB = sc.batt.filter((b) => b.val < T.battery_low).length;
+    const top = sc.unavDom.slice(0, 5);
+    const rest = sc.unavDom.slice(5).reduce((a, b) => a + b.n, 0);
+    const seg = top.map((d, i) => '<i style="flex:' + d.n + ';background:' + MON_DOM_COLORS[i] + '"></i>').join('') +
+      (rest ? '<i style="flex:' + rest + ';background:var(--gr)"></i>' : '');
+    const leg = top.map((d, i) => '<span><i style="background:' + MON_DOM_COLORS[i] + '"></i>' + mgddEsc(d.d) + ' ' + d.n + '</span>').join('') +
+      (rest ? '<span><i style="background:var(--gr)"></i>altri ' + rest + '</span>' : '');
+    return (
+      '<div class="mn-card c14"><h2 class="mn-h2">Salute dell’installazione</h2>' +
+      '<div class="mn-cnt">' +
+      box('Entità', monNum(sc.total), sc.domains + ' domini') +
+      box('Non disponibili', monNum(sc.unav), 'sconosciute: ' + monNum(sc.unknown), sc.unav ? 'warn' : '', 'manutenzione') +
+      box('Notifiche', nNotif == null ? '—' : nNotif, 'riparazioni: ' + (nRep == null ? '—' : nRep), nNotif || nRep ? 'warn' : '') +
+      box('Automazioni', sc.aut.on + ' <small>attive</small>', sc.aut.off.length + ' spente' + (sc.aut.unav.length ? ' · <span class="mn-critt">' + sc.aut.unav.length + ' non disp.</span>' : ''), '', 'manutenzione') +
+      box('Script', sc.scripts, sc.scriptsOn ? sc.scriptsOn + ' in esecuzione' : 'nessuno in esecuzione') +
+      box('Batterie', sc.batt.length, lowB ? lowB + ' sotto il ' + T.battery_low + ' %' : 'tutte sopra il ' + T.battery_low + ' %', '', 'manutenzione') +
+      '</div>' +
+      (sc.unav
+        ? '<div class="mn-col8"><span class="mn-small">Non disponibili per dominio</span><div class="mn-stack">' + seg + '</div><div class="mn-leg">' + leg + '</div></div>'
+        : '') +
+      this._id('scansione di hass.states ogni 30 s') +
+      '</div>'
+    );
+  }
+
+  _backup() {
+    const B = this.config.backup;
+    const now = Date.now();
+    const ok = this._ts(B.last_ok);
+    const tr = this._ts(B.last_try);
+    const nx = this._ts(B.next);
+    const ev = this._attr(B.event, 'event_type');
+    const mgr = this._txt(B.state);
+    let badge = '<span class="mn-badge ok">riuscito</span>';
+    if (mgr && mgr !== 'idle') badge = '<span class="mn-badge warn">in corso</span>';
+    else if (ev === 'failed' || (tr && ok && tr > ok + 60000 && now - tr > 3600000)) badge = '<span class="mn-badge crit">fallito</span>';
+    else if (!ok) badge = '<span class="mn-badge warn">nessuno</span>';
+    const size = this._gb(B.size);
+    const dur = ok && tr && ok >= tr ? ok - tr : null;
+    const durTx = dur != null ? Math.floor(dur / 60000) + ' min ' + mgddPad2(Math.round((dur % 60000) / 1000)) + ' s' : '—';
+    const cell = (k, v, id) => '<div class="mn-kvb"><span class="k">' + k + '</span><span class="v">' + v + '</span>' + this._id(id) + '</div>';
+
+    // ultimi 14 giorni: altezza = dimensione massima del giorno, colore = esito
+    const days = [];
+    const d0 = new Date();
+    d0.setHours(0, 0, 0, 0);
+    for (let i = 13; i >= 0; i--) days.push({ t: d0.getTime() - i * 86400000, size: null, res: null, reason: null });
+    ((this._stats && this._stats.size) || []).forEach((r) => {
+      const t = monStart(r);
+      const d = days.find((x) => t >= x.t && t < x.t + 86400000);
+      if (d) d.size = r.max != null ? r.max : r.mean;
+    });
+    (this._bkHist || []).forEach((e) => {
+      const d = days.find((x) => e.t >= x.t && e.t < x.t + 86400000);
+      if (!d) return;
+      if (e.type === 'failed' && d.res !== 'completed') {
+        d.res = 'failed';
+        d.reason = e.reason;
+      }
+      if (e.type === 'completed') d.res = 'completed';
+    });
+    // le dimensioni variano di pochi punti: si scala fra minimo e massimo
+    // (55-80 %), cosi' la crescita si vede; il giorno fallito resta pieno
+    const sizes = days.map((d) => d.size).filter((v) => v != null);
+    const minS = sizes.length ? Math.min.apply(null, sizes) : 0;
+    const maxS = sizes.length ? Math.max.apply(null, sizes) : 1;
+    const fails = days.filter((d) => d.res === 'failed');
+    const bars = days
+      .map((d, i) => {
+        const fail = d.res === 'failed';
+        const h = fail ? 100 : d.size ? 55 + (maxS > minS ? ((d.size - minS) / (maxS - minS)) * 25 : 15) : 8;
+        const col = fail ? 'var(--tcrit)' : !d.size && !d.res ? 'var(--bd)' : i === days.length - 1 ? 'var(--ok)' : 'var(--tok)';
+        const dt = new Date(d.t);
+        return '<i style="height:' + h.toFixed(0) + '%;background:' + col + '" title="' + dt.getDate() + ' ' + MON_MESI[dt.getMonth()] + (fail ? ' · fallito' : d.size ? ' · ' + monNum(d.size / 1024, 2) + ' GB' : '') + '"></i>';
+      })
+      .join('');
+    const cap = fails.length
+      ? fails
+        .map((d) => {
+          const dt = new Date(d.t);
+          return dt.getDate() + ' ' + MON_MESI[dt.getMonth()] + ': fallito' + (d.reason ? ' (<em>' + mgddEsc(d.reason) + '</em>)' : '');
+        })
+        .join(' · ')
+      : this._bkHist
+        ? 'Nessun backup fallito negli ultimi 14 giorni.'
+        : 'Cronologia dei backup non disponibile.';
+    return (
+      '<div class="mn-card c14"><div class="mn-row"><h2 class="mn-h2">Backup</h2>' + badge + '</div>' +
+      '<div class="mn-bk">' +
+      cell('Ultimo riuscito', monWhen(ok), B.last_ok) +
+      cell('Prossimo', monWhen(nx), B.next) +
+      cell('Dimensione', size != null ? monNum(size, 2) + ' GB' : '—', B.size) +
+      cell('Durata', durTx, 'last_attempted → last_successful') +
+      '</div>' +
+      '<div class="mn-col6"><span class="mn-small">Ultimi 14 giorni</span><div class="mn-hist">' + bars + '</div>' +
+      '<span class="mn-note">' + cap + '</span>' + this._id(B.event + ' · ' + B.state) + '</div></div>'
+    );
+  }
+
+  _appsTable() {
+    const sc = this._scan;
+    if (!sc) return '';
+    const T = this.config.thresholds;
+    const rows = [];
+    const rest = [];
+    let mon = 0;
+    let running = 0;
+    sc.apps.forEach((a) => {
+      const updOn = this._st(a.upd) && this._st(a.upd).state === 'on';
+      if (a.run || a.cpu || a.mem) mon++;
+      if (a.run && this._st(a.run) && this._st(a.run).state === 'on') running++;
+      if (!(a.run || a.cpu || a.mem || updOn)) {
+        rest.push(mgddEsc(a.name) + ' <span class="mn-fa">' + mgddEsc(this._attr(a.upd, 'installed_version') || '') + '</span>');
+        return;
+      }
+      const ver = mgddEsc(this._attr(a.upd, 'installed_version') || '—') +
+        (updOn ? ' <span class="mn-warnt">→ ' + mgddEsc(this._attr(a.upd, 'latest_version') || '') + '</span>' : '');
+      let stato = '<span class="mn-fa">—</span>';
+      if (a.run) {
+        const s = this._st(a.run);
+        stato = s && s.state === 'on' ? '<span class="mn-okt">in esecuzione</span>' : '<span class="mn-critt">ferma</span>';
+      }
+      const cpu = a.cpu ? this._num(a.cpu) : null;
+      const mem = a.mem ? this._num(a.mem) : null;
+      const memBar = mem != null
+        ? '<div class="mn-mbar"><div class="mn-bar s"><i style="width:' + Math.min(100, mem * 4).toFixed(1) + '%;' + (mem >= 25 ? 'background:var(--warn)' : '') + '"></i></div><span>' + monNum(mem, 1) + ' %</span></div>'
+        : '<span class="mn-fa">—</span>';
+      rows.push(
+        '<tr data-more="' + mgddEsc(a.mem || a.run || a.upd) + '"><td class="nm">' + mgddEsc(a.name) + this._id(a.upd) + '</td><td class="mn-mu">' + ver + '</td><td>' + stato + '</td>' +
+        '<td>' + (cpu != null ? monNum(cpu, 1) + ' %' : '<span class="mn-fa">—</span>') + '</td><td>' + memBar + '</td></tr>'
+      );
+    });
+    if (rest.length) rows.push('<tr class="rest"><td colspan="5">+ ' + rest.join(', ') + '</td></tr>');
+    return (
+      '<section class="mn-card c14"><div class="mn-row"><h2 class="mn-h2">App</h2><span class="mn-note">' + sc.apps.length + ' installate · ' +
+      running + ' di ' + mon + ' monitorate in esecuzione</span></div>' +
+      '<div class="mn-tbl"><table><thead><tr><th>App</th><th>Versione</th><th>Stato</th><th>CPU</th><th class="w30">RAM (scala 0–25 %)</th></tr></thead><tbody>' +
+      rows.join('') + '</tbody></table></div>' +
+      '<p class="mn-info">CPU, RAM e stato vengono dai sensori <span class="mn-mono">*_cpu_percent</span> / <span class="mn-mono">*_memory_percent</span> / <span class="mn-mono">binary_sensor.*_running</span> dell’integrazione Supervisor, oggi attivi per ' + mon + ' app su ' + sc.apps.length + '. La RAM è in percentuale della memoria dell’host.</p>' +
+      '</section>'
+    );
+  }
+
+  _services() {
+    const c = this.config;
+    const Z = c.zigbee;
+    const F = c.frigate;
+    const N = c.network;
+    const A = c.ai;
+    const sc = this._scan;
+    const card = (title, okv, okTx, lines, ids, more) =>
+      '<div class="mn-card mn-svc"' + (more ? ' data-more="' + mgddEsc(more) + '"' : '') + '><div class="mn-row"><h3 class="mn-h3">' + title + '</h3>' +
+      '<span class="mn-stat ' + (okv === true ? 'mn-okt' : okv === false ? 'mn-critt' : 'mn-fa') + '">' + okTx + '</span></div>' +
+      lines.map((l) => '<span class="mn-txt">' + l + '</span>').join('') + this._id(ids) + '</div>';
+    const out = [];
+
+    const zc = this._st(Z.connection);
+    if (zc) {
+      out.push(card('Zigbee2MQTT', zc.state === 'on', zc.state === 'on' ? 'connesso' : 'non connesso', [
+        'bridge ' + mgddEsc(this._txt(Z.version) || '—') + ' · coordinatore ' + mgddEsc(this._txt(Z.coordinator) || '—'),
+        'permit join: ' + (this._txt(Z.permit_join) === 'on' ? '<span class="mn-warnt">acceso</span>' : 'spento') + ' · log: ' + mgddEsc(this._txt(Z.log_level) || '—'),
+      ], Z.connection, Z.connection));
+    }
+    const fs = this._txt(F.status);
+    if (this._st(F.status)) {
+      const up = this._num(F.uptime);
+      const upU = String(this._attr(F.uptime, 'unit_of_measurement') || 'h');
+      const upMs = up == null ? null : up * ({ s: 1000, min: 60000, h: 3600000, d: 86400000 }[upU] || 3600000);
+      const lines = ['attivo da ' + monDur(upMs) + ' · server ' + mgddEsc(this._attr(F.server, 'installed_version') || '—')];
+      const bad = sc ? sc.aut.unav.filter((id) => /frigate/i.test(id)) : [];
+      if (bad.length) lines.push('<span class="mn-critt">' + (bad.length === 1 ? 'automazione «' + mgddEsc(this._name(bad[0])) + '» non disponibile' : bad.length + ' automazioni Frigate non disponibili') + '</span>');
+      out.push(card('Frigate', fs === 'running', fs || 'non disponibile', lines, F.status + ' · ' + F.uptime, F.status));
+    }
+    const ipOk = this._ok(N.wan_ip);
+    out.push(card('Rete', ipOk, ipOk ? 'ok' : 'senza IP pubblico', [
+      monNum(this._num(N.clients)) + ' client · ' + monNum(this._num(N.guests)) + ' ospiti',
+      'speedtest ' + monNum(this._num(N.speed_down)) + ' ↓ / ' + monNum(this._num(N.speed_up)) + ' ↑ Mbit/s · ' + monNum(this._num(N.speed_ping)) + ' ms',
+    ], N.clients + ' · speedtest', null).replace('class="mn-card mn-svc"', 'class="mn-card mn-svc mn-click" data-nav="rete"'));
+    const at = this._ts(A.task);
+    const plan = this._st(A.plan);
+    const planT = plan ? Date.parse(plan.last_updated) : null;
+    out.push(card('AI e pianificatore', at != null || !!plan, 'ok', [
+      'Gemini ai_task: ultimo uso ' + (at ? monWhen(at) : '—'),
+      plan ? 'piano lavatrici ricalcolato ' + monWhen(planT) : 'piano lavatrici non trovato',
+    ], A.task + (A.plan ? ' · ' + A.plan : ''), A.task));
+    return '<section class="mn-grid gs" aria-label="Servizi">' + out.join('') + '</section>';
+  }
+
+  _pageSistema() {
+    const c = this.config;
+    const V = c.versions;
+    const sc = this._scan;
+    const issues = this._issues();
+    const os = this._attr(V.os, 'installed_version');
+    const sub = [c.host_label, os ? 'Home Assistant OS ' + os : ''].filter(Boolean).join(' · ');
+    const extra = this._pill(issues) + '<span class="mn-time">aggiornato alle ' + monHM(Date.now()) + '</span>';
+    const boot = this._ts(c.host.last_boot);
+    const chips =
+      this._updChip('Core', V.core) +
+      this._updChip('Supervisor', V.supervisor) +
+      this._updChip('Sistema operativo', V.os) +
+      (this._st(c.host.last_boot) ? this._chip('Acceso da', boot ? monDur(Date.now() - boot) : '—', '', '', c.host.last_boot, c.host.last_boot) : '') +
+      this._updChip('Card casa-mgdd', V.cards) +
+      (sc ? this._chip('Aggiornamenti', sc.upd.on.length + ' su ' + (sc.upd.on.length + sc.upd.off + sc.upd.unav.length), sc.upd.on.length ? 'da installare' : '', 'warn', null, 'update.* (conteggio)').replace('class="mn-chip"', 'class="mn-chip" data-nav="manutenzione"') : '');
+    return (
+      this._head('HA Monitor', sub, extra) +
+      '<section class="mn-chips" aria-label="Versioni">' + chips + '</section>' +
+      this._hostTiles() +
+      '<section class="mn-grid g2">' + this._health() + this._backup() + '</section>' +
+      this._appsTable() +
+      this._services()
+    );
+  }
+
+  // ================= pagina TELEFONO (sistema stretto) =================
+
+  _pagePhone() {
+    const c = this.config;
+    const H = c.host;
+    const T = c.thresholds;
+    const sc = this._scan;
+    const st = this._stats || {};
+    const issues = this._issues();
+    const a = issues.filter((i) => i.lvl === 'a').length;
+    const m = issues.filter((i) => i.lvl === 'm').length;
+    const cls = a ? 'crit' : issues.length ? 'warn' : 'ok';
+    const banner =
+      '<button type="button" class="mn-banner ' + cls + '" data-nav="manutenzione"><span class="t">' +
+      (issues.length === 0 ? 'Tutto regolare' : issues.length === 1 ? '1 cosa da guardare' : issues.length + ' cose da guardare') + '</span>' +
+      (issues.length ? '<span class="d">' + issues.slice(0, 3).map((i) => mgddEsc(i.title)).join(' · ') + '</span>' : '') + '</button>';
+
+    const cpu = this._num(H.cpu);
+    const t = this._num(H.cpu_temp);
+    const tc = this._tCls(t);
+    const mp = this._num(H.memory);
+    const mu = this._gb(H.memory_used);
+    const mf = this._gb(H.memory_free);
+    const du = this._gb(H.disk_use);
+    const df = this._gb(H.disk_free);
+    const dp = du != null && df != null && du + df > 0 ? (100 * du) / (du + df) : null;
+    const tile = (k, v, u, extra, more, vcls) =>
+      '<div class="mn-card mn-pt" data-more="' + mgddEsc(more) + '"><span class="mn-small">' + k + '</span><span class="mn-pv ' + (vcls || '') + '">' + v + ' <span>' + u + '</span></span>' + extra + '</div>';
+    const bar = (p, warn) => '<div class="mn-bar s"><i style="width:' + (p || 0).toFixed(1) + '%' + (warn ? ';background:var(--warn)' : '') + '"></i></div>';
+    const T2 = T.temp_max - T.temp_min;
+
+    const lst = issues.slice(0, 4).map((i) =>
+      '<div class="mn-pi"><i class="' + i.lvl + '"></i><div><span class="t">' + mgddEsc(i.title) + '</span><span class="d">' + mgddEsc(i.desc || '') + '</span></div></div>'
+    ).join('');
+
+    const B = c.backup;
+    const ok = this._ts(B.last_ok);
+    const size = this._gb(B.size);
+    const ev = this._attr(B.event, 'event_type');
+
+    const Z = c.zigbee;
+    const F = c.frigate;
+    const N = c.network;
+    const svc = [];
+    if (this._st(Z.connection)) svc.push(['Zigbee2MQTT', this._txt(Z.connection) === 'on' ? 'connesso' : 'non connesso', this._txt(Z.connection) === 'on']);
+    if (this._st(F.status)) svc.push(['Frigate', this._txt(F.status) || 'non disponibile', this._txt(F.status) === 'running']);
+    if (sc) {
+      sc.apps.filter((x) => x.run).forEach((x) => {
+        if (/frigate|zigbee/i.test(x.name)) return;
+        const on = this._txt(x.run) === 'on';
+        svc.push([x.name.replace(/ with Video Streaming| broker/i, ''), on ? 'attivo' : 'ferma', on]);
+      });
+    }
+    const at = this._ts(c.ai.task);
+    if (this._st(c.ai.task)) svc.push(['Gemini ai_task', at ? monHM(at) : '—', null]);
+
+    const apps = sc ? sc.apps.filter((x) => x.mem).slice(0, 3) : [];
+    const ups = c.ups;
+    return (
+      '<header class="mn-phead"><h1 class="mn-h1">HA Monitor</h1><span class="mn-time">' + monHM(Date.now()) + '</span></header>' +
+      banner +
+      '<div class="mn-p2">' +
+      tile('CPU', monNum(cpu), '%', this._spark(st.cpu, 140, 28).replace('class="mn-spark"', 'class="mn-spark s"'), H.cpu) +
+      tile('Temperatura', monNum(t, t != null && t % 1 ? 1 : 0), '°C', bar(t == null ? 0 : ((t - T.temp_min) / T2) * 100, tc !== 'ok'), H.cpu_temp, tc === 'ok' ? '' : tc) +
+      tile('RAM', monNum(mp), '%', bar(mp, mp != null && mp >= T.memory) + '<span class="mn-small">' + monNum(mu, 1) + ' di ' + monNum(mu != null && mf != null ? mu + mf : null, 1) + ' GB</span>', H.memory) +
+      tile('Disco', monNum(dp), '%', bar(dp, dp != null && dp >= T.disk) + '<span class="mn-small">' + monNum(df) + ' GB liberi</span>', H.disk_use) +
+      '</div>' +
+      (issues.length ? '<div class="mn-card"><h2 class="mn-h2">Da guardare</h2>' + lst + '</div>' : '') +
+      '<div class="mn-card" data-more="' + mgddEsc(B.last_ok) + '"><div class="mn-row"><h2 class="mn-h2">Backup</h2>' +
+      (ev === 'failed' ? '<span class="mn-stat mn-critt">fallito</span>' : '<span class="mn-stat mn-okt">riuscito</span>') + '</div>' +
+      '<span class="mn-txt">' + monWhen(ok) + ' · ' + (size != null ? monNum(size, 2) + ' GB' : '—') + ' · prossimo ' + monWhen(this._ts(B.next)) + '</span></div>' +
+      '<div class="mn-card"><h2 class="mn-h2">Servizi</h2><div class="mn-svl">' +
+      svc.map((s) => '<span>' + mgddEsc(s[0]) + '</span><span class="' + (s[2] === true ? 'mn-okt' : s[2] === false ? 'mn-critt' : 'mn-mu') + '">' + mgddEsc(s[1]) + '</span>').join('') +
+      '</div></div>' +
+      '<div class="mn-card mn-click" data-nav="rete"><h2 class="mn-h2">Rete</h2><div class="mn-p3">' +
+      '<div><span class="mn-small">Download</span><b>' + monNum(this._num(N.speed_down)) + '</b></div>' +
+      '<div><span class="mn-small">Upload</span><b>' + monNum(this._num(N.speed_up)) + '</b></div>' +
+      '<div><span class="mn-small">Client</span><b>' + monNum(this._num(N.clients)) + '</b></div></div>' +
+      (this._st(ups.online) ? '<span class="mn-txt">UPS ' + (this._txt(ups.online) === 'on' ? 'da rete' : '<span class="mn-critt">a batteria</span>') + ' · ' + monNum(this._num(ups.battery)) + ' % · ' + monNum(this._num(ups.runtime)) + ' min di autonomia</span>' : '') +
+      '</div>' +
+      (apps.length
+        ? '<div class="mn-card"><h2 class="mn-h2">App più pesanti</h2><div class="mn-pa">' +
+        apps.map((x) => {
+          const v = this._num(x.mem);
+          return '<span>' + mgddEsc(x.name.replace(/ \(Full Access\)| with Video Streaming/i, '')) + '</span><div class="mn-bar s"><i style="width:' + Math.min(100, (v || 0) * 4).toFixed(1) + '%' + (v >= 25 ? ';background:var(--warn)' : '') + '"></i></div><span class="r">' + monNum(v, 1) + ' %</span>';
+        }).join('') + '</div></div>'
+        : '') +
+      (sc
+        ? '<div class="mn-p3c">' +
+        '<div class="mn-card mn-click" data-nav="manutenzione"><span class="mn-small">Non disp.</span><b class="' + (sc.unav ? 'mn-warnt' : '') + '">' + monNum(sc.unav) + '</b></div>' +
+        '<div class="mn-card mn-click" data-nav="manutenzione"><span class="mn-small">Update</span><b>' + sc.upd.on.length + '</b></div>' +
+        '<div class="mn-card"><span class="mn-small">Acceso da</span><b>' + (this._ts(H.last_boot) ? monDur(Date.now() - this._ts(H.last_boot)).split(' ').slice(0, 2).join(' ') : '—') + '</b></div></div>'
+        : '') +
+      '<div class="mn-pnav"><button type="button" data-nav="rete">Rete</button><button type="button" data-nav="manutenzione">Manutenzione</button></div>'
+    );
+  }
+
+  // ================= pagina RETE =================
+
+  _uBar(label, v) {
+    const T = this.config.thresholds;
+    return '<span class="mn-fa">' + label + '</span><div class="mn-bar s"><i style="width:' + Math.min(100, v || 0).toFixed(1) + '%' +
+      (v != null && v >= T.device_load ? ';background:var(--warn)' : '') + '"></i></div><span class="r">' + monNum(v) + ' %</span>';
+  }
+
+  _pageRete() {
+    const c = this.config;
+    const N = c.network;
+    const U = c.ups;
+    const AG = c.adguard;
+    const st = this._stats || {};
+    const now = Date.now();
+
+    // connettivita'
+    const ip = this._txt(N.wan_ip);
+    const ipS = this._st(N.wan_ip);
+    const ipSince = ipS ? Date.parse(ipS.last_changed) : null;
+    const down = this._num(N.speed_down);
+    const up = this._num(N.speed_up);
+    const ping = this._num(N.speed_ping);
+    const sdS = this._st(N.speed_down);
+    let peak = null;
+    (st.clients || []).forEach((r) => {
+      const v = r.max != null ? r.max : r.mean;
+      if (v != null && (!peak || v > peak.v)) peak = { v: v, t: monStart(r) };
+    });
+    const gwOn = this._txt(N.gateway_ping);
+    const conn =
+      '<section class="mn-grid gs" aria-label="Connettività">' +
+      '<div class="mn-card" data-more="' + mgddEsc(N.wan_ip) + '"><span class="mn-txt">Internet</span>' +
+      '<span class="mn-b26 ' + (ip ? 'mn-okt' : 'mn-critt') + '">' + (ip ? 'online' : 'senza IP') + '</span>' +
+      '<span class="mn-txt">' + (ip ? 'IP pubblico ' + mgddEsc(ip) + (ipSince ? ' · invariato da ' + monDur(now - ipSince) : '') : 'IP pubblico non disponibile') + '</span>' +
+      this._id(N.wan_ip) + '</div>' +
+      '<div class="mn-card" data-more="' + mgddEsc(N.speed_down) + '"><span class="mn-txt">Speedtest</span>' +
+      '<div class="mn-sp"><span><b>' + monNum(down) + '</b> <small>↓ Mbit/s</small></span><span><b>' + monNum(up) + '</b> <small>↑ Mbit/s</small></span></div>' +
+      '<span class="mn-txt">ping ' + monNum(ping) + ' ms' + (sdS ? ' · misurato ' + monWhen(Date.parse(sdS.last_updated)) : '') + '</span>' +
+      this._id(N.speed_down + ' · _carica · _ping') + '</div>' +
+      '<div class="mn-card" data-more="' + mgddEsc(N.clients) + '"><span class="mn-txt">Client Wi-Fi e LAN</span>' +
+      '<span class="mn-b26">' + monNum(this._num(N.clients)) + ' <small>connessi</small></span>' +
+      '<span class="mn-txt">' + monNum(this._num(N.guests)) + ' ospiti' + (peak ? ' · picco oggi ' + monNum(peak.v) + ' alle ' + monHM(peak.t) : '') + '</span>' +
+      this._id(N.clients + ' · ' + N.guests) + '</div>' +
+      '<div class="mn-card" data-more="' + mgddEsc(N.gateway_rtt) + '"><span class="mn-txt">' + mgddEsc(N.gateway_name) + '</span>' +
+      '<span class="mn-b26">' + monNum(this._num(N.gateway_rtt)) + ' <small>ms</small></span>' +
+      '<span class="mn-txt">' + monNum(this._num(N.gateway_loss), 1) + ' % pacchetti persi · ' + (gwOn === 'on' ? 'raggiungibile' : '<span class="mn-critt">non raggiungibile</span>') + '</span>' +
+      this._id(N.gateway_ping + ' · ' + N.gateway_rtt) + '</div>' +
+      '</section>';
+
+    // UniFi
+    const arrow = '<svg width="28" height="10" viewBox="0 0 28 10" aria-hidden="true"><path d="M0 5h24M20 1l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5"></path></svg>';
+    const topo = (c.topology || []).map((x, i) => '<span class="mn-tp' + (i ? ' on' : '') + '">' + mgddEsc(x) + '</span>').join(arrow);
+    const devs = (c.unifi || []).map((d) => {
+      const s = this._txt(d.state);
+      const okS = s === 'connected' || s === 'home' || s === 'on';
+      const stTx = s == null ? 'non disponibile' : okS ? 'connesso' : s === 'not_home' ? 'disconnesso' : s;
+      const upT = this._ts(d.uptime);
+      const fw = d.firmware && this._st(d.firmware);
+      const fwTx = fw ? 'firmware ' + mgddEsc(this._attr(d.firmware, 'installed_version') || '—') + (fw.state === 'on' ? ' <span class="mn-warnt">→ ' + mgddEsc(this._attr(d.firmware, 'latest_version') || '') + '</span>' : fw.state === 'off' ? ' aggiornato' : '') : '';
+      return (
+        '<div class="mn-dev" data-more="' + mgddEsc(d.cpu || d.state) + '"><div class="mn-row"><h3 class="mn-h3">' + mgddEsc(d.name) + '</h3><span class="mn-stat ' + (okS ? 'mn-okt' : 'mn-critt') + '">' + mgddEsc(stTx) + '</span></div>' +
+        '<div class="mn-ub">' + this._uBar('CPU', this._num(d.cpu)) + this._uBar('RAM', this._num(d.memory)) + '</div>' +
+        '<span class="mn-note">' + [upT ? 'attivo da ' + monDur(now - upT) : '', fwTx].filter(Boolean).join(' · ') + '</span>' +
+        this._id(String(d.cpu || '').replace(/_cpu_utilization$/, '_*')) + '</div>'
+      );
+    }).join('');
+    const unifi = '<section class="mn-card c16"><h2 class="mn-h2">Dispositivi UniFi</h2><div class="mn-topo">' + topo + '</div><div class="mn-grid gd">' + devs + '</div></section>';
+
+    // UPS
+    let ups = '';
+    if (this._st(U.battery) || this._st(U.online)) {
+      const on = this._txt(U.online);
+      const outs = Object.keys(this._hass.states)
+        .filter((id) => U.outlets && id.indexOf(U.outlets) === 0)
+        .sort((a, b) => (parseInt(a.slice(U.outlets.length), 10) || 0) - (parseInt(b.slice(U.outlets.length), 10) || 0));
+      const nOn = outs.filter((id) => this._txt(id) === 'on').length;
+      ups =
+        '<div class="mn-card c14"><div class="mn-row"><h2 class="mn-h2">' + mgddEsc(U.name) + '</h2>' +
+        '<span class="mn-badge ' + (on === 'on' ? 'ok' : on === 'off' ? 'crit' : 'warn') + '">' + (on === 'on' ? 'da rete' : on === 'off' ? 'a batteria' : 'stato ignoto') + '</span></div>' +
+        '<div class="mn-bk3">' +
+        '<div data-more="' + mgddEsc(U.battery) + '"><span class="mn-small">Batteria</span><b>' + monNum(this._num(U.battery)) + ' %</b></div>' +
+        '<div data-more="' + mgddEsc(U.runtime) + '"><span class="mn-small">Autonomia</span><b>' + monNum(this._num(U.runtime)) + ' <small>min</small></b></div>' +
+        '<div data-more="' + mgddEsc(U.power) + '"><span class="mn-small">Carico</span><b>' + monNum(this._num(U.power)) + ' <small>W</small></b></div></div>' +
+        '<div class="mn-flex mn-txt"><span>uscita ' + monNum(this._num(U.voltage), 1) + ' V</span><span>' + monNum(this._num(U.current), 2) + ' A</span><span>fattore di potenza ' + monNum(this._num(U.power_factor), 2) + '</span>' +
+        (this._st(U.bypass) ? '<span>bypass ' + monNum(this._num(U.bypass), 1) + ' V</span>' : '') + '</div>' +
+        (outs.length
+          ? '<div class="mn-col6"><span class="mn-small">Prese (' + nOn + ' su ' + outs.length + ' accese)</span><div class="mn-outs" style="grid-template-columns:repeat(' + Math.min(10, outs.length) + ',minmax(0,1fr))">' +
+          outs.map((id, i) => '<span class="' + (this._txt(id) === 'on' ? 'on' : 'off') + '" title="' + mgddEsc(this._name(id)) + '">' + (i + 1) + '</span>').join('') + '</div>' +
+          '<span class="mn-note">Solo lettura: gli switch delle prese restano fuori da questa vista per evitare spegnimenti accidentali.</span></div>'
+          : '') +
+        this._id([U.battery, U.runtime, U.power, U.online].join(' · ') + (outs.length ? ' · ' + U.outlets + '1…' + outs.length : '')) + '</div>';
+    }
+
+    // speedtest 7 giorni
+    const d0 = new Date();
+    d0.setHours(0, 0, 0, 0);
+    const days = [];
+    for (let i = 6; i >= 0; i--) days.push({ t: d0.getTime() - i * 86400000, d: null, u: null });
+    const fill = (rows, k) => (rows || []).forEach((r) => {
+      const t = monStart(r);
+      const d = days.find((x) => t >= x.t && t < x.t + 86400000);
+      if (d) d[k] = r.mean;
+    });
+    fill(st.down, 'd');
+    fill(st.up, 'u');
+    const have = days.filter((d) => d.d != null);
+    let speed;
+    if (have.length) {
+      const maxD = Math.max.apply(null, days.map((d) => Math.max(d.d || 0, d.u || 0)).concat([1]));
+      const scale = Math.ceil(maxD / 50) * 50;
+      const cols = days.map((d, i) => {
+        const dt = new Date(d.t);
+        const lab = i === days.length - 1 ? 'oggi' : MON_GIORNI[dt.getDay()];
+        return '<div class="mn-dc"><div class="mn-dbar"><i style="height:' + (((d.d || 0) / scale) * 100).toFixed(1) + '%;background:var(--ac)" title="' + monNum(d.d) + ' Mbit/s"></i>' +
+          '<i style="height:' + (((d.u || 0) / scale) * 100).toFixed(1) + '%;background:var(--vi)" title="' + monNum(d.u) + ' Mbit/s"></i></div><span>' + lab + '</span></div>';
+      }).join('');
+      const worst = have.slice().sort((a, b) => a.d - b.d)[0];
+      const wd = new Date(worst.t);
+      speed =
+        '<div class="mn-card c14" data-more="' + mgddEsc(N.speed_down) + '"><h2 class="mn-h2">Velocità ultimi 7 giorni</h2><div class="mn-days">' + cols + '</div>' +
+        '<div class="mn-leg"><span><i style="background:var(--ac)"></i>download (media del giorno, scala ' + scale + ' Mbit/s)</span><span><i style="background:var(--vi)"></i>upload</span></div>' +
+        '<span class="mn-note">Giorno più lento: ' + (worst.t === d0.getTime() ? 'oggi' : MON_GIORNI[wd.getDay()] + ' ' + wd.getDate()) + ', media ' + monNum(worst.d) + ' Mbit/s.</span>' +
+        this._id('statistiche long-term di ' + N.speed_down + ' / ' + N.speed_up) + '</div>';
+    } else {
+      speed = '<div class="mn-card c14"><h2 class="mn-h2">Velocità ultimi 7 giorni</h2><p class="mn-txt">Statistiche non ancora disponibili.</p></div>';
+    }
+
+    // AdGuard, altri host, accesso esterno
+    const q = this._num(AG.queries);
+    const ag =
+      '<div class="mn-card" data-more="' + mgddEsc(AG.queries) + '"><h2 class="mn-h2">AdGuard Home</h2>' +
+      '<div class="mn-sp"><span><b>' + monNum(q) + '</b> <small>query oggi</small></span><span><b>' + monNum(this._num(AG.ratio), 1) + ' %</b> <small>bloccate</small></span></div>' +
+      '<span class="mn-txt">tempo medio di risposta ' + monNum(this._num(AG.latency), 1) + ' ms · navigazione sicura ' + monNum(this._num(AG.safe)) + '</span>' +
+      (q === 0 ? '<span class="mn-note mn-warnt">Nessuna query: forse AdGuard non è il DNS usato dalla rete.</span>' : '') +
+      this._id(AG.queries + ' · ' + AG.ratio + ' · ' + AG.latency) + '</div>';
+    const li = (name, id) => {
+      const s = this._st(id);
+      let v = '—';
+      let cls = 'mn-mu';
+      if (s) {
+        const dom = id.split('.')[0];
+        if (dom === 'device_tracker') {
+          v = s.state === 'home' ? 'in rete' : s.state === 'not_home' ? 'fuori rete' : s.state;
+          cls = s.state === 'home' ? 'mn-okt' : 'mn-critt';
+        } else if (dom === 'update') {
+          v = (this._attr(id, 'installed_version') || '—') + (s.state === 'on' ? ' → ' + this._attr(id, 'latest_version') : '');
+          cls = s.state === 'on' ? 'mn-warnt' : s.state === 'off' ? 'mn-okt' : 'mn-critt';
+        } else if (this._attr(id, 'device_class') === 'timestamp') {
+          const t = this._ts(id);
+          v = t ? 'attivo da ' + monDur(now - t) : '—';
+        } else {
+          v = this._ok(id) ? s.state : 'non disponibile';
+          if (!this._ok(id)) cls = 'mn-critt';
+        }
+      }
+      return '<li data-more="' + mgddEsc(id) + '"><span>' + mgddEsc(name) + '</span><span class="' + cls + '">' + mgddEsc(v) + '</span></li>';
+    };
+    const lst = (title, arr) =>
+      '<div class="mn-card"><h2 class="mn-h2">' + title + '</h2><ul class="mn-list">' + arr.map((x) => li(x.name, x.entity)).join('') + '</ul>' +
+      this._id(arr.map((x) => x.entity).join(' · ')) + '</div>';
+
+    return (
+      this._head('Rete e infrastruttura', 'UniFi · UPS · connettività · servizi esposti') +
+      conn +
+      unifi +
+      '<section class="mn-grid g2">' + ups + speed + '</section>' +
+      '<section class="mn-grid g3">' + ag + lst('Altri host', c.hosts || []) + lst('Accesso esterno', c.access || []) + '</section>'
+    );
+  }
+
+  // ================= pagina MANUTENZIONE =================
+
+  _pageManut() {
+    const c = this.config;
+    const T = c.thresholds;
+    const sc = this._scan;
+    const now = Date.now();
+    const issues = this._issues();
+    const lab = { a: 'ALTA', m: 'MEDIA', b: 'BASSA' };
+    const todo = issues.length
+      ? issues.map((i) =>
+        '<div class="mn-card mn-todo"><span class="mn-prio ' + i.lvl + '">' + lab[i.lvl] + '</span>' +
+        '<div class="mn-todo-tx"' + (i.id && i.id.indexOf('.') > 0 && i.id.indexOf('/') < 0 ? ' data-more="' + mgddEsc(i.id) + '"' : '') + '><span class="t">' + mgddEsc(i.title) + '</span><span class="mn-txt">' + mgddEsc(i.desc || '') + '</span>' + this._id(i.id) + '</div>' +
+        (i.action ? '<button type="button" class="mn-act" ' + (i.action.nav ? 'data-nav="' + i.action.nav + '"' : 'data-go="' + mgddEsc(i.action.path) + '"') + '>' + mgddEsc(i.action.label) + '</button>' : '') +
+        '</div>').join('')
+      : '<div class="mn-card mn-todo"><span class="mn-prio ok">OK</span><div class="mn-todo-tx"><span class="t">Niente da fare</span><span class="mn-txt">Nessun problema aperto.</span></div></div>';
+
+    if (!sc) return this._head('Manutenzione', 'Cosa richiede un intervento, in ordine di importanza') + '<section class="mn-col10">' + todo + '</section>';
+
+    // non disponibili per dispositivo
+    const verd = {
+      verificare: '<span class="mn-critt">da verificare</span>',
+      rimuovere: '<span class="mn-warnt">da rimuovere</span>',
+      atteso: '<span class="mn-mu">parziale</span>',
+    };
+    const shown = sc.devRows.slice(0, 12);
+    const others = sc.devRows.slice(12);
+    const rows = shown.map((r) =>
+      '<tr data-more="' + mgddEsc(r.ids[0]) + '"><td>' + mgddEsc(r.name) + '</td><td>' + r.n + (r.tot > r.n ? ' <span class="mn-fa">di ' + r.tot + '</span>' : '') + '</td>' +
+      '<td class="mn-mu">' + (isFinite(r.since) ? monDur(now - r.since) : '—') + '</td><td>' + verd[r.verdict] + '</td></tr>'
+    ).join('') +
+      (others.length
+        ? '<tr class="rest"><td colspan="4">+ ' + (others.length === 1 ? 'un altro dispositivo' : 'altri ' + others.length + ' dispositivi') + ', ' +
+          others.reduce((a, b) => a + b.n, 0) + ' entità</td></tr>'
+        : '');
+    const unavCard =
+      '<div class="mn-card c12"><div class="mn-row"><h2 class="mn-h2">Entità non disponibili per dispositivo</h2><span class="mn-note">' + sc.unav + ' totali</span></div>' +
+      '<div class="mn-tbl"><table class="sm"><thead><tr><th>Dispositivo</th><th>Entità</th><th>Da</th><th>Giudizio</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<span class="mn-note">«Da verificare»: tutte le entità del dispositivo sono giù. «Parziale»: solo alcune, di solito sensori che si spengono con il dispositivo.</span>' +
+      this._id('hass.states + registro entità/dispositivi') + '</div>';
+
+    // automazioni ferme
+    const aut = sc.aut.unav.map((id) => [id, 'non disponibile', 'mn-critt'])
+      .concat(sc.aut.off.map((id) => {
+        const lt = this._attr(id, 'last_triggered');
+        const t = lt ? Date.parse(lt) : null;
+        return [id, 'spenta · ' + (t ? 'ultima ' + monWhen(t) : 'mai eseguita'), 'mn-mu'];
+      }));
+    const autCard =
+      '<div class="mn-card c12"><h2 class="mn-h2">Automazioni ferme</h2>' +
+      (aut.length
+        ? '<ul class="mn-list">' + aut.map((x) => '<li data-more="' + mgddEsc(x[0]) + '"><span>' + mgddEsc(this._name(x[0])) + this._id(x[0]) + '</span><span class="' + x[2] + ' nw">' + mgddEsc(x[1]) + '</span></li>').join('') + '</ul>'
+        : '<p class="mn-txt">Tutte le automazioni sono attive.</p>') + '</div>';
+
+    // aggiornamenti
+    const uU = sc.upd.unav.map((id) => String(this._name(id)).replace(/\s*(firmware|update)\s*(update)?\s*$/i, ''));
+    const updCard =
+      '<div class="mn-card c12"><h2 class="mn-h2">Aggiornamenti</h2><div class="mn-cnt">' +
+      '<div class="mn-box"><span class="k">Disponibili</span><span class="n ' + (sc.upd.on.length ? 'mn-warnt' : '') + '">' + sc.upd.on.length + '</span></div>' +
+      '<div class="mn-box"><span class="k">Aggiornati</span><span class="n">' + sc.upd.off + '</span></div>' +
+      '<div class="mn-box"><span class="k">Non disponibili</span><span class="n ' + (uU.length ? 'mn-warnt' : '') + '">' + uU.length + '</span></div></div>' +
+      (sc.upd.on.length ? '<ul class="mn-list">' + sc.upd.on.map((id) => '<li data-more="' + mgddEsc(id) + '"><span>' + mgddEsc(String(this._attr(id, 'title') || this._name(id))) + '</span><span class="mn-warnt nw">' + mgddEsc((this._attr(id, 'installed_version') || '') + ' → ' + (this._attr(id, 'latest_version') || '')) + '</span></li>').join('') + '</ul>' : '') +
+      (uU.length ? '<span class="mn-note">Non disponibili: ' + mgddEsc(uU.join(', ')) + '.</span>' : '') +
+      this._id('states.update (' + (sc.upd.on.length + sc.upd.off + sc.upd.unav.length) + ')') + '</div>';
+
+    // batterie
+    const shownB = sc.batt.slice(0, 9);
+    const restB = sc.batt.slice(9);
+    const minRest = restB.length ? Math.min.apply(null, restB.map((b) => b.val)) : null;
+    const BC = c.battery_check;
+    const chk = BC.button && this._st(BC.button)
+      ? '<button type="button" class="mn-act" data-press="' + mgddEsc(BC.button) + '">Controlla ora</button>'
+      : '';
+    const res = BC.result ? this._txt(BC.result) : null;
+    const resT = BC.result && this._st(BC.result) ? Date.parse(this._st(BC.result).last_changed) : null;
+    const battCard =
+      '<section class="mn-card c14"><div class="mn-row"><h2 class="mn-h2">Batterie</h2><div class="mn-flex"><span class="mn-note">' + sc.batt.length + ' dispositivi · ' +
+      mgddEsc(c.battery_exclude ? 'esclusi: ' + c.battery_exclude.replace(/\|/g, ', ') : '') + ' · dalla più scarica</span>' + chk + '</div></div>' +
+      '<div class="mn-batt">' + shownB.map((b) => {
+        const col = b.val < T.battery_crit ? 'var(--crit)' : b.val < T.battery_low ? 'var(--warn)' : 'var(--ac)';
+        const tcls = b.val < T.battery_crit ? 'mn-critt' : b.val < T.battery_low ? 'mn-warnt' : '';
+        return '<div class="mn-bt" data-more="' + mgddEsc(b.id) + '"><span class="nm">' + mgddEsc(b.name) + '</span><div class="mn-bar s"><i style="width:' + Math.max(2, b.val).toFixed(0) + '%;background:' + col + '"></i></div><span class="r ' + tcls + '">' + monNum(b.val) + ' %</span></div>';
+      }).join('') + '</div>' +
+      '<span class="mn-note">' + (restB.length ? '+ ' + restB.length + ' tra il ' + monNum(minRest) + ' e il 100 %' : '') +
+      (sc.battUnav ? (restB.length ? ' · ' : '') + sc.battUnav + ' sensori batteria non disponibili' : '') +
+      (res ? ' · ultimo controllo ' + (resT ? monWhen(resT) : '') + ': ' + mgddEsc(res.length > 140 ? res.slice(0, 137) + '…' : res) : '') + '</span>' +
+      this._id('sensor.* con device_class battery' + (BC.button ? ' · ' + BC.button : '')) + '</section>';
+
+    return (
+      this._head('Manutenzione', 'Cosa richiede un intervento, in ordine di importanza') +
+      '<section class="mn-col10" aria-label="Da fare">' + todo + '</section>' +
+      '<section class="mn-grid g2">' + unavCard + '<div class="mn-col16">' + autCard + updCard + '</div></section>' +
+      battCard
+    );
+  }
+}
+
+// Palette del mockup. Scuro e' l'originale; chiaro ne e' la trasposizione con
+// gli stessi rapporti di contrasto (testo >= 4.5:1 sul fondo delle card).
+const MON_STYLES =
+  '<style>' +
+  'casa-mgdd-monitor-card{display:block}' +
+  '.mn{--bg:#0f1115;--card:#181b22;--bd:#262b35;--in:#12151b;--tx:#e6e8ee;--mu:#a3abb9;--fa:#8b94a5;--gr:#3a404d;' +
+  '--ac:#6cb4ff;--vi:#a98bff;--ok:#5fd39a;--okt:#8fe3b6;--okbg:#173628;--warn:#f2b544;--warnt:#f6cf7c;--warnbg:#3a2e12;' +
+  '--crit:#ff7a7a;--critt:#ff9a9a;--critbg:#3d1f1f;--critb:#ffb3b3;--navbg:#1f2b3d;--navbd:#35507a;' +
+  '--tok:#2f6b52;--twarn:#7a5a1a;--tcrit:#7a2f2f;--outbg:#1d3a2d;--neubg:#22262f;--neut:#c3c9d4}' +
+  '.mn.mn-light{--bg:#f3f4f7;--card:#ffffff;--bd:#e0e4ea;--in:#f5f6f9;--tx:#1b1e24;--mu:#545d6b;--fa:#636b78;--gr:#c4cad3;' +
+  '--ac:#2f7fd8;--vi:#7a5ce0;--ok:#1f9d63;--okt:#11764a;--okbg:#dcf2e6;--warn:#d7951a;--warnt:#875600;--warnbg:#fbefd3;' +
+  '--crit:#d64545;--critt:#b02525;--critbg:#fbe1e1;--critb:#9e1f1f;--navbg:#e4eefb;--navbd:#9cc0ec;' +
+  '--tok:#9fd8bd;--twarn:#f0cf86;--tcrit:#efa3a3;--outbg:#dcf2e6;--neubg:#eceef2;--neut:#454c58}' +
+  '.mn{box-sizing:border-box;background:var(--bg);color:var(--tx);font-family:Inter,-apple-system,"Segoe UI",Roboto,sans-serif;' +
+  'padding:32px 24px 48px;min-height:100%;-webkit-font-smoothing:antialiased;line-height:1.35}' +
+  '.mn *{box-sizing:border-box}' +
+  '.mn button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer}' +
+  '.mn [data-more],.mn .mn-click{cursor:pointer}' +
+  '.mn-wrap{max-width:1360px;margin:0 auto;display:flex;flex-direction:column;gap:20px}' +
+  '.mn-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:16px}' +
+  '.mn-ttl{display:flex;flex-direction:column;gap:4px;min-width:0}' +
+  '.mn-h1{margin:0;font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.15}' +
+  '.mn-sub{margin:0;font-size:14px;color:var(--mu)}' +
+  '.mn-tools{display:flex;flex-wrap:wrap;gap:10px;align-items:center}' +
+  '.mn .mn-pill{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;font-size:13px;font-weight:600;min-height:36px}' +
+  '.mn-pill i{width:8px;height:8px;border-radius:50%}' +
+  '.mn-pill.ok{background:var(--okbg);color:var(--okt)}.mn-pill.ok i{background:var(--ok)}' +
+  '.mn-pill.warn{background:var(--warnbg);color:var(--warnt)}.mn-pill.warn i{background:var(--warn)}' +
+  '.mn-pill.crit{background:var(--critbg);color:var(--critt)}.mn-pill.crit i{background:var(--crit)}' +
+  '.mn-time{font-size:13px;color:var(--mu)}' +
+  '.mn-nav{display:flex;flex-wrap:wrap;gap:6px}' +
+  '.mn .mn-nav button{padding:10px 14px;border-radius:10px;background:var(--card);border:1px solid var(--bd);color:var(--mu);font-size:13px;min-height:40px}' +
+  '.mn .mn-nav button.on{background:var(--navbg);border-color:var(--navbd);color:var(--tx);font-weight:600}' +
+  '.mn-chips{display:flex;flex-wrap:wrap;gap:10px}' +
+  '.mn .mn-chip{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:10px 14px;display:flex;flex-direction:column;gap:2px;min-width:150px}' +
+  '.mn-chip .k{font-size:12px;color:var(--fa)}.mn-chip .v{font-size:16px;font-weight:600}' +
+  '.mn-chip small{font-size:12px;font-weight:500}.mn-chip small.ok{color:var(--ok)}.mn-chip small.warn{color:var(--warnt)}' +
+  '.mn-id{display:block;font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11px;color:var(--fa);font-weight:400;overflow-wrap:anywhere}' +
+  '.mn.noid .mn-id{display:none}' +
+  '.mn-mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}' +
+  '.mn-grid{display:grid;gap:16px}' +
+  '.mn-grid.g4{grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr))}' +
+  '.mn-grid.g2{grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr));align-items:start}' +
+  '.mn-grid.g3{grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));align-items:start}' +
+  '.mn-grid.gs{grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr))}' +
+  '.mn-grid.gd{grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:12px}' +
+  '.mn-card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px;min-width:0}' +
+  '.mn-card.c14{gap:14px}.mn-card.c16{gap:16px}.mn-card.c12{gap:12px}' +
+  '.mn-col6,.mn-col8,.mn-col10,.mn-col16{display:flex;flex-direction:column}' +
+  '.mn-col6{gap:6px}.mn-col8{gap:8px}.mn-col10{gap:10px}.mn-col16{gap:16px}' +
+  '.mn-h2{margin:0;font-size:16px;font-weight:600}' +
+  '.mn-h2s{margin:0;font-size:14px;font-weight:600;color:var(--mu)}' +
+  '.mn-h3{margin:0;font-size:14px;font-weight:600}' +
+  '.mn-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}' +
+  '.mn-flex{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}' +
+  '.mn-small{font-size:12px;color:var(--fa)}' +
+  '.mn-note{font-size:12px;color:var(--mu)}' +
+  '.mn-txt{font-size:13px;color:var(--mu);margin:0}' +
+  '.mn-mu{color:var(--mu)}.mn-fa{color:var(--fa)}' +
+  '.mn-okt{color:var(--okt)}.mn-warnt{color:var(--warnt)}.mn-critt{color:var(--critt)}' +
+  '.mn-stat{font-size:12px;font-weight:600}' +
+  '.mn-small.mn-okt,.mn-small.mn-warnt,.mn-small.mn-critt{font-weight:600}' +
+  '.mn-big{display:flex;align-items:baseline;gap:6px}' +
+  '.mn-big b{font-size:40px;font-weight:700;letter-spacing:-.02em;line-height:1.1}' +
+  '.mn-big span{font-size:18px;color:var(--mu)}' +
+  '.mn-big.warn b{color:var(--warnt)}.mn-big.crit b{color:var(--critt)}' +
+  '.mn-spark{display:block;width:100%;height:48px}.mn-spark.s{height:28px}' +
+  '.mn-spark-empty{height:48px;display:flex;align-items:center;font-size:12px;color:var(--fa)}' +
+  '.mn-tbar{position:relative;height:10px;border-radius:5px}' +
+  '.mn-tbar i{position:absolute;top:-4px;width:3px;height:18px;border-radius:2px;background:var(--tx);margin-left:-1px}' +
+  '.mn-scale{display:flex;justify-content:space-between;gap:4px;font-size:11px;color:var(--fa)}' +
+  '.mn-mem{display:flex;align-items:center;gap:16px}' +
+  '.mn-donut{width:84px;height:84px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none}' +
+  '.mn-donut div{width:64px;height:64px;border-radius:50%;background:var(--card);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700}' +
+  '.mn-memtx{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mu)}' +
+  '.mn strong{font-weight:600;color:var(--tx)}' +
+  '.mn-bar{height:10px;border-radius:5px;background:var(--bd);overflow:hidden}' +
+  '.mn-bar i{display:block;height:100%;background:var(--ac);border-radius:inherit}' +
+  '.mn-bar.s{height:6px;border-radius:3px}' +
+  '.mn-kv{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--mu)}' +
+  '.mn-cnt{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}' +
+  '.mn-box{background:var(--in);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:4px;min-width:0}' +
+  '.mn-box .k{font-size:12px;color:var(--fa)}' +
+  '.mn-box .n{font-size:24px;font-weight:700;line-height:1.15}.mn-box .n small{font-size:13px;font-weight:500;color:var(--mu)}' +
+  '.mn-box .n.warn{color:var(--warnt)}.mn-box .d{font-size:12px;color:var(--mu)}' +
+  '.mn-stack{display:flex;height:12px;border-radius:6px;overflow:hidden;gap:2px}.mn-stack i{display:block;min-width:3px}' +
+  '.mn-leg{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--mu)}' +
+  '.mn-leg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}' +
+  '.mn-badge{padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}' +
+  '.mn-badge.ok{background:var(--okbg);color:var(--okt)}.mn-badge.warn{background:var(--warnbg);color:var(--warnt)}.mn-badge.crit{background:var(--critbg);color:var(--critb)}' +
+  '.mn-bk{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}' +
+  '.mn-kvb{display:flex;flex-direction:column;gap:2px;min-width:0}.mn-kvb .k{font-size:12px;color:var(--fa)}.mn-kvb .v{font-size:18px;font-weight:600}' +
+  '.mn-hist{display:flex;align-items:flex-end;gap:4px;height:44px}.mn-hist i{flex:1;border-radius:3px}' +
+  '.mn-tbl{overflow-x:auto;margin:0 -4px}' +
+  '.mn table{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}' +
+  '.mn table.sm{min-width:440px}' +
+  '.mn th{text-align:left;color:var(--fa);font-size:12px;font-weight:500;padding:8px 10px}.mn th.w30{width:30%}' +
+  '.mn td{padding:9px 10px;border-top:1px solid var(--bd);vertical-align:top}.mn td.nm{font-weight:500}' +
+  '.mn tr.rest td{color:var(--mu)}' +
+  '.mn tbody tr[data-more]:hover td{background:var(--in)}' +
+  '.mn-mbar{display:flex;align-items:center;gap:8px}.mn-mbar .mn-bar{flex:1}.mn-mbar span{width:64px;text-align:right}' +
+  '.mn-info{margin:0;font-size:12px;color:var(--mu);background:var(--in);border:1px dashed var(--gr);border-radius:10px;padding:10px 12px}' +
+  '.mn-card.mn-svc{padding:16px;gap:8px}' +
+  // rete
+  '.mn-b26{font-size:26px;font-weight:700;line-height:1.15}.mn-b26 small{font-size:13px;font-weight:500;color:var(--mu)}' +
+  '.mn-sp{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}.mn-sp b{font-size:26px;font-weight:700}.mn-sp small{font-size:12px;color:var(--mu)}' +
+  '.mn-topo{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:13px;color:var(--mu)}' +
+  '.mn-topo svg{color:var(--fa)}' +
+  '.mn-tp{padding:8px 12px;border:1px solid var(--gr);border-radius:999px}.mn-tp.on{border-color:var(--navbd);color:var(--tx)}' +
+  '.mn-dev{background:var(--in);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}' +
+  '.mn-dev .mn-h3{font-size:15px}' +
+  '.mn-ub{display:grid;grid-template-columns:44px 1fr 48px;align-items:center;gap:8px;font-size:12px}.mn-ub .r{text-align:right}' +
+  '.mn-bk3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}' +
+  '.mn-bk3>div{display:flex;flex-direction:column;gap:2px}.mn-bk3 b{font-size:26px;font-weight:700}.mn-bk3 small{font-size:13px;font-weight:500;color:var(--mu)}' +
+  '.mn-outs{display:grid;gap:6px}' +
+  '.mn-outs span{height:26px;border-radius:6px;font-size:11px;display:flex;align-items:center;justify-content:center}' +
+  '.mn-outs .on{background:var(--outbg);color:var(--okt)}.mn-outs .off{background:var(--critbg);color:var(--critt)}' +
+  '.mn-days{display:flex;align-items:flex-end;gap:10px;height:150px;padding-top:8px}' +
+  '.mn-dc{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0}' +
+  '.mn-dc span{font-size:11px;color:var(--fa)}' +
+  '.mn-dbar{width:100%;height:118px;display:flex;align-items:flex-end;gap:3px}.mn-dbar i{flex:1;border-radius:3px 3px 0 0;min-height:2px}' +
+  '.mn-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px;font-size:13px}' +
+  '.mn-list li{display:flex;justify-content:space-between;gap:12px;align-items:baseline}' +
+  '.mn-list li>span:first-child{min-width:0}.mn .nw{white-space:nowrap}' +
+  // manutenzione
+  '.mn-card.mn-todo{padding:16px 18px;flex-direction:row;flex-wrap:wrap;align-items:center;gap:16px}' +
+  '.mn-prio{padding:4px 10px;border-radius:6px;font-size:12px;font-weight:700;min-width:64px;text-align:center}' +
+  '.mn-prio.a{background:var(--critbg);color:var(--critb)}.mn-prio.m{background:var(--warnbg);color:var(--warnt)}' +
+  '.mn-prio.b{background:var(--neubg);color:var(--neut)}.mn-prio.ok{background:var(--okbg);color:var(--okt)}' +
+  '.mn-todo-tx{flex:999 1 420px;display:flex;flex-direction:column;gap:2px;min-width:0}' +
+  '.mn-todo-tx .t{font-size:15px;font-weight:600}' +
+  '.mn .mn-act{padding:10px 14px;border-radius:10px;border:1px solid var(--gr);font-size:13px;min-height:40px;white-space:nowrap}' +
+  '.mn .mn-act:hover,.mn .mn-nav button:hover,.mn .mn-chip:hover{border-color:var(--navbd)}' +
+  '.mn-batt{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:8px 20px}' +
+  '.mn-bt{display:grid;grid-template-columns:1fr 90px 44px;align-items:center;gap:10px;font-size:13px}' +
+  '.mn-bt .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mn-bt .r{text-align:right}' +
+  // telefono
+  '.mn.mn-narrow{padding:20px 16px 32px}.mn.mn-narrow .mn-wrap{gap:14px}' +
+  '.mn-phead{display:flex;justify-content:space-between;align-items:center}.mn-phead .mn-h1{font-size:22px}' +
+  '.mn .mn-banner{border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:4px}' +
+  '.mn-banner .t{font-size:15px;font-weight:600}.mn-banner .d{font-size:13px}' +
+  '.mn-banner.ok{background:var(--okbg);color:var(--okt)}.mn-banner.warn{background:var(--warnbg);color:var(--warnt)}.mn-banner.crit{background:var(--critbg);color:var(--critt)}' +
+  '.mn-p2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}' +
+  '.mn-card.mn-pt{padding:14px;gap:6px}' +
+  '.mn-pv{font-size:28px;font-weight:700;line-height:1.1}.mn-pv span{font-size:14px;font-weight:500;color:var(--mu)}' +
+  '.mn-pv.warn{color:var(--warnt)}.mn-pv.crit{color:var(--critt)}' +
+  '.mn-pi{display:flex;gap:10px;align-items:flex-start}.mn-pi>i{margin-top:6px;width:8px;height:8px;border-radius:50%;flex:none}' +
+  '.mn-pi>i.a{background:var(--crit)}.mn-pi>i.m{background:var(--warn)}.mn-pi>i.b{background:var(--gr)}' +
+  '.mn-pi div{display:flex;flex-direction:column;gap:2px}.mn-pi .t{font-size:14px;font-weight:500}.mn-pi .d{font-size:12px;color:var(--mu)}' +
+  '.mn-svl{display:grid;grid-template-columns:1fr auto;gap:8px 12px;font-size:13px}' +
+  '.mn-p3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.mn-p3 div{display:flex;flex-direction:column;gap:2px}.mn-p3 b{font-size:18px;font-weight:700}' +
+  '.mn-pa{display:grid;grid-template-columns:1fr 70px 56px;align-items:center;gap:8px 10px;font-size:13px}.mn-pa .r{text-align:right}' +
+  '.mn-p3c{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}' +
+  '.mn-p3c .mn-card{padding:12px;gap:2px}.mn-p3c b{font-size:20px;font-weight:700}' +
+  '.mn-pnav{display:flex;gap:8px}' +
+  '.mn .mn-pnav button{flex:1;min-height:44px;display:flex;align-items:center;justify-content:center;border-radius:12px;border:1px solid var(--gr);font-size:14px}' +
+  '@media (max-width:600px){.mn-cnt{grid-template-columns:repeat(2,minmax(0,1fr))}.mn-bk3{grid-template-columns:repeat(3,minmax(0,1fr))}.mn-bk3 b{font-size:20px}}' +
+  '</style>';
+
+MonitorCard.getStubConfig = function () {
+  return { page: 'sistema' };
+};
+
+customElements.define('casa-mgdd-monitor-card', MonitorCard);
+window.customCards.push({
+  type: 'casa-mgdd-monitor-card',
+  name: 'Casa MGDD Monitor',
+  description:
+    'Vista ha-monitor a pagina intera (da usare in una vista panel): page sistema, rete o manutenzione. Entità predefinite dell’installazione di casa, tutte sovrascrivibili.',
 });

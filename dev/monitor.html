@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco monitor</title>
+<style>
+  body { margin: 0; background: #111; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; font-size: 12px; background: #222; color: #ddd; }
+  .bar button { font: inherit; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <button data-p="sistema">Sistema</button>
+  <button data-p="rete">Rete</button>
+  <button data-p="manutenzione">Manutenzione</button>
+  <span>|</span>
+  <button data-s="normale">Dati normali</button>
+  <button data-s="allarmi">Con allarmi</button>
+  <button id="dark">Chiaro / scuro</button>
+  <button id="ids">ID sì / no</button>
+</div>
+<div id="host"></div>
+<script>window.customCards = window.customCards || [];</script>
+<script src="monitor-fixture.js"></script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  let page = q.get('page') || 'sistema';
+  let scen = q.get('s') || 'normale';
+  let dark = q.get('dark') !== '0';
+  let ids = q.get('ids') !== '0';
+  let el;
+  // la card naviga con history.pushState + location-changed: qui si cambia pagina
+  window.addEventListener('location-changed', () => {
+    const m = location.pathname.match(/ha-monitor-?(rete|manutenzione)?$/);
+    page = m ? m[1] || 'sistema' : page;
+    history.replaceState(null, '', 'monitor.html?page=' + page + '&s=' + scen + '&dark=' + (dark ? 1 : 0) + '&ids=' + (ids ? 1 : 0));
+    mount();
+  });
+  window.addEventListener('hass-more-info', (e) => console.log('more-info', e.detail.entityId));
+  function mount() {
+    const host = document.getElementById('host');
+    host.innerHTML = '';
+    el = document.createElement('casa-mgdd-monitor-card');
+    el.setConfig({ type: 'custom:casa-mgdd-monitor-card', page: page, show_ids: ids });
+    host.appendChild(el);
+    const h = MON_FIXTURE(scen);
+    h.themes = { darkMode: dark };
+    el.hass = h;
+  }
+  document.querySelectorAll('[data-p]').forEach((b) => b.addEventListener('click', () => { page = b.dataset.p; mount(); }));
+  document.querySelectorAll('[data-s]').forEach((b) => b.addEventListener('click', () => { scen = b.dataset.s; mount(); }));
+  document.getElementById('dark').addEventListener('click', () => { dark = !dark; mount(); });
+  document.getElementById('ids').addEventListener('click', () => { ids = !ids; mount(); });
+  mount();
+</script>
+</body>
+</html>
