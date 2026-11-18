@@ -144,7 +144,7 @@
     s('device_tracker.raspberry5', 'home');
     s('sensor.daikin_zona_giorno_gateway_ip_address', '192.168.178.101');
     s('sensor.daikin_zona_notte_gateway_ip_address', '192.168.178.72');
-    s('sensor.shellyproem50_uptime', iso(now - 26 * H), { device_class: 'timestamp' });
+    s('sensor.shellyproem50_uptime', iso(now - 26 * H));
     s('sensor.iphone18pro_mattia_iphone17pro_mattia2_app_version', '2026.10.3');
     s('sensor.iphone_di_deborah_app_version', '2026.10.3');
 
@@ -159,7 +159,8 @@
     // batterie
     const batt = [
       ['huewall_soggiornosx', 'HueWall-SoggiornoSx', scenario === 'allarmi' ? 12 : 35],
-      ['nuki', 'Nuki Ultra', 48, 2],
+      ['nuki', 'Nuki Ultra', 48],
+      ['nuki_mqtt', 'Nuki Ultra', 48],
       ['temp_soggiorno', 'Sensore Temperatura Soggiorno', 70],
       ['cp4', 'CP4(K68150223)', 77],
       ['aqara_th', 'Aqara Temp/Humidity Sensor', 80],
@@ -266,7 +267,7 @@
     };
     const connection = {
       subscribeMessage: (cb) => {
-        setTimeout(() => cb({ type: 'current', notifications: scenario === 'allarmi' ? { n1: { title: 'Accesso non riuscito', message: 'Tentativo di accesso da 10.0.0.9' } } : {} }), 50);
+        setTimeout(() => cb({ type: 'current', notifications: { d1: { title: 'DreameBot L20 Ultra Complete', message: '### La spazzola laterale deve essere sostituita ![image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAzwAAAM8CAYAAAC)' }, m1: { title: '⚠️ Sacile: Piogge probabili (domani)', message: "<table><tr><td><img src='https://example.org/logo.png' width='72'></td><td>&nbsp;Pioggia **moderata** dalle 14</td></tr></table>" } } }), 50);
         return Promise.resolve(() => {});
       },
     };

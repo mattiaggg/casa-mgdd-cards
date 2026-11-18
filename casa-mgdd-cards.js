@@ -10,7 +10,7 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card.
  *
- * Version: 1.98.0
+ * Version: 1.98.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13139,6 +13139,24 @@ function monBattName(fn) {
     .trim();
 }
 
+// Testo semplice da markdown/HTML delle notifiche persistenti: via immagini
+// (anche base64), tag, entita' HTML, titoli e grassetti.
+function monPlain(s) {
+  return String(s || '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#?[a-z0-9]+;/gi, ' ')
+    .replace(/(^|\s)#{1,6}\s+/g, '$1')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function monStart(r) {
   if (r == null) return NaN;
   if (typeof r.start === 'number') return r.start;
@@ -13158,7 +13176,8 @@ class MonitorCard extends HTMLElement {
     const merge = (k) => Object.assign({}, MON_DEFAULTS[k], c[k] || {});
     this.config = {
       page: page,
-      show_ids: c.show_ids !== false,
+      // gli entity_id sotto ogni dato servivano al mockup; in uso si accendono a richiesta
+      show_ids: c.show_ids === true,
       host_label: c.host_label != null ? c.host_label : MON_DEFAULTS.host_label,
       phone_width: c.phone_width || 600,
       paths: merge('paths'),
@@ -13378,7 +13397,7 @@ class MonitorCard extends HTMLElement {
     }
     const devName = (did) => {
       const d = devs[did];
-      return d ? d.name_by_user || d.name || did : did;
+      return d ? String(d.name_by_user || d.name || did).trim() : did;
     };
 
     const byDev = {};
@@ -13434,15 +13453,20 @@ class MonitorCard extends HTMLElement {
       }
     });
 
-    // batterie: una per dispositivo (la Nuki ne espone due), la piu' scarica
+    // batterie: una per dispositivo, la piu' scarica. La serratura Nuki compare
+    // come DUE dispositivi con lo stesso nome (integrazione Matter e bridge
+    // MQTT): si scarta anche il doppione con nome e valore uguali.
     const seen = {};
     const battDev = [];
     batt.sort((a, b) => a.val - b.val).forEach((b) => {
-      const k = b.did || b.id;
-      if (seen[k]) return;
-      seen[k] = 1;
       const fn = (st[b.id].attributes || {}).friendly_name || b.id;
-      battDev.push({ id: b.id, val: b.val, name: b.did ? devName(b.did) : monBattName(fn) });
+      const name = b.did ? devName(b.did) : monBattName(fn);
+      const k = b.did || b.id;
+      const kn = name.toLowerCase() + '|' + b.val;
+      if (seen[k] || seen[kn]) return;
+      seen[k] = 1;
+      seen[kn] = 1;
+      battDev.push({ id: b.id, val: b.val, name: name });
     });
 
     // entita' non disponibili raggruppate per dispositivo
@@ -13726,11 +13750,14 @@ class MonitorCard extends HTMLElement {
         'Segnalata da Home Assistant in Impostazioni › Riparazioni.', 'repairs/' + r.domain + '/' + r.issue_id,
         { label: 'Apri riparazioni', path: '/config/repairs' });
     });
+    // Le notifiche persistenti sono quasi sempre informative (manutenzione del
+    // robot, previsione pioggia): priorita' bassa, e il testo va ripulito da
+    // markdown e HTML, che qui comparirebbero grezzi (immagini base64, tabelle).
     if (this._notif) {
       Object.keys(this._notif).forEach((k) => {
         const n = this._notif[k];
-        const msg = String(n.message || '').replace(/\s+/g, ' ');
-        add('m', n.title || 'Notifica', msg.length > 160 ? msg.slice(0, 157) + '…' : msg, 'persistent_notification/' + k);
+        const msg = monPlain(n.message);
+        add('b', monPlain(n.title) || 'Notifica', msg.length > 160 ? msg.slice(0, 157) + '…' : msg, 'persistent_notification/' + k);
       });
     }
     sc.batt.forEach((b) => {
@@ -13754,11 +13781,13 @@ class MonitorCard extends HTMLElement {
     return out.sort((x, y) => ord[x.lvl] - ord[y.lvl]);
   }
 
+  // Contano solo le priorita' alta e media: le basse (batterie sotto il 50 %,
+  // notifiche, dispositivi muti) stanno nella lista della manutenzione.
   _pill(issues) {
     const a = issues.filter((i) => i.lvl === 'a').length;
     const m = issues.filter((i) => i.lvl === 'm').length;
-    const n = issues.length;
-    const cls = a ? 'crit' : m ? 'warn' : n ? 'warn' : 'ok';
+    const n = a + m;
+    const cls = a ? 'crit' : m ? 'warn' : 'ok';
     const txt = n === 0 ? 'Tutto regolare' : n === 1 ? '1 cosa da guardare' : n + ' cose da guardare';
     return '<button type="button" class="mn-pill ' + cls + '" data-nav="manutenzione"><i></i>' + txt + '</button>';
   }
@@ -14159,12 +14188,12 @@ class MonitorCard extends HTMLElement {
     const st = this._stats || {};
     const issues = this._issues();
     const a = issues.filter((i) => i.lvl === 'a').length;
-    const m = issues.filter((i) => i.lvl === 'm').length;
-    const cls = a ? 'crit' : issues.length ? 'warn' : 'ok';
+    const top = issues.filter((i) => i.lvl !== 'b');
+    const cls = a ? 'crit' : top.length ? 'warn' : 'ok';
     const banner =
       '<button type="button" class="mn-banner ' + cls + '" data-nav="manutenzione"><span class="t">' +
-      (issues.length === 0 ? 'Tutto regolare' : issues.length === 1 ? '1 cosa da guardare' : issues.length + ' cose da guardare') + '</span>' +
-      (issues.length ? '<span class="d">' + issues.slice(0, 3).map((i) => mgddEsc(i.title)).join(' · ') + '</span>' : '') + '</button>';
+      (top.length === 0 ? 'Tutto regolare' : top.length === 1 ? '1 cosa da guardare' : top.length + ' cose da guardare') + '</span>' +
+      (top.length ? '<span class="d">' + top.slice(0, 3).map((i) => mgddEsc(i.title)).join(' · ') + '</span>' : '') + '</button>';
 
     const cpu = this._num(H.cpu);
     const t = this._num(H.cpu_temp);
@@ -14394,7 +14423,7 @@ class MonitorCard extends HTMLElement {
         } else if (dom === 'update') {
           v = (this._attr(id, 'installed_version') || '—') + (s.state === 'on' ? ' → ' + this._attr(id, 'latest_version') : '');
           cls = s.state === 'on' ? 'mn-warnt' : s.state === 'off' ? 'mn-okt' : 'mn-critt';
-        } else if (this._attr(id, 'device_class') === 'timestamp') {
+        } else if (this._attr(id, 'device_class') === 'timestamp' || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s.state)) {
           const t = this._ts(id);
           v = t ? 'attivo da ' + monDur(now - t) : '—';
         } else {

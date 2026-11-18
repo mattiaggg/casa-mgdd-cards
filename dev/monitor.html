@@ -30,7 +30,7 @@
   let page = q.get('page') || 'sistema';
   let scen = q.get('s') || 'normale';
   let dark = q.get('dark') !== '0';
-  let ids = q.get('ids') !== '0';
+  let ids = q.get('ids') === '1';
   let el;
   // la card naviga con history.pushState + location-changed: qui si cambia pagina
   window.addEventListener('location-changed', () => {
