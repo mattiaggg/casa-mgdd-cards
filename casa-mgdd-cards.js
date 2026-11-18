@@ -11,7 +11,7 @@
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
  * casa-mgdd-quick-actions-card.
  *
- * Version: 1.99.1
+ * Version: 1.99.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -14829,7 +14829,6 @@ class QuickActionsCard extends HTMLElement {
       this.addEventListener('pointerup', (e) => this._up(e, false));
       this.addEventListener('pointercancel', (e) => this._up(e, true));
       this.addEventListener('keydown', (e) => this._key(e));
-      this.addEventListener('click', (e) => this._click(e));
     }
     // i "N min fa" vanno avanti anche se nessuno stato cambia
     if (!this._tick) this._tick = setInterval(() => this._render(), 30000);
@@ -14969,7 +14968,7 @@ class QuickActionsCard extends HTMLElement {
         const idle = v.mode === 'idle';
         return (
           '<div class="qa-t t-' + v.tone + (v.alert ? ' qa-alert' : '') + '">' +
-          '<div class="qa-ic' + (v.on ? ' on' : '') + (v.pulse ? ' pulse' : '') + '" data-more="' + i + '">' + v.icon + '</div>' +
+          '<div class="qa-ic' + (v.on ? ' on' : '') + (v.pulse ? ' pulse' : '') + '">' + v.icon + '</div>' +
           '<div class="qa-n">' + mgddEsc(v.name) + '</div>' +
           '<div class="qa-m' + (v.metaTone ? ' c' : '') + '">' + mgddEsc(v.meta) + '</div>' +
           '<div class="qa-tr" data-mode="' + v.mode + '">' +
@@ -15058,18 +15057,6 @@ class QuickActionsCard extends HTMLElement {
     this._fire(i);
   }
 
-  // Tocco sull'icona: scheda dell'entita' (la serratura, se c'e').
-  _click(e) {
-    const m = e.target.closest && e.target.closest('[data-more]');
-    if (!m) return;
-    const it = this.config.items[+m.dataset.more];
-    const id = it && (it.lock || it.entity);
-    if (!id) return;
-    const ev = new Event('hass-more-info', { bubbles: true, composed: true });
-    ev.detail = { entityId: id };
-    this.dispatchEvent(ev);
-  }
-
   // ---------- comando ----------
 
   _call(i) {
@@ -15133,7 +15120,7 @@ const QA_STYLES =
   '.qa-t.t-err{--acc:var(--err);--acc-bg:var(--err-bg)}' +
   '.qa-t.t-off{--acc:var(--secondary-text-color,#888);--acc-bg:var(--qa-tr)}' +
   '.qa-t.qa-alert{border-color:var(--acc)}' +
-  '.qa-ic{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:4px;cursor:pointer;' +
+  '.qa-ic{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:4px;' +
   'background:var(--qa-tr);color:var(--secondary-text-color,#9a9ba1);transition:color .3s,background .3s;--mdc-icon-size:20px}' +
   '.qa-ic svg{width:20px;height:20px}' +
   '.qa-ic.on{color:var(--acc);background:var(--acc-bg)}' +
