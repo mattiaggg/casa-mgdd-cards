@@ -11,7 +11,7 @@
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card.
  *
- * Version: 1.100.3
+ * Version: 1.100.4
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -14970,6 +14970,7 @@ class QuickActionsCard extends HTMLElement {
           '<div class="qa-t t-' + v.tone + (v.alert ? ' qa-alert' : '') + '">' +
           '<div class="qa-ic' + (v.on ? ' on' : '') + (v.pulse ? ' pulse' : '') + '">' + v.icon + '</div>' +
           '<div class="qa-n">' + mgddEsc(v.name) + '</div>' +
+          '<div class="qa-m' + (v.metaTone ? ' c' : '') + '">' + mgddEsc(v.meta) + '</div>' +
           '<div class="qa-tr" data-mode="' + v.mode + '">' +
           '<div class="qa-fill" style="width:calc(' + x + ' + 40px)"></div>' +
           '<div class="qa-lb" style="opacity:calc(1 - var(--qa-p' + i + ',0))">' + mgddEsc(v.label) + '</div>' +
@@ -15126,7 +15127,9 @@ const QA_STYLES =
   '@keyframes qa-halo{0%{box-shadow:0 0 0 0 var(--acc)}100%{box-shadow:0 0 0 9px transparent}}' +
   '.qa-n{font-size:13px;font-weight:600;color:var(--primary-text-color);text-align:center;max-width:100%;' +
   'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-  '.qa-n{margin-bottom:10px}' +
+  '.qa-m{font-size:11px;color:var(--secondary-text-color);margin-bottom:8px;max-width:100%;' +
+  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+  '.qa-m.c{color:var(--acc)}' +
   '.qa-tr{position:relative;width:100%;height:40px;border-radius:20px;background:var(--qa-tr);overflow:hidden;' +
   'touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}' +
   '.qa-fill{position:absolute;left:0;top:0;bottom:0;border-radius:20px;background:var(--acc);opacity:.22;' +
@@ -15162,8 +15165,7 @@ window.customCards.push({
 
 // ===== scenes-card.js =====
 // Selettore di scene luci (variante "segmenti"): una barra con una voce per
-// scena, che si attiva con un tocco. Sotto, una riga dice quale scena e'
-// attiva e da quando.
+// scena, che si attiva con un tocco. La voce della scena attiva e' evidenziata.
 //
 // Le scene di HA non hanno uno stato "attiva": il loro `state` e' solo l'ora
 // dell'ultima attivazione. Quindi "attiva" si deduce cosi':
@@ -15171,26 +15173,14 @@ window.customCards.push({
 //   2. almeno una luce di `watch` e' accesa;
 //   3. nessuna luce di `watch` e' stata aggiornata dopo l'attivazione (oltre a
 //      `grace` secondi di tolleranza: una scena accende le luci a scaglioni).
-// Se la 3 non vale, la scena e' stata ritoccata a mano: nessuna voce evidenziata
-// e la riga dice "modificata". Senza `watch` vale solo la 1: la voce resta
-// evidenziata finche' non se ne attiva un'altra.
+// Se la 2 o la 3 non valgono, nessuna voce e' evidenziata. Senza `watch` vale
+// solo la 1: la voce resta evidenziata finche' non se ne attiva un'altra.
 
 const SC_COLORS = {
   dark: ['#b388ff', '#ffc107', '#ff9800', '#4fc3f7', '#81c784'],
   light: ['#7c4dff', '#b88600', '#d97706', '#0288d1', '#2e7d32'],
 };
 const SC_WAIT_MS = 15000; // attesa massima di una risposta di HA
-
-function scHour(ts) {
-  const d = new Date(ts);
-  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-  const t0 = new Date();
-  t0.setHours(0, 0, 0, 0);
-  const days = Math.round((t0.getTime() - new Date(ts).setHours(0, 0, 0, 0)) / 86400000);
-  if (days <= 0) return 'alle ' + hm;
-  if (days === 1) return 'ieri alle ' + hm;
-  return d.getDate() + '/' + (d.getMonth() + 1) + ' alle ' + hm;
-}
 
 class ScenesCard extends HTMLElement {
   setConfig(config) {
@@ -15314,16 +15304,6 @@ class ScenesCard extends HTMLElement {
     return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
   }
 
-  _line(m) {
-    const l = this._local;
-    if (l && l.phase === 'busy') return { t: 'Attivazione di ' + this._name(l.i) + '…', c: true };
-    if (l && l.phase === 'err') return { t: 'Errore: ' + this._name(l.i) + ' non attivata', c: true, err: true };
-    if (m.active >= 0) return { t: 'Scena ' + this._name(m.active) + ' · attivata ' + scHour(m.ts), c: false };
-    if (m.edited) return { t: 'Ultima: ' + this._name(m.last) + ' ' + scHour(m.ts) + ' · modificata', c: false };
-    if (m.off) return { t: 'Luci spente · ultima: ' + this._name(m.last), c: false };
-    return { t: 'Nessuna scena attivata di recente', c: false };
-  }
-
   _render() {
     if (!this.config || !this._hass) return;
     const m = this._model();
@@ -15335,24 +15315,21 @@ class ScenesCard extends HTMLElement {
         const s = this._st(it.entity);
         const ok = !!(s && s.state !== 'unavailable');
         const busy = !!(loc && loc.phase === 'busy' && loc.i === i);
+        const err = !!(loc && loc.phase === 'err' && loc.i === i);
         const col = it.color || pal[i % pal.length];
         const icon = '<ha-icon icon="' + mgddEsc(it.icon || 'mdi:palette') + '"></ha-icon>';
         return (
-          '<div class="sc-s' + (m.active === i || busy ? ' on' : '') + (ok ? '' : ' off') + (busy ? ' busy' : '') + '"' +
+          '<div class="sc-s' + (m.active === i || busy ? ' on' : '') + (ok ? '' : ' off') + (busy ? ' busy' : '') + (err ? ' err' : '') + '"' +
           ' data-i="' + i + '" role="button" tabindex="' + (ok ? '0' : '-1') + '"' +
           ' aria-pressed="' + (m.active === i ? 'true' : 'false') + '" aria-label="' + mgddEsc(this._name(i)) + '"' +
           ' style="--c:' + mgddEsc(col) + '">' + icon + '<span class="sc-n">' + mgddEsc(this._name(i)) + '</span></div>'
         );
       })
       .join('');
-    const ln = this._line(m);
     mgddPaint(
       this,
       SC_STYLES,
-      '<div class="sc' + (dark ? ' sc-dark' : '') + '">' +
-        '<div class="sc-bar">' + segs + '</div>' +
-        '<div class="sc-l' + (ln.c ? ' c' : '') + (ln.err ? ' e' : '') + '">' + mgddEsc(ln.t) + '</div>' +
-        '</div>'
+      '<div class="sc' + (dark ? ' sc-dark' : '') + '"><div class="sc-bar">' + segs + '</div></div>'
     );
   }
 
@@ -15424,9 +15401,7 @@ const SC_STYLES =
   '@keyframes sc-pulse{50%{opacity:.35}}' +
   '.sc-s.off{opacity:.45;cursor:not-allowed}' +
   '.sc-n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-  '.sc-l{margin:8px 4px 0;font-size:11px;color:var(--secondary-text-color,#9b9b9b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-  '.sc-l.c{color:var(--primary-text-color)}' +
-  '.sc-l.e{color:var(--sc-err)}' +
+  '.sc-s.err,.sc-s.err ha-icon{color:var(--sc-err)}' +
   '@media (prefers-reduced-motion:reduce){.sc-s.busy ha-icon{animation:none !important}}' +
   '</style>';
 
