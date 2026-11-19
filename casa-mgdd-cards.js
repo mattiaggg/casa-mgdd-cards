@@ -11,7 +11,7 @@
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card.
  *
- * Version: 1.100.2
+ * Version: 1.100.3
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -14970,7 +14970,6 @@ class QuickActionsCard extends HTMLElement {
           '<div class="qa-t t-' + v.tone + (v.alert ? ' qa-alert' : '') + '">' +
           '<div class="qa-ic' + (v.on ? ' on' : '') + (v.pulse ? ' pulse' : '') + '">' + v.icon + '</div>' +
           '<div class="qa-n">' + mgddEsc(v.name) + '</div>' +
-          '<div class="qa-m' + (v.metaTone ? ' c' : '') + '">' + mgddEsc(v.meta) + '</div>' +
           '<div class="qa-tr" data-mode="' + v.mode + '">' +
           '<div class="qa-fill" style="width:calc(' + x + ' + 40px)"></div>' +
           '<div class="qa-lb" style="opacity:calc(1 - var(--qa-p' + i + ',0))">' + mgddEsc(v.label) + '</div>' +
@@ -15119,7 +15118,6 @@ const QA_STYLES =
   '.qa-t.t-warn{--acc:var(--warn);--acc-bg:var(--warn-bg)}' +
   '.qa-t.t-err{--acc:var(--err);--acc-bg:var(--err-bg)}' +
   '.qa-t.t-off{--acc:var(--secondary-text-color,#888);--acc-bg:var(--qa-tr)}' +
-  '.qa-t.qa-alert{border-color:var(--acc)}' +
   '.qa-ic{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:4px;' +
   'background:var(--qa-tr);color:var(--secondary-text-color,#9a9ba1);transition:color .3s,background .3s;--mdc-icon-size:20px}' +
   '.qa-ic svg{width:20px;height:20px}' +
@@ -15128,9 +15126,7 @@ const QA_STYLES =
   '@keyframes qa-halo{0%{box-shadow:0 0 0 0 var(--acc)}100%{box-shadow:0 0 0 9px transparent}}' +
   '.qa-n{font-size:13px;font-weight:600;color:var(--primary-text-color);text-align:center;max-width:100%;' +
   'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-  '.qa-m{font-size:11px;color:var(--secondary-text-color);margin-bottom:8px;max-width:100%;' +
-  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-  '.qa-m.c{color:var(--acc)}' +
+  '.qa-n{margin-bottom:10px}' +
   '.qa-tr{position:relative;width:100%;height:40px;border-radius:20px;background:var(--qa-tr);overflow:hidden;' +
   'touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}' +
   '.qa-fill{position:absolute;left:0;top:0;bottom:0;border-radius:20px;background:var(--acc);opacity:.22;' +
