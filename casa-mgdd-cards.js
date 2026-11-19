@@ -11,7 +11,7 @@
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card.
  *
- * Version: 1.100.1
+ * Version: 1.100.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -15165,8 +15165,9 @@ window.customCards.push({
 });
 
 // ===== scenes-card.js =====
-// Scene luci: un pulsante separato per scena, che si attiva con un tocco. Il
-// pulsante della scena attiva e' evidenziato (colore e bordo).
+// Selettore di scene luci (variante "segmenti"): una barra con una voce per
+// scena, che si attiva con un tocco. Sotto, una riga dice quale scena e'
+// attiva e da quando.
 //
 // Le scene di HA non hanno uno stato "attiva": il loro `state` e' solo l'ora
 // dell'ultima attivazione. Quindi "attiva" si deduce cosi':
@@ -15174,14 +15175,26 @@ window.customCards.push({
 //   2. almeno una luce di `watch` e' accesa;
 //   3. nessuna luce di `watch` e' stata aggiornata dopo l'attivazione (oltre a
 //      `grace` secondi di tolleranza: una scena accende le luci a scaglioni).
-// Se la 2 o la 3 non valgono, nessun pulsante e' evidenziato. Senza `watch`
-// vale solo la 1: il pulsante resta evidenziato finche' non se ne attiva un altro.
+// Se la 3 non vale, la scena e' stata ritoccata a mano: nessuna voce evidenziata
+// e la riga dice "modificata". Senza `watch` vale solo la 1: la voce resta
+// evidenziata finche' non se ne attiva un'altra.
 
 const SC_COLORS = {
   dark: ['#b388ff', '#ffc107', '#ff9800', '#4fc3f7', '#81c784'],
   light: ['#7c4dff', '#b88600', '#d97706', '#0288d1', '#2e7d32'],
 };
 const SC_WAIT_MS = 15000; // attesa massima di una risposta di HA
+
+function scHour(ts) {
+  const d = new Date(ts);
+  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  const t0 = new Date();
+  t0.setHours(0, 0, 0, 0);
+  const days = Math.round((t0.getTime() - new Date(ts).setHours(0, 0, 0, 0)) / 86400000);
+  if (days <= 0) return 'alle ' + hm;
+  if (days === 1) return 'ieri alle ' + hm;
+  return d.getDate() + '/' + (d.getMonth() + 1) + ' alle ' + hm;
+}
 
 class ScenesCard extends HTMLElement {
   setConfig(config) {
@@ -15305,6 +15318,16 @@ class ScenesCard extends HTMLElement {
     return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
   }
 
+  _line(m) {
+    const l = this._local;
+    if (l && l.phase === 'busy') return { t: 'Attivazione di ' + this._name(l.i) + '…', c: true };
+    if (l && l.phase === 'err') return { t: 'Errore: ' + this._name(l.i) + ' non attivata', c: true, err: true };
+    if (m.active >= 0) return { t: 'Scena ' + this._name(m.active) + ' · attivata ' + scHour(m.ts), c: false };
+    if (m.edited) return { t: 'Ultima: ' + this._name(m.last) + ' ' + scHour(m.ts) + ' · modificata', c: false };
+    if (m.off) return { t: 'Luci spente · ultima: ' + this._name(m.last), c: false };
+    return { t: 'Nessuna scena attivata di recente', c: false };
+  }
+
   _render() {
     if (!this.config || !this._hass) return;
     const m = this._model();
@@ -15316,21 +15339,24 @@ class ScenesCard extends HTMLElement {
         const s = this._st(it.entity);
         const ok = !!(s && s.state !== 'unavailable');
         const busy = !!(loc && loc.phase === 'busy' && loc.i === i);
-        const err = !!(loc && loc.phase === 'err' && loc.i === i);
         const col = it.color || pal[i % pal.length];
         const icon = '<ha-icon icon="' + mgddEsc(it.icon || 'mdi:palette') + '"></ha-icon>';
         return (
-          '<div class="sc-s' + (m.active === i || busy ? ' on' : '') + (ok ? '' : ' off') + (busy ? ' busy' : '') + (err ? ' err' : '') + '"' +
+          '<div class="sc-s' + (m.active === i || busy ? ' on' : '') + (ok ? '' : ' off') + (busy ? ' busy' : '') + '"' +
           ' data-i="' + i + '" role="button" tabindex="' + (ok ? '0' : '-1') + '"' +
           ' aria-pressed="' + (m.active === i ? 'true' : 'false') + '" aria-label="' + mgddEsc(this._name(i)) + '"' +
           ' style="--c:' + mgddEsc(col) + '">' + icon + '<span class="sc-n">' + mgddEsc(this._name(i)) + '</span></div>'
         );
       })
       .join('');
+    const ln = this._line(m);
     mgddPaint(
       this,
       SC_STYLES,
-      '<div class="sc' + (dark ? ' sc-dark' : '') + '" style="grid-template-columns:repeat(' + this.config.items.length + ',minmax(0,1fr))">' + segs + '</div>'
+      '<div class="sc' + (dark ? ' sc-dark' : '') + '">' +
+        '<div class="sc-bar">' + segs + '</div>' +
+        '<div class="sc-l' + (ln.c ? ' c' : '') + (ln.err ? ' e' : '') + '">' + mgddEsc(ln.t) + '</div>' +
+        '</div>'
     );
   }
 
@@ -15383,25 +15409,28 @@ class ScenesCard extends HTMLElement {
 
 const SC_STYLES =
   '<style>' +
-  '.sc{display:grid;gap:8px;font-family:Inter,-apple-system,"Segoe UI",Roboto,sans-serif;--sc-off:rgba(127,127,127,.13);--sc-err:#d23c3c}' +
+  '.sc{font-family:Inter,-apple-system,"Segoe UI",Roboto,sans-serif;--sc-off:rgba(127,127,127,.13);--sc-err:#d23c3c}' +
   '.sc.sc-dark{--sc-err:#ef5a5a}' +
-  '.sc-s{min-width:0;display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 6px;' +
-  'border-radius:var(--ha-card-border-radius,12px);cursor:pointer;user-select:none;-webkit-user-select:none;' +
-  '-webkit-tap-highlight-color:transparent;color:var(--primary-text-color);font-size:13px;font-weight:500;' +
+  '.sc-bar{display:flex;gap:4px;padding:4px;border-radius:calc(var(--ha-card-border-radius,12px) + 2px);' +
   'background:var(--ha-card-background,var(--card-background-color,#1c1c1c));' +
   'border:1px solid var(--ha-card-border-color,var(--divider-color,rgba(127,127,127,.2)));' +
-  'box-shadow:var(--ha-card-box-shadow,none);' +
-  'transition:background .25s,color .25s,border-color .25s;--mdc-icon-size:20px;outline:none}' +
+  'box-shadow:var(--ha-card-box-shadow,none)}' +
+  '.sc-s{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:8px;padding:10px 6px;' +
+  'border-radius:var(--ha-card-border-radius,12px);cursor:pointer;user-select:none;-webkit-user-select:none;' +
+  '-webkit-tap-highlight-color:transparent;color:var(--secondary-text-color,#9b9b9b);font-size:13px;font-weight:500;' +
+  'transition:background .25s,color .25s;--mdc-icon-size:20px;outline:none}' +
   '.sc-s ha-icon{flex:none;color:var(--c)}' +
-  '.sc-s.on{background:color-mix(in srgb,var(--c) 16%,var(--ha-card-background,var(--card-background-color,#1c1c1c)));' +
-  'border-color:var(--c);color:var(--c)}' +
+  '.sc-s.on{background:color-mix(in srgb,var(--c) 16%,transparent);color:var(--c)}' +
   '.sc-s:active{background:var(--sc-off)}' +
-  '.sc-s.err{border-color:var(--sc-err)}.sc-s.err ha-icon{color:var(--sc-err)}' +
+  '.sc-s.on:active{background:color-mix(in srgb,var(--c) 26%,transparent)}' +
   '.sc-s:focus-visible{box-shadow:0 0 0 2px var(--c)}' +
   '.sc-s.busy ha-icon{animation:sc-pulse 1s ease-in-out infinite}' +
   '@keyframes sc-pulse{50%{opacity:.35}}' +
   '.sc-s.off{opacity:.45;cursor:not-allowed}' +
   '.sc-n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+  '.sc-l{margin:8px 4px 0;font-size:11px;color:var(--secondary-text-color,#9b9b9b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+  '.sc-l.c{color:var(--primary-text-color)}' +
+  '.sc-l.e{color:var(--sc-err)}' +
   '@media (prefers-reduced-motion:reduce){.sc-s.busy ha-icon{animation:none !important}}' +
   '</style>';
 
@@ -15410,5 +15439,5 @@ window.customCards.push({
   type: 'casa-mgdd-scenes-card',
   name: 'Casa MGDD Scene luci',
   description:
-    "Pulsanti per le scene luci: un tocco attiva la scena, quella attiva e' evidenziata (con `watch:` si spegne se le luci sono state ritoccate).",
+    "Selettore a segmenti per le scene luci: un tocco attiva la scena, la riga sotto dice quale e' attiva e da quando (con `watch:` capisce se e' stata ritoccata).",
 });
