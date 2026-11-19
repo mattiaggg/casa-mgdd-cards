@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco scene luci</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+<style>
+  body { margin: 0; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  body.dark { background: #111; --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --divider-color: rgba(225,225,225,.12); }
+  body.light { background: #fafafa; --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272; --divider-color: rgba(0,0,0,.12); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; font-size: 12px; background: #222; color: #ddd; }
+  .bar button { font: inherit; }
+  .wrap { max-width: 520px; margin: 16px auto; padding: 0 16px; }
+  h3 { font-weight: 500; color: var(--primary-text-color); margin: 0 0 10px; }
+  #log { font: 12px monospace; color: var(--secondary-text-color); margin-top: 16px; white-space: pre-wrap; }
+  ha-icon { display: inline-flex; align-items: center; justify-content: center; }
+  ha-icon i { font-size: var(--mdc-icon-size, 24px); line-height: 1; }
+</style>
+</head>
+<body class="dark">
+<div class="bar">
+  <button id="edit">Ritocca una luce a mano</button>
+  <button id="off">Spegni tutte le luci</button>
+  <button id="old">Scene vecchie (ieri)</button>
+  <button id="fail">Servizi: OK</button>
+  <button id="dark">Chiaro / scuro</button>
+  <button id="una">Max non disp.</button>
+</div>
+<div class="wrap">
+  <h3>Luci</h3>
+  <div id="host"></div>
+  <div id="log"></div>
+</div>
+<script>
+  window.customCards = window.customCards || [];
+  // In Home Assistant <ha-icon> esiste gia': qui lo si imita con il webfont MDI.
+  customElements.define('ha-icon', class extends HTMLElement {
+    static get observedAttributes() { return ['icon']; }
+    connectedCallback() { this._draw(); }
+    attributeChangedCallback() { this._draw(); }
+    _draw() { this.innerHTML = '<i class="mdi mdi-' + (this.getAttribute('icon') || '').replace('mdi:', '') + '"></i>'; }
+  });
+</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+  const S = { div: 'scene.zona_giorno_tv_atmosfera', std: 'scene.soggiorno_ingressomax', max: 'scene.zona_giorno_soggiorno_max' };
+  const L = ['light.luci_soggiorno', 'light.luci_penisola'];
+  const states = {};
+  states[S.div] = { state: ago(95), attributes: { friendly_name: 'TV-Atmosfera' } };
+  states[S.std] = { state: ago(1500), attributes: { friendly_name: 'Ingresso MAX' } };
+  states[S.max] = { state: ago(60 * 24 * 30), attributes: { friendly_name: 'Soggiorno MAX' } };
+  L.forEach((id) => { states[id] = { state: 'on', last_updated: ago(95), attributes: {} }; });
+  let dark = true;
+  let fail = false;
+  const log = (s) => { const e = document.getElementById('log'); e.textContent = new Date().toLocaleTimeString() + '  ' + s + '\n' + e.textContent; };
+  const el = document.createElement('casa-mgdd-scenes-card');
+  el.setConfig({
+    type: 'custom:casa-mgdd-scenes-card',
+    watch: L,
+    items: [
+      { name: 'Divano', icon: 'mdi:sofa', entity: S.div },
+      { name: 'Standard', icon: 'mdi:door-open', entity: S.std },
+      { name: 'Max', icon: 'mdi:white-balance-sunny', entity: S.max },
+    ],
+  });
+  document.getElementById('host').appendChild(el);
+  function push() {
+    el.hass = {
+      states: Object.assign({}, states),
+      themes: { darkMode: dark },
+      callService: (d, s, data) => new Promise((res, rej) => {
+        log(d + '.' + s + ' ' + JSON.stringify(data));
+        setTimeout(() => {
+          if (fail) return rej(new Error('servizio fallito (simulato)'));
+          const now = new Date().toISOString();
+          // la scena registra l'ora; le luci si accendono a scaglioni dopo 1 e 3 s
+          states[data.entity_id] = Object.assign({}, states[data.entity_id], { state: now });
+          push();
+          setTimeout(() => { states[L[0]] = { state: 'on', last_updated: new Date().toISOString(), attributes: {} }; push(); }, 1000);
+          setTimeout(() => { states[L[1]] = { state: 'on', last_updated: new Date().toISOString(), attributes: {} }; push(); }, 3000);
+          res();
+        }, 600);
+      }),
+    };
+  }
+  document.getElementById('edit').addEventListener('click', () => { states[L[0]] = { state: 'on', last_updated: new Date().toISOString(), attributes: {} }; push(); log('luce ritoccata'); });
+  document.getElementById('off').addEventListener('click', () => { L.forEach((id) => { states[id] = { state: 'off', last_updated: new Date().toISOString(), attributes: {} }; }); push(); });
+  document.getElementById('old').addEventListener('click', () => { states[S.div].state = ago(1500); states[S.std].state = ago(60 * 30); L.forEach((id) => { states[id] = { state: 'on', last_updated: ago(60 * 30), attributes: {} }; }); push(); });
+  document.getElementById('una').addEventListener('click', () => { states[S.max] = Object.assign({}, states[S.max], { state: 'unavailable' }); push(); });
+  document.getElementById('fail').addEventListener('click', (e) => { fail = !fail; e.target.textContent = 'Servizi: ' + (fail ? 'ERRORE' : 'OK'); });
+  document.getElementById('dark').addEventListener('click', () => { dark = !dark; document.body.className = dark ? 'dark' : 'light'; push(); });
+  push();
+</script>
+</body>
+</html>

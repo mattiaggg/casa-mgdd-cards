@@ -9,9 +9,9 @@
  * casa-mgdd-energy-ring-card, casa-mgdd-energy-scheme-card,
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
- * casa-mgdd-quick-actions-card.
+ * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card.
  *
- * Version: 1.99.2
+ * Version: 1.100.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -15162,4 +15162,282 @@ window.customCards.push({
   name: 'Casa MGDD Comandi rapidi',
   description:
     'Comandi da azionare con uno slide (slide to unlock): script, citofono, garage. Con `lock:` la tessera mostra anche lo stato della serratura.',
+});
+
+// ===== scenes-card.js =====
+// Selettore di scene luci (variante "segmenti"): una barra con una voce per
+// scena, che si attiva con un tocco. Sotto, una riga dice quale scena e'
+// attiva e da quando.
+//
+// Le scene di HA non hanno uno stato "attiva": il loro `state` e' solo l'ora
+// dell'ultima attivazione. Quindi "attiva" si deduce cosi':
+//   1. e' la scena attivata per ultima fra quelle configurate;
+//   2. almeno una luce di `watch` e' accesa;
+//   3. nessuna luce di `watch` e' stata aggiornata dopo l'attivazione (oltre a
+//      `grace` secondi di tolleranza: una scena accende le luci a scaglioni).
+// Se la 3 non vale, la scena e' stata ritoccata a mano: nessuna voce evidenziata
+// e la riga dice "modificata". Senza `watch` vale solo la 1: la voce resta
+// evidenziata finche' non se ne attiva un'altra.
+
+const SC_COLORS = {
+  dark: ['#b388ff', '#ffc107', '#ff9800', '#4fc3f7', '#81c784'],
+  light: ['#7c4dff', '#b88600', '#d97706', '#0288d1', '#2e7d32'],
+};
+const SC_WAIT_MS = 15000; // attesa massima di una risposta di HA
+
+function scHour(ts) {
+  const d = new Date(ts);
+  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  const t0 = new Date();
+  t0.setHours(0, 0, 0, 0);
+  const days = Math.round((t0.getTime() - new Date(ts).setHours(0, 0, 0, 0)) / 86400000);
+  if (days <= 0) return 'alle ' + hm;
+  if (days === 1) return 'ieri alle ' + hm;
+  return d.getDate() + '/' + (d.getMonth() + 1) + ' alle ' + hm;
+}
+
+class ScenesCard extends HTMLElement {
+  setConfig(config) {
+    if (!config || !Array.isArray(config.items) || !config.items.length) {
+      throw new Error('Config "items" mancante: serve almeno una scena');
+    }
+    config.items.forEach((it, i) => {
+      if (!it || !it.entity || String(it.entity).split('.')[0] !== 'scene') {
+        throw new Error('items[' + i + ']: serve "entity" di tipo scene.*');
+      }
+    });
+    this.config = config;
+    this._local = null; // {i, phase: busy|err, t}
+    this._sig = null;
+    this._render();
+  }
+
+  static getStubConfig() {
+    return { items: [{ name: 'Divano', icon: 'mdi:sofa', entity: 'scene.esempio' }] };
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 'full', min_columns: 6 };
+  }
+
+  getCardSize() {
+    return 2;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this.config) return;
+    const sig = this._sigNow();
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  connectedCallback() {
+    if (!this._wired) {
+      this._wired = true;
+      this.addEventListener('click', (e) => this._click(e));
+      this.addEventListener('keydown', (e) => this._key(e));
+    }
+    // la tolleranza e il "ieri" avanzano anche se nessuno stato cambia
+    if (!this._tick) this._tick = setInterval(() => this._render(), 60000);
+    this._render();
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._tick);
+    this._tick = null;
+  }
+
+  // ---------- dati ----------
+
+  _watch() {
+    return Array.isArray(this.config.watch) ? this.config.watch : [];
+  }
+
+  _st(id) {
+    return (id && this._hass && this._hass.states[id]) || null;
+  }
+
+  _ts(v) {
+    const t = v ? new Date(v).getTime() : 0;
+    return isNaN(t) ? 0 : t;
+  }
+
+  // firma: stato delle scene e delle luci, piu' l'ultimo aggiornamento delle
+  // luci (un ritocco alla luminosita' non cambia `state` ma sposta last_updated)
+  _sigNow() {
+    const ids = this.config.items.map((it) => it.entity).concat(this._watch());
+    let sig = mgddStatesSig(this._hass, ids);
+    this._watch().forEach((id) => {
+      const s = this._st(id);
+      sig += s ? s.last_updated : '';
+    });
+    return sig;
+  }
+
+  // -> {active: indice|-1, last: indice|-1, ts, edited, off}
+  _model() {
+    let last = -1;
+    let ts = 0;
+    this.config.items.forEach((it, i) => {
+      const s = this._st(it.entity);
+      const t = s ? this._ts(s.state) : 0;
+      if (t > ts) {
+        ts = t;
+        last = i;
+      }
+    });
+    if (last < 0) return { active: -1, last: -1, ts: 0, edited: false, off: false };
+    const watch = this._watch();
+    if (!watch.length) return { active: last, last: last, ts: ts, edited: false, off: false };
+    const grace = (this.config.grace == null ? 30 : +this.config.grace) * 1000;
+    let anyOn = false;
+    let edited = false;
+    watch.forEach((id) => {
+      const s = this._st(id);
+      if (!s) return;
+      if (s.state === 'on') anyOn = true;
+      if (this._ts(s.last_updated) > ts + grace) edited = true;
+    });
+    if (!anyOn) return { active: -1, last: last, ts: ts, edited: false, off: true };
+    if (edited) return { active: -1, last: last, ts: ts, edited: true, off: false };
+    return { active: last, last: last, ts: ts, edited: false, off: false };
+  }
+
+  _name(i) {
+    const it = this.config.items[i];
+    const s = this._st(it.entity);
+    return it.name || (s && s.attributes.friendly_name) || it.entity;
+  }
+
+  // ---------- markup ----------
+
+  _isDark() {
+    return !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+  }
+
+  _line(m) {
+    const l = this._local;
+    if (l && l.phase === 'busy') return { t: 'Attivazione di ' + this._name(l.i) + '…', c: true };
+    if (l && l.phase === 'err') return { t: 'Errore: ' + this._name(l.i) + ' non attivata', c: true, err: true };
+    if (m.active >= 0) return { t: 'Scena ' + this._name(m.active) + ' · attivata ' + scHour(m.ts), c: false };
+    if (m.edited) return { t: 'Ultima: ' + this._name(m.last) + ' ' + scHour(m.ts) + ' · modificata', c: false };
+    if (m.off) return { t: 'Luci spente · ultima: ' + this._name(m.last), c: false };
+    return { t: 'Nessuna scena attivata di recente', c: false };
+  }
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    const m = this._model();
+    const dark = this._isDark();
+    const pal = SC_COLORS[dark ? 'dark' : 'light'];
+    const loc = this._local;
+    const segs = this.config.items
+      .map((it, i) => {
+        const s = this._st(it.entity);
+        const ok = !!(s && s.state !== 'unavailable');
+        const busy = !!(loc && loc.phase === 'busy' && loc.i === i);
+        const col = it.color || pal[i % pal.length];
+        const icon = '<ha-icon icon="' + mgddEsc(it.icon || 'mdi:palette') + '"></ha-icon>';
+        return (
+          '<div class="sc-s' + (m.active === i || busy ? ' on' : '') + (ok ? '' : ' off') + (busy ? ' busy' : '') + '"' +
+          ' data-i="' + i + '" role="button" tabindex="' + (ok ? '0' : '-1') + '"' +
+          ' aria-pressed="' + (m.active === i ? 'true' : 'false') + '" aria-label="' + mgddEsc(this._name(i)) + '"' +
+          ' style="--c:' + mgddEsc(col) + '">' + icon + '<span class="sc-n">' + mgddEsc(this._name(i)) + '</span></div>'
+        );
+      })
+      .join('');
+    const ln = this._line(m);
+    mgddPaint(
+      this,
+      SC_STYLES,
+      '<div class="sc' + (dark ? ' sc-dark' : '') + '">' +
+        '<div class="sc-bar">' + segs + '</div>' +
+        '<div class="sc-l' + (ln.c ? ' c' : '') + (ln.err ? ' e' : '') + '">' + mgddEsc(ln.t) + '</div>' +
+        '</div>'
+    );
+  }
+
+  // ---------- comando ----------
+
+  _click(e) {
+    const el = e.target.closest && e.target.closest('.sc-s');
+    if (el) this._fire(+el.dataset.i);
+  }
+
+  _key(e) {
+    const el = e.target.closest && e.target.closest('.sc-s');
+    if (!el || (e.key !== 'Enter' && e.key !== ' ')) return;
+    e.preventDefault();
+    this._fire(+el.dataset.i);
+  }
+
+  _fire(i) {
+    const it = this.config.items[i];
+    const s = this._st(it && it.entity);
+    if (!s || s.state === 'unavailable' || !this._hass) return;
+    if (this._local && this._local.phase === 'busy') return;
+    const loc = { i: i, phase: 'busy', t: Date.now() };
+    this._local = loc;
+    if (navigator.vibrate) navigator.vibrate(10);
+    this._render();
+    const clear = (ms) =>
+      setTimeout(() => {
+        if (this._local !== loc) return;
+        this._local = null;
+        this._render();
+      }, ms);
+    Promise.resolve()
+      .then(() => this._hass.callService('scene', 'turn_on', Object.assign({ entity_id: it.entity }, it.data || {})))
+      .then(() => {
+        if (this._local !== loc) return;
+        this._local = null;
+        this._render();
+      })
+      .catch((err) => {
+        if (this._local !== loc) return;
+        loc.phase = 'err';
+        this._render();
+        clear(4000);
+        console.warn('casa-mgdd-scenes-card: scene.turn_on ' + it.entity, err);
+      });
+    clear(SC_WAIT_MS); // rete di sicurezza se HA non risponde mai
+  }
+}
+
+const SC_STYLES =
+  '<style>' +
+  '.sc{font-family:Inter,-apple-system,"Segoe UI",Roboto,sans-serif;--sc-off:rgba(127,127,127,.13);--sc-err:#d23c3c}' +
+  '.sc.sc-dark{--sc-err:#ef5a5a}' +
+  '.sc-bar{display:flex;gap:4px;padding:4px;border-radius:calc(var(--ha-card-border-radius,12px) + 2px);' +
+  'background:var(--ha-card-background,var(--card-background-color,#1c1c1c));' +
+  'border:1px solid var(--ha-card-border-color,var(--divider-color,rgba(127,127,127,.2)));' +
+  'box-shadow:var(--ha-card-box-shadow,none)}' +
+  '.sc-s{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:8px;padding:10px 6px;' +
+  'border-radius:var(--ha-card-border-radius,12px);cursor:pointer;user-select:none;-webkit-user-select:none;' +
+  '-webkit-tap-highlight-color:transparent;color:var(--secondary-text-color,#9b9b9b);font-size:13px;font-weight:500;' +
+  'transition:background .25s,color .25s;--mdc-icon-size:20px;outline:none}' +
+  '.sc-s ha-icon{flex:none;color:var(--c)}' +
+  '.sc-s.on{background:color-mix(in srgb,var(--c) 16%,transparent);color:var(--c)}' +
+  '.sc-s:active{background:var(--sc-off)}' +
+  '.sc-s.on:active{background:color-mix(in srgb,var(--c) 26%,transparent)}' +
+  '.sc-s:focus-visible{box-shadow:0 0 0 2px var(--c)}' +
+  '.sc-s.busy ha-icon{animation:sc-pulse 1s ease-in-out infinite}' +
+  '@keyframes sc-pulse{50%{opacity:.35}}' +
+  '.sc-s.off{opacity:.45;cursor:not-allowed}' +
+  '.sc-n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+  '.sc-l{margin:8px 4px 0;font-size:11px;color:var(--secondary-text-color,#9b9b9b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+  '.sc-l.c{color:var(--primary-text-color)}' +
+  '.sc-l.e{color:var(--sc-err)}' +
+  '@media (prefers-reduced-motion:reduce){.sc-s.busy ha-icon{animation:none !important}}' +
+  '</style>';
+
+customElements.define('casa-mgdd-scenes-card', ScenesCard);
+window.customCards.push({
+  type: 'casa-mgdd-scenes-card',
+  name: 'Casa MGDD Scene luci',
+  description:
+    "Selettore a segmenti per le scene luci: un tocco attiva la scena, la riga sotto dice quale e' attiva e da quando (con `watch:` capisce se e' stata ritoccata).",
 });
