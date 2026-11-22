@@ -12,7 +12,7 @@
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
  * casa-mgdd-laundry-program-card.
  *
- * Version: 1.101.1
+ * Version: 1.101.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -15490,8 +15490,9 @@ window.customCards.push({
 //   adesso, al massimo 20 ore (number.*_starttime). Durante l'attesa il number
 //   conta i minuti alla partenza e timetoend resta la durata del lavaggio.
 //
-// Con la lavatrice pronta e raggiungibile le impostazioni le si mandano subito
-// (senza avviare), cosi' la durata e' quella calcolata dalla lavatrice; spenta,
+// Con la lavatrice pronta e raggiungibile, dopo il primo tocco sulla pagina (o col
+// pulsante "Leggi la durata") le impostazioni le si mandano senza avviare, cosi' la
+// durata e' quella calcolata dalla lavatrice. Aprire la pagina non manda niente; spenta,
 // la durata e' l'ultima letta per la stessa combinazione (sensor.lavatrici_durate_aeg).
 
 const LP_E = {
@@ -15799,9 +15800,12 @@ class LaundryProgramCard extends HTMLElement {
         if (s || !this._s) this._s = s || lpSanitize(lpDefault());
       }
     }
-    // appena la lavatrice diventa impostabile le si mandano le scelte, per la durata vera
+    // Le scelte partono verso la lavatrice solo dopo che qualcuno ha toccato la pagina:
+    // aprirla non deve cambiare niente (un tablet a muro, uno screenshot, un altro
+    // telefono la cambiavano: 1.101.1). Dopo il primo tocco, se la lavatrice diventa
+    // impostabile le si mandano le scelte per la durata vera.
     const m = lpStato(hass);
-    if (m.impostabile && !this._eraImpostabile) this._pianificaSync(1200);
+    if (this._toccato && m.impostabile && !this._eraImpostabile) this._pianificaSync(1200);
     this._eraImpostabile = m.impostabile;
     const ids = Object.keys(LP_E).map((k) => LP_E[k]);
     const sig = mgddStatesSig(hass, ids) + (hass.states[LP_E.durate] ? hass.states[LP_E.durate].last_updated : '') + (hass.themes && hass.themes.darkMode ? 'D' : 'L');
@@ -15818,6 +15822,7 @@ class LaundryProgramCard extends HTMLElement {
   // ---------- azioni ----------
 
   _modifica(fn) {
+    this._toccato = true;
     fn(this._s);
     lpSanitize(this._s);
     this._msg = null;
@@ -15945,6 +15950,9 @@ class LaundryProgramCard extends HTMLElement {
       this._invia();
     } else if (d.act === 'annulla') {
       this._annulla();
+    } else if (d.act === 'leggi') {
+      this._toccato = true;
+      this._sincronizza();
     } else if (d.fav != null) {
       const f = this.config.favorites[Number(d.fav)];
       if (f) this._modifica((s) => { s.p = f.p; s.t = f.t; s.sp = f.sp; s.n = false; s.rh = false; });
@@ -15988,7 +15996,7 @@ class LaundryProgramCard extends HTMLElement {
     if (m.pronta && m.tte > 0 && lpCorrisponde(this._s, h)) return { min: m.tte, src: 'lavatrice' };
     const st = lpStima(this._s, h);
     if (st) return { min: st, src: 'stima' };
-    return { min: null, src: m.impostabile ? 'attesa' : 'ignota' };
+    return { min: null, src: !m.impostabile ? 'ignota' : this._toccato || this._syncP ? 'attesa' : 'leggibile' };
   }
 
   // ---------- disegno ----------
@@ -16144,7 +16152,11 @@ class LaundryProgramCard extends HTMLElement {
       stima: '<span class="lp-pill lp-pn">stima</span><span>ultima durata letta dalla lavatrice per questa combinazione</span>',
       attesa: '<span class="lp-pill lp-pn">in arrivo</span><span>' + (this._sync && this._sync.stato === 'invio' ? 'sto mandando le impostazioni alla lavatrice\u2026' : 'la lavatrice sta calcolando la durata\u2026') + '</span>',
       ignota: '<span>Durata non ancora nota: si legge quando la lavatrice \u00e8 accesa con questo programma.</span>',
+      leggibile: '<span>La lavatrice ha altre impostazioni.</span>',
     }[d.src];
+    // durata esatta senza cambiare opzioni: manda le scelte (senza avviare) solo su richiesta
+    const leggi = m.impostabile && !this._syncP && !lpCorrisponde(s, this._hass) && !this._busy ?
+      '<button class="lp-mini" data-act="leggi">' + ldIco('timer-sync-outline') + 'Leggi la durata dalla lavatrice</button>' : '';
     const sync = this._sync && this._sync.stato === 'err' ? '<div class="lp-note lp-warn">Impostazioni non accettate: ' + mgddEsc(this._sync.testo) + '</div>' : '';
     // pulsante
     let lab;
@@ -16163,7 +16175,7 @@ class LaundryProgramCard extends HTMLElement {
       '<div class="lp-c"><div class="lp-sum3"><div><span>Durata</span><b>' + (d.min != null ? (d.src === 'stima' ? '\u2248' : '') + lpDur(d.min) : '\u2014') + '</b></div>' +
       '<div><span>Partenza' + (pt.start && lpGiorno(pt.start, now) ? ' \u00b7 ' + lpGiorno(pt.start, now) : '') + '</span><b>' + (pt.start ? lpHM(pt.start) : '\u2014') + '</b></div>' +
       '<div><span>Fine' + (fine && lpGiorno(fine, now) ? ' \u00b7 ' + lpGiorno(fine, now) : '') + '</span><b>' + (fine ? lpHM(fine) : '\u2014') + '</b></div></div>' +
-      '<div class="lp-src">' + src + '</div>' + sync + '</div>' +
+      '<div class="lp-src">' + src + '</div>' + leggi + sync + '</div>' +
       '<button class="lp-btn" data-act="invia"' + (dis ? ' disabled' : '') + '>' + lab + '</button>';
   }
 
@@ -16269,6 +16281,8 @@ const LP_STYLES = '<style>' +
   '.lpq .lp-sum3 span{display:block;font-size:11px;color:var(--lp-t2);font-weight:600;}' +
   '.lpq .lp-sum3 b{display:block;font-size:19px;font-weight:750;letter-spacing:-.4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
   '.lpq .lp-src{font-size:12px;color:var(--lp-t2);margin-top:9px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;line-height:1.4;}' +
+  '.lpq .lp-mini{display:inline-flex;align-items:center;gap:6px;margin-top:10px;border:1px solid var(--lp-div);background:var(--lp-bg);color:var(--lp-p);border-radius:10px;padding:7px 11px;font-size:12.5px;font-weight:650;cursor:pointer;}' +
+  '.lpq .lp-mini ha-icon{--mdc-icon-size:16px;width:16px;height:16px;}' +
   '.lpq .lp-btn{width:100%;border:0;border-radius:14px;padding:15px;font-size:15px;font-weight:700;background:var(--lp-g);color:#fff;cursor:pointer;}' +
   '.lpq .lp-btn:disabled{background:var(--lp-n);color:var(--lp-t2);cursor:default;}' +
   '.lpq .lp-btn.lp-danger{background:var(--lp-rbg);color:var(--lp-r2);}' +
