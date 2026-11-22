@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco programma lavatrice</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+<style>
+  body { margin: 0; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  body.dark { background: #111; --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --divider-color: rgba(225,225,225,.12); }
+  body.light { background: #f3f4f5; --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272; --divider-color: rgba(0,0,0,.12); }
+  .bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; font-size: 12px; background: #222; color: #ddd; align-items: center; }
+  .bar button { font: inherit; }
+  #log { font: 12px monospace; color: var(--secondary-text-color); margin: 16px; white-space: pre-wrap; }
+  ha-icon { display: inline-flex; align-items: center; justify-content: center; }
+  ha-icon i { font-size: var(--mdc-icon-size, 24px); line-height: 1; }
+</style>
+</head>
+<body class="light">
+<div class="bar">
+  <span>Lavatrice:</span>
+  <button data-m="off">scollegata</button>
+  <button data-m="nsr">accesa, solo impostazioni</button>
+  <button data-m="ok">pronta + remoto</button>
+  <button data-m="lock">occupata</button>
+  <button data-m="delayed">programmata</button>
+  <button data-m="running">sta lavando</button>
+  <span>|</span>
+  <button id="rifiuta">Script: accetta</button>
+  <button id="dark">Chiaro / scuro</button>
+</div>
+<div id="host"></div>
+<div id="log"></div>
+<script>
+  window.customCards = window.customCards || [];
+  customElements.define('ha-icon', class extends HTMLElement {
+    static get observedAttributes() { return ['icon']; }
+    connectedCallback() { this._draw(); }
+    attributeChangedCallback() { this._draw(); }
+    _draw() { this.innerHTML = '<i class="mdi mdi-' + (this.getAttribute('icon') || '').replace('mdi:', '') + '"></i>'; }
+  });
+</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const P = 'aeg_lavatrice_aeg_9000_';
+  const S = (v, a) => ({ state: String(v), last_changed: new Date(Date.now() - 2 * 3600e3).toISOString(), last_updated: new Date().toISOString(), attributes: a || {} });
+  const states = {
+    ['sensor.' + P + 'connectivitystate']: S('Disconnected'),
+    ['sensor.' + P + 'remotecontrol']: S('Enabled'),
+    ['sensor.' + P + 'appliancestate']: S('Running'),
+    ['sensor.' + P + 'cyclephase']: S('Anticrease'),
+    ['sensor.' + P + 'timetoend']: S(0),
+    ['number.' + P + 'starttime']: S(0),
+    ['select.' + P + 'userselections_programuid']: S('Synthetic Pr Synthetics'),
+    ['select.' + P + 'userselections_analogtemperature']: S('40 Celsius'),
+    ['select.' + P + 'userselections_analogspinspeed']: S('800 Rpm'),
+    ['select.' + P + 'userselections_extrarinsenumber']: S('None'),
+    ['select.' + P + 'userselections_timemanagerlevel']: S('Normal'),
+    ['select.' + P + 'userselections_steamvalue']: S('Steam Off'),
+    ['switch.' + P + 'userselections_anticreasenosteam']: S('on'),
+    ['switch.' + P + 'userselections_anticreasewsteam']: S('off'),
+    ['switch.' + P + 'userselections_prewashphase']: S('off'),
+    ['switch.' + P + 'userselections_stain']: S('off'),
+    ['switch.' + P + 'userselections_nightcycle']: S('off'),
+    ['switch.' + P + 'userselections_rinsehold']: S('off'),
+    'input_text.lavatrice_programma_impostazioni': S(''),
+    'sensor.lavatrici_durate_aeg': S(new Date().toISOString(), { durate: {
+      'Cotton Pr Cottons|40 Celsius|Normal|None': 185, 'Delicate Pr Delicates|30 Celsius|Normal|None': 65,
+      'Synthetic Pr Synthetics|40 Celsius|Normal|None': 120 } }),
+  };
+  let dark = false;
+  let rifiuta = false;
+  const log = (s) => { document.getElementById('log').textContent = new Date().toLocaleTimeString() + '  ' + s + '\n' + document.getElementById('log').textContent; };
+  const put = (id, v) => { states[id] = Object.assign({}, states[id], { state: String(v), last_changed: new Date().toISOString(), last_updated: new Date().toISOString() }); };
+  // durata finta: base per programma + temperatura + risciacqui - risparmio
+  function durata() {
+    const g = (k) => states['select.' + P + 'userselections_' + k].state;
+    const base = { 'Cotton Pr Cottons': 150, 'Synthetic Pr Synthetics': 100, 'Delicate Pr Delicates': 55, 'Wool Pr Wool': 50, 'Express Pr Mywash49Min': 49, 'Quick 20 Min Pr 20Min3Kg': 20 }[g('programuid')] || 90;
+    const t = parseInt(g('analogtemperature'), 10) || 20;
+    const r = parseInt((g('extrarinsenumber').match(/\d/) || ['0'])[0], 10);
+    const tm = { Normal: 0, Daily: 25, 'Super Quick': 50 }[g('timemanagerlevel')] || 0;
+    return Math.max(15, base + Math.round(t * 0.8) + r * 12 - tm);
+  }
+  const modi = {
+    off: () => { put('sensor.' + P + 'connectivitystate', 'Disconnected'); },
+    nsr: () => { put('sensor.' + P + 'connectivitystate', 'Connected'); put('sensor.' + P + 'remotecontrol', 'Not Safety Relevant Enabled'); put('sensor.' + P + 'appliancestate', 'Ready To Start'); put('sensor.' + P + 'timetoend', durata()); },
+    ok: () => { put('sensor.' + P + 'connectivitystate', 'Connected'); put('sensor.' + P + 'remotecontrol', 'Enabled'); put('sensor.' + P + 'appliancestate', 'Ready To Start'); put('sensor.' + P + 'timetoend', durata()); },
+    lock: () => { put('sensor.' + P + 'connectivitystate', 'Connected'); put('sensor.' + P + 'remotecontrol', 'Temporary Locked'); },
+    delayed: () => { put('sensor.' + P + 'connectivitystate', 'Connected'); put('sensor.' + P + 'remotecontrol', 'Enabled'); put('sensor.' + P + 'appliancestate', 'Delayed Start'); put('number.' + P + 'starttime', 300); put('sensor.' + P + 'timetoend', 185); },
+    running: () => { put('sensor.' + P + 'connectivitystate', 'Connected'); put('sensor.' + P + 'remotecontrol', 'Enabled'); put('sensor.' + P + 'appliancestate', 'Running'); put('sensor.' + P + 'cyclephase', 'Wash'); put('sensor.' + P + 'timetoend', 97); },
+  };
+  const el = document.createElement('casa-mgdd-laundry-program-card');
+  el.setConfig({ type: 'custom:casa-mgdd-laundry-program-card', back: '#lavatrici' });
+  document.getElementById('host').appendChild(el);
+  function applica(d) {
+    const sel = (k, v) => { if (v != null) put('select.' + P + 'userselections_' + k, v); };
+    const sw = (k, v) => { if (v != null) put('switch.' + P + 'userselections_' + k, v ? 'on' : 'off'); };
+    sel('programuid', d.programma); sel('analogtemperature', d.temperatura); sel('analogspinspeed', d.centrifuga); sel('steamvalue', d.vapore);
+    sel('extrarinsenumber', d.risciacquo); sel('timemanagerlevel', d.risparmio);
+    if (d.antipiega != null) { sw('anticreasenosteam', d.antipiega === 'si'); sw('anticreasewsteam', d.antipiega === 'vapore'); }
+    sw('prewashphase', d.prelavaggio); sw('stain', d.smacchiatore); sw('nightcycle', d.notte); sw('rinsehold', d.stop_acqua);
+    put('sensor.' + P + 'timetoend', durata());
+  }
+  function push() {
+    el.hass = {
+      states: Object.assign({}, states),
+      themes: { darkMode: dark },
+      callService: (d, s, data, target, notify, ret) => new Promise((res) => {
+        log(d + '.' + s + ' ' + JSON.stringify(data));
+        if (d === 'input_text') { put(data.entity_id, data.value); push(); return res({}); }
+        setTimeout(() => {
+          const st = states['sensor.' + P + 'appliancestate'].state;
+          const conn = states['sensor.' + P + 'connectivitystate'].state === 'Connected';
+          const rc = states['sensor.' + P + 'remotecontrol'].state;
+          let e;
+          if (s === 'lavatrice_programma') {
+            if (!conn) e = { ok: false, messaggio: 'La lavatrice non è raggiungibile: accendila e premi il tasto Remote Start.' };
+            else if (data.avvia && rc !== 'Enabled') e = { ok: false, messaggio: 'Controllo remoto non attivo: premi il tasto Remote Start sulla lavatrice.' };
+            else if (rifiuta) e = { ok: false, messaggio: 'La lavatrice non ha accettato: stain = off invece di on.' };
+            else {
+              applica(data);
+              if (data.avvia) {
+                if (data.ritardo > 0) { put('sensor.' + P + 'appliancestate', 'Delayed Start'); put('number.' + P + 'starttime', data.ritardo); e = { ok: true, messaggio: 'Programmata: parte tra ' + data.ritardo + ' min.' }; }
+                else { put('sensor.' + P + 'appliancestate', 'Running'); put('sensor.' + P + 'cyclephase', 'Wash'); e = { ok: true, messaggio: 'Lavaggio avviato.' }; }
+              } else e = { ok: true, messaggio: 'Impostazioni mandate alla lavatrice.' };
+            }
+          } else if (s === 'lavatrice_programma_annulla') {
+            put('sensor.' + P + 'appliancestate', 'Ready To Start'); put('number.' + P + 'starttime', 0);
+            e = { ok: true, messaggio: 'Programmazione annullata.' };
+          }
+          log('  → ' + JSON.stringify(e));
+          push();
+          res({ context: {}, response: e });
+        }, 900);
+      }),
+    };
+  }
+  document.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => { modi[b.dataset.m](); push(); }));
+  document.getElementById('rifiuta').addEventListener('click', (e) => { rifiuta = !rifiuta; e.target.textContent = 'Script: ' + (rifiuta ? 'rifiuta' : 'accetta'); });
+  document.getElementById('dark').addEventListener('click', () => { dark = !dark; document.body.className = dark ? 'dark' : 'light'; push(); });
+  push();
+</script>
+</body>
+</html>
