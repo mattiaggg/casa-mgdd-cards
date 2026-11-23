@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.104.1
+ * Version: 1.104.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -12561,11 +12561,18 @@ const LD_PAGINA = {
     const out = {};
     if (!fonti.length || !inizio) return out;
     const t0 = new Date(inizio).getTime();
+    // Enel come il pianificatore (macro_colori): il mattino prima del primo sole e' ancora la
+    // notte del giorno prima, quindi i suoi kWh vanno a quel giorno. Il massimo resta per data.
+    const sole = {};
+    let prec = null;
     for (let i = 0; i < fonti.length; i++) {
       const t = new Date(t0 + i * 3600e3);
       const k = ldIso(t);
-      const o = out[k] || (out[k] = { enel: 0, max: -1, ora: null });
-      o.enel += Number(enel[i]) || 0;
+      if (!out[k]) { out[k] = { enel: 0, max: -1, ora: null }; if (i) prec = ldIso(new Date(t0 + (i - 1) * 3600e3)); }
+      const o = out[k];
+      if (fonti[i] === 'S') sole[k] = true;
+      const notte = t.getHours() < 12 && !sole[k] && prec && out[prec];
+      (notte ? out[prec] : o).enel += Number(enel[i]) || 0;
       if ((Number(soc[i]) || 0) > o.max) { o.max = Number(soc[i]) || 0; o.ora = t.getHours(); }
     }
     return out;
