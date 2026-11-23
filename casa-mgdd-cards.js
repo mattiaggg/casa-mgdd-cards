@@ -12,7 +12,7 @@
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card.
  *
- * Version: 1.102.2
+ * Version: 1.103.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -11956,7 +11956,6 @@ class LaundryCard extends HTMLElement {
     if (!config || !config.block) throw new Error('Config "block" mancante');
     this.config = Object.assign({}, LD_DEFAULTS, config);
     this._sig = null;
-    this._ldWireTip();
     // pulsante "Programma lavaggio" (block pagina, opzione `programma`)
     if (!this._ldGo) {
       this._ldGo = true;
@@ -11973,50 +11972,6 @@ class LaundryCard extends HTMLElement {
         if (t) t.click();
       });
     }
-  }
-
-  // Tooltip dei grafici con data-pts (oggi: "Quanto ci prende la stima"). Gli eventi
-  // stanno sulla card e non sul grafico: mgddPaint ritocca i nodi a ogni aggiornamento
-  // e un ascoltatore sul grafico andrebbe perso. Col mouse segue il passaggio, col
-  // dito si apre al tocco e si richiude da solo dopo 2,5 s, come nei grafici temperature.
-  _ldWireTip() {
-    if (this._ldTip) return;
-    this._ldTip = true;
-    const show = (e) => {
-      const el = e.target && e.target.closest ? e.target.closest('.ldp-acc') : null;
-      if (!el) { this._ldHideTip(); return; }
-      let pts;
-      try { pts = JSON.parse(el.getAttribute('data-pts') || '[]'); } catch (x) { pts = []; }
-      if (!pts.length) return;
-      const r = el.getBoundingClientRect();
-      const i = Math.max(0, Math.min(pts.length - 1, Math.floor(((e.clientX - r.left) / (r.width || 1)) * pts.length)));
-      const pt = pts[i];
-      const tip = el.querySelector('.ldp-tip');
-      const hl = el.querySelector('.ldp-hl');
-      if (!tip || !hl) return;
-      const x = ((i + 0.5) / pts.length) * 100;
-      hl.style.left = (i / pts.length) * 100 + '%';
-      hl.style.width = 100 / pts.length + '%';
-      tip.style.left = x + '%';
-      tip.style.transform = 'translateX(' + (x < 18 ? '-12%' : x > 82 ? '-88%' : '-50%') + ')';
-      tip.innerHTML = '<div class="ldp-tt">' + mgddEsc(pt.d) + '</div>' +
-        '<div class="ldp-tr"><span><i class="ldp-tdot" style="background:#EF9F27"></i>prodotto</span><b>' + mgddEsc(pt.r) + ' kWh</b></div>' +
-        '<div class="ldp-tr"><span><i class="ldp-tdot ldp-tdash"></i>stimato</span><b>' + mgddEsc(pt.s) + ' kWh</b></div>' +
-        (pt.e ? '<div class="ldp-tr"><span>scarto</span><b' + (pt.big ? ' class="ld-tr"' : '') + '>' + mgddEsc(pt.e) + '</b></div>' : '');
-      el.classList.add('ldp-acc-on');
-      this._ldTipEl = el;
-      clearTimeout(this._ldTipT);
-    };
-    this.addEventListener('pointermove', show);
-    this.addEventListener('pointerdown', (e) => {
-      show(e);
-      if (e.pointerType !== 'mouse') { clearTimeout(this._ldTipT); this._ldTipT = setTimeout(() => this._ldHideTip(), 2500); }
-    });
-    this.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this._ldHideTip(); });
-  }
-
-  _ldHideTip() {
-    if (this._ldTipEl) this._ldTipEl.classList.remove('ldp-acc-on');
   }
 
   set hass(hass) {
@@ -12558,7 +12513,6 @@ const LD_METEO_MDI = {
   lightning: 'weather-lightning', snowy: 'weather-snowy', 'snowy-rainy': 'weather-snowy-rainy',
 };
 const LD_CAT_MDI = { cotoni: 'tshirt-crew-outline', sintetici: 'hanger', delicati: 'feather', stracci: 'broom' };
-const LD_FONTE = { S: { c: 'sole', n: 'sole' }, B: { c: 'bat', n: 'batteria' }, E: { c: 'enel', n: 'Enel' } };
 
 function ldIco(name) {
   return '<ha-icon icon="mdi:' + name + '"></ha-icon>';
@@ -12644,7 +12598,21 @@ const LD_PAGINA = {
         (colv[d.colore] || 'var(--ld-t2)') + '"></i></div><span class="ld-tiny">' + (cop == null ? '—' : 'copre il ' + cop + '%') + '</span>' +
         lav + '</div>';
     }).join('');
-    return this._card('', label, '<span class="ld-tiny">sole previsto · quanta parte dei consumi fissi copre</span>',
+    // Quanto fidarsi dei kWh previsti: errore medio degli ultimi giorni e verso dello scarto.
+    // Sostituisce il grafico "Quanto ci prende la stima" (fino alla 1.102.x).
+    const acc = this._piano('accuratezza') || {};
+    const ag = (acc.giorni || []).filter((x) => (Number(x.reale) || 0) > 0);
+    let aff = '';
+    if (acc.errore_pct != null && ag.length) {
+      const err = Math.round(acc.errore_pct);
+      const re = ag.reduce((t, x) => t + Number(x.reale), 0);
+      const bias = (ag.reduce((t, x) => t + (Number(x.stima) || 0), 0) - re) / re;
+      const sopra = ag.filter((x) => (Number(x.stima) || 0) > Number(x.reale)).length;
+      const verso = bias > 0.15 ? ' · spesso ottimista' : bias < -0.15 ? ' · spesso pessimista' : '';
+      const tip = 'Ultimi ' + ag.length + ' giorni: la stima di iLMeteo ha sbagliato in media del ' + err + '%, ed è stata sopra il prodotto reale ' + sopra + ' volte su ' + ag.length + '.';
+      aff = '<span class="ld-pill ld-p' + (err <= 20 ? 'g' : err <= 45 ? 'a' : 'r') + ' ldp-aff" title="' + mgddEsc(tip) + '">stima ±' + err + '%' + verso + '</span>';
+    }
+    return this._card('', label, '<div class="ldp-wk-r"><span class="ld-tiny">sole previsto · quanta parte dei consumi fissi copre</span>' + aff + '</div>',
       '<div class="ldp-week" style="--ldp-n:' + g.length + '">' + tiles + '</div>');
   },
 
@@ -12688,65 +12656,94 @@ const LD_PAGINA = {
       }
       fatti += fact('Enel nei prossimi ' + giorni.length + ' giorni', ldNum(this._bat('enel_tot') || 0) + ' kWh');
     }
-    // Anello: la carica di adesso piena, in trasparenza fin dove arriva oggi secondo la simulazione.
+    // Pila: la carica di adesso piena, a tratteggio fin dove arriva oggi secondo la simulazione.
     const sg = LD_PAGINA._simGiorni.call(this)[ldIso(now)];
     const pct = soc == null ? null : Math.max(0, Math.min(100, Math.round(soc)));
     const maxOggi = sg && pct != null && sg.max > pct ? sg.max : null;
-    const C = 263.9;
-    const colA = { g: '#1D9E75', a: '#EF9F27', r: '#E24B4A', n: '#9A9993' }[tono];
-    const anello = '<svg class="ldp-ring" viewBox="0 0 100 100"><circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" stroke-opacity=".09" stroke-width="10"/>' +
-      (maxOggi != null ? '<circle cx="50" cy="50" r="42" fill="none" stroke="#1D9E75" stroke-opacity=".35" stroke-width="10" stroke-dasharray="' + ((maxOggi / 100) * C).toFixed(1) + ' ' + C + '" transform="rotate(-90 50 50)"/>' : '') +
-      (pct != null ? '<circle cx="50" cy="50" r="42" fill="none" stroke="' + colA + '" stroke-width="10" stroke-linecap="round" stroke-dasharray="' + Math.max(0.5, (pct / 100) * C).toFixed(1) + ' ' + C + '" transform="rotate(-90 50 50)"/>' : '') +
-      '<text x="50" y="' + (maxOggi != null ? 51 : 56) + '" text-anchor="middle" font-size="22" font-weight="700" fill="currentColor">' + (pct == null ? '—' : pct + '%') + '</text>' +
-      (maxOggi != null ? '<text x="50" y="66" text-anchor="middle" font-size="9.5" class="ld-svg2">max oggi ' + maxOggi + '%</text>' : '') + '</svg>';
     const parola = pct == null ? 'Non disponibile' : pct < 5 ? 'Vuota' : pct < 20 ? 'Bassa' : pct < 50 ? 'A metà' : pct < 90 ? 'Carica' : 'Piena';
-    const frase = pct == null ? 'Livello della batteria non disponibile'
-      : maxOggi != null ? 'Oggi arriva al massimo al <b>' + maxOggi + '%</b>' + (sg.ora != null ? ' verso le ' + mgddPad2(sg.ora) + ':00' : '')
-        : ldNum((pct / 100) * cap) + ' kWh su ' + ldNum(cap);
+    const mk = maxOggi == null ? '' : '<div class="ldp-pila-mk' + (maxOggi > 65 ? ' ldp-mk-r' : maxOggi < 35 ? ' ldp-mk-l' : '') + '" style="left:' + maxOggi + '%"><span>max oggi ' + maxOggi + '%' +
+      (sg.ora != null ? ' · ' + mgddPad2(sg.ora) + ':00' : '') + '</span></div>';
+    if (casa != null) fatti += fact('La casa sta usando', String(casa.toFixed(2)).replace('.', ',') + ' kW');
     const sinistra = '<div class="ldp-now"><div class="ld-hd" style="margin:0"><span class="ld-lbl">Batteria adesso</span>' + pill + '</div>' +
-      '<div class="ldp-anello ldp-t' + tono + '">' + anello + '<div><div class="ldp-parola">' + parola + '</div><div class="ld-tiny">' + frase + '</div>' +
-      (casa == null ? '' : '<div class="ld-tiny">La casa sta usando ' + String(casa.toFixed(2)).replace('.', ',') + ' kW</div>') + '</div></div>' +
+      '<div class="ldp-lv ldp-l' + tono + '"><b>' + (pct == null ? '—' : pct + '%') + '</b><span class="ldp-parola">' + parola + '</span>' +
+      (pct == null ? '' : '<span class="ld-tiny">' + ldNum((pct / 100) * cap) + ' di ' + ldNum(cap) + ' kWh</span>') + '</div>' +
+      '<div class="ldp-pila ldp-l' + tono + (maxOggi == null ? '' : ' ldp-pila-con') + '"><div class="ldp-pila-in">' +
+      (maxOggi == null ? '' : '<div class="ldp-pila-max" style="width:' + maxOggi + '%"></div>') +
+      '<div class="ldp-pila-f" style="width:' + (pct || 0) + '%"></div>' + mk + '</div></div>' +
       '<div class="ldp-facts">' + fatti + '</div></div>';
 
     let destra;
     if (!ok) {
-      destra = '<div class="ld-hd"><span class="ld-lbl">Da dove arriva la corrente, ora per ora</span></div>' +
+      destra = '<div class="ld-hd"><span class="ld-lbl">Batteria nei prossimi giorni</span></div>' +
         '<div class="ld-sub">Simulazione non disponibile: manca il livello della batteria o il piano è scaduto.</div>';
     } else {
-      // una riga per giorno: 24 caselle con la fonte dell'ora, poi fuse in segmenti
-      const righe = [];
-      const perData = {};
-      for (let i = 0; i < fonti.length; i++) {
+      // Una curva sola: la carica simulata ora per ora. Dove tocca lo zero la casa va a Enel,
+      // e i kWh di quell'ora scendono sotto la linea in rosso. In giallo le ore di sole.
+      // L'SVG si stira (preserveAspectRatio none) e non ha testo: etichette in HTML sopra.
+      const socA = this._bat('soc') || [];
+      const N = fonti.length;
+      const sv = (i) => Math.max(0, Math.min(100, Number(socA[i]) || 0));
+      let iP = 0;
+      for (let i = 1; i < N; i++) if (sv(i) > sv(iP)) iP = i;
+      const yMax = Math.max(20, Math.ceil(sv(iP) / 20) * 20);
+      const enMax = Math.max(0.5, ...enelOre.map((v) => Number(v) || 0));
+      const Z = 72; // linea dello zero, in % dell'altezza
+      const yS = (v) => Z - (v / yMax) * (Z - 4);
+      let svg = '';
+      for (let i = 0; i < N; i++) {
+        if (fonti[i] === 'S' && fonti[i - 1] !== 'S') {
+          let j = i;
+          while (fonti[j] === 'S') j++;
+          svg += '<rect x="' + i + '" y="0" width="' + (j - i) + '" height="' + Z + '" fill="var(--ld-a)" fill-opacity=".13"/>';
+        }
+      }
+      for (let i = 0; i < N; i++) {
+        const e = Number(enelOre[i]) || 0;
+        if (e > 0.005) svg += '<rect x="' + (i + 0.1) + '" y="' + (Z + 2) + '" width=".8" height="' + ((e / enMax) * (98 - Z - 2)).toFixed(2) + '" fill="var(--ld-r)"/>';
+      }
+      const pts = [];
+      for (let i = 0; i < N; i++) pts.push((i + 0.5) + ',' + yS(sv(i)).toFixed(2));
+      svg += '<polygon points="0.5,' + Z + ' ' + pts.join(' ') + ' ' + (N - 0.5) + ',' + Z + '" fill="var(--ld-g)" fill-opacity=".25"/>' +
+        '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--ld-g)" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' +
+        '<line x1="0" x2="' + N + '" y1="' + Z + '" y2="' + Z + '" stroke="currentColor" stroke-opacity=".2" vector-effect="non-scaling-stroke"/>';
+      // giorni: colonne proporzionali alle ore che la simulazione copre
+      const gg = [];
+      for (let i = 0; i < N; i++) {
         const t = new Date(t0 + i * 3600e3);
         const k = ldIso(t);
-        if (!perData[k]) { perData[k] = { t, ore: new Array(24).fill(null), enel: 0 }; righe.push(perData[k]); }
-        perData[k].ore[t.getHours()] = fonti[i];
-        perData[k].enel += Number(enelOre[i]) || 0;
+        if (!gg.length || gg[gg.length - 1].k !== k) gg.push({ k, t, a: i, n: 0, enel: 0 });
+        const g = gg[gg.length - 1];
+        g.n++;
+        g.enel += Number(enelOre[i]) || 0;
       }
-      const hIn = new Date(t0).getHours();
-      let h = '<div></div><div class="ldp-ax">' + [0, 6, 12, 18, 24].map((x) => '<span style="left:' + (x / 24) * 100 + '%">' + (x === 24 ? '24' : mgddPad2(x) + ':00') + '</span>').join('') + '</div><div></div>';
-      righe.forEach((r, k) => {
-        let segs = '';
-        let a = 0;
-        for (let x = 1; x <= 24; x++) {
-          if (x === 24 || r.ore[x] !== r.ore[a]) {
-            const n = x - a;
-            const f = r.ore[a];
-            if (f == null) {
-              const passato = k === 0 && a < hIn;
-              segs += '<div class="' + (passato ? 'ldp-s-past' : 'ldp-s-vuoto') + '" style="flex:' + n + ' 1 0">' + (passato && n >= 6 ? '<span>già passato</span>' : '') + '</div>';
-            } else {
-              segs += '<div class="ldp-s-' + LD_FONTE[f].c + '" style="flex:' + n + ' 1 0">' + (n >= 3 ? '<span>' + LD_FONTE[f].n + '</span>' : '') + '</div>';
-            }
-            a = x;
-          }
-        }
-        const zero = r.enel < 0.05;
-        h += '<div class="ldp-dn">' + LD_GIORNI[r.t.getDay()].slice(0, 3) + ' ' + r.t.getDate() + (k === 0 ? '<small>da adesso</small>' : '') + '</div><div class="ldp-strip">' + segs +
-          '</div><div class="ldp-tot' + (zero ? ' ld-tg' : '') + '">' + (zero ? '0' : ldNum(r.enel)) + ' kWh<small>da Enel</small></div>';
-      });
-      destra = '<div class="ld-hd"><span class="ld-lbl">Da dove arriva la corrente, ora per ora</span><div class="ldp-leg"><span><i class="ldp-s-sole"></i>sole</span>' +
-        '<span><i class="ldp-s-bat"></i>batteria</span><span><i class="ldp-s-enel"></i>Enel</span></div></div><div class="ldp-st">' + h + '</div>';
+      gg.forEach((g) => { if (g.a) svg += '<line x1="' + g.a + '" x2="' + g.a + '" y1="0" y2="100" stroke="currentColor" stroke-opacity=".14" vector-effect="non-scaling-stroke"/>'; });
+      // le ore tra il calcolo della simulazione e adesso sono già passate
+      const iNow = Math.max(0, Math.min(N, (now.getTime() - t0) / 3600e3));
+      if (iNow >= 0.5) svg += '<rect x="0" y="0" width="' + iNow.toFixed(2) + '" height="100" fill="currentColor" fill-opacity=".07"/>';
+      const px = (i) => ((i + 0.5) / N) * 100;
+      const dot = (i, cls) => '<i class="ldp-cv-dot ' + cls + '" style="left:' + px(i).toFixed(2) + '%;top:' + yS(sv(i)).toFixed(2) + '%"></i>';
+      const tag = (i, y, cls, txt) => { const x = px(i); return '<span class="ldp-cv-tag ' + cls + (x > 80 ? ' ldp-cv-r' : x < 12 ? ' ldp-cv-l' : '') + '" style="left:' + x.toFixed(2) + '%;top:' + y.toFixed(2) + '%">' + txt + '</span>'; };
+      const iN = Math.min(N - 1, Math.floor(iNow));
+      let over = dot(iN, 'ldp-cv-now');
+      if (sv(iP) > sv(iN)) {
+        const tp = new Date(t0 + iP * 3600e3);
+        over += dot(iP, '') + tag(iP, yS(sv(iP)), 'ld-tg', sv(iP) + '% ' + (ldIso(tp) === ldIso(now) ? 'oggi' : LD_GIORNI[tp.getDay()].slice(0, 3)) + ' alle ' + tp.getHours());
+      }
+      if (esa) {
+        const iE = Math.round((new Date(esa).getTime() - t0) / 3600e3);
+        if (iE > iN && iE < N && Math.abs(iE - iP) > 8) over += tag(iE, Z, 'ld-tr ldp-cv-zero', 'vuota ' + ldQuando(new Date(esa), now));
+      }
+      // un giorno corto (oggi, dalla sera) su telefono perde il nome del giorno e l'unità
+      const col = (g, body) => '<div class="' + (g.n < 16 ? 'ldp-cv-s' : '') + '" style="flex:' + g.n + ' 1 0">' + body + '</div>';
+      const testa = gg.map((g) => col(g, '<b><span class="ldp-cv-x">' + LD_GIORNI[g.t.getDay()].slice(0, 3) + ' </span>' + g.t.getDate() + '</b>')).join('');
+      const piede = gg.map((g) => col(g, g.enel < 0.05 ? '<b class="ld-tg">0</b><small>da Enel</small>'
+        : '<b class="ld-tr">' + ldNum(g.enel) + '<span class="ldp-cv-x"> kWh</span></b><small>da Enel</small>')).join('');
+      destra = '<div class="ld-hd"><span class="ld-lbl">Batteria nei prossimi giorni</span><div class="ldp-leg"><span><i class="ldp-s-bat"></i>carica</span>' +
+        '<span><i class="ldp-s-sole" style="opacity:.45"></i>ore di sole</span><span><i class="ldp-s-enel"></i>kWh da Enel</span></div></div>' +
+        '<div class="ldp-cv-row ldp-cv-d">' + testa + '</div>' +
+        '<div class="ldp-cv"><svg viewBox="0 0 ' + N + ' 100" preserveAspectRatio="none">' + svg + '</svg>' +
+        (px(iP) < 14 && sv(iP) > sv(iN) ? '' : '<span class="ldp-cv-y" style="top:' + yS(yMax) + '%">' + yMax + '%</span>') + over + '</div>' +
+        '<div class="ldp-cv-row ldp-cv-e">' + piede + '</div>';
     }
     return '<ha-card class="ld-c ldp-bat">' + sinistra + '<div class="ldp-next">' + destra + '</div></ha-card>';
   },
@@ -12787,40 +12784,6 @@ const LD_PAGINA = {
         pc(w.batteria) + '%;background:var(--ld-g)"></i><i style="width:' + pc(w.enel) + '%;background:var(--ld-r)"></i></div></div>';
     }).join('');
     return this._card('', label, '<div class="ldp-leg"><span><i class="ldp-s-sole"></i>sole</span><span><i class="ldp-s-bat"></i>batteria</span><span><i class="ldp-s-enel"></i>Enel</span></div>', rows);
-  },
-
-  stima() {
-    const label = 'Quanto ci prende la stima';
-    const acc = this._piano('accuratezza') || {};
-    const p = this._piano('parametri') || {};
-    const g = (acc.giorni || []).slice(-15);
-    if (!g.length) return this._vuoto(label, 'Servono qualche giorno di dati: la stima si confronta con la produzione reale ogni sera alle 23:55.');
-    const max = Math.max(...g.map((d) => Math.max(Number(d.reale) || 0, Number(d.stima) || 0)), 1);
-    const step = 360 / g.length;
-    const bw = Math.min(9, step * 0.38);
-    const H = (v) => ((Number(v) || 0) / max) * 70;
-    let svg = '<line x1="0" y1="80" x2="360" y2="80" class="ld-grid"/>';
-    g.forEach((d, i) => {
-      const x = i * step + step / 2 - bw - 1;
-      svg += '<rect x="' + x.toFixed(1) + '" y="' + (80 - H(d.reale)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + H(d.reale).toFixed(1) + '" rx="2" fill="#EF9F27"/>' +
-        '<rect x="' + (x + bw + 2).toFixed(1) + '" y="' + (80 - H(d.stima)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + H(d.stima).toFixed(1) +
-        '" rx="2" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="1.2" stroke-dasharray="2 2"/>';
-    });
-    const dl = (i) => { const d = ldDay(g[i].data); return d.getDate() + '/' + (d.getMonth() + 1); };
-    svg += '<g font-size="10" class="ld-svg2"><text x="2" y="94">' + dl(0) + '</text><text x="358" y="94" text-anchor="end">' + dl(g.length - 1) + '</text></g>';
-    const err = acc.errore_pct;
-    const pill = err == null ? '' : this._pill(err <= 20 ? 'g' : err <= 45 ? 'a' : 'r', '±' + Math.round(err) + '% su ' + g.length + ' giorni');
-    // per il tooltip: giorno, prodotto, stimato e scarto in chiaro
-    const pts = g.map((d) => {
-      const dd = ldDay(d.data);
-      const re = Number(d.reale) || 0;
-      const sc = re > 0 ? Math.round(((Number(d.stima) - re) / re) * 100) : null;
-      return { d: LD_GIORNI[dd.getDay()].slice(0, 3) + ' ' + dd.getDate() + ' ' + LD_MESI[dd.getMonth()].slice(0, 3), r: ldNum(re), s: ldNum(d.stima),
-        e: sc == null ? '' : (sc > 0 ? '+' : '') + sc + '%', big: sc != null && Math.abs(sc) > 30 };
-    });
-    return this._card('', label, pill, '<div class="ldp-acc" data-pts="' + mgddEsc(JSON.stringify(pts)) + '"><div class="ldp-hl"></div><svg viewBox="0 0 360 96" class="ld-chart">' + svg +
-      '</svg><div class="ldp-tip"></div></div><div class="ld-legend" style="margin-top:6px"><span><i style="background:#EF9F27"></i>prodotto reale</span>' +
-      '<span><i class="ld-dash"></i>stimato da iLMeteo</span><span>tetto solare ' + ldNum(p.tetto) + ' kWh</span></div>');
   },
 
   // Pulsante verso la sottovista "Programma lavaggio" (casa-mgdd-laundry-program-card).
@@ -12866,7 +12829,7 @@ const LD_PAGINA = {
 LD_BLOCKS.pagina = function () {
   const P = LD_PAGINA;
   return '<div class="ldp">' + P.programma.call(this) + '<div class="ldp-top">' + P.hero.call(this) + P.settimana.call(this) + '</div>' + P.gemini.call(this) + P.batteria.call(this) +
-    '<div class="ldp-bot">' + P.obiettivo.call(this) + P.ultimi.call(this) + P.stima.call(this) + '</div>' + P.piede.call(this) + '</div>';
+    '<div class="ldp-bot">' + P.obiettivo.call(this) + P.ultimi.call(this) + '</div>' + P.piede.call(this) + '</div>';
 };
 
 const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
@@ -12874,7 +12837,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp ha-icon{--mdc-icon-size:20px;width:20px;height:20px;display:inline-flex;flex:none;}' +
   '.ldq .ldp .ld-pill ha-icon{--mdc-icon-size:14px;width:14px;height:14px;}' +
   '.ldq .ldp-top{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:14px;}' +
-  '.ldq .ldp-bot{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;}' +
+  '.ldq .ldp-bot{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}' +
   // verdetto
   '.ldq .ldp-hero{display:flex;flex-direction:column;gap:8px;}' +
   '.ldq .ldp-hero h2{font-size:30px;line-height:1.1;margin:2px 0 0;letter-spacing:-.6px;font-weight:700;}' +
@@ -12883,6 +12846,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-cost div{background:var(--ld-bg);border:1px solid var(--ld-div);border-radius:12px;padding:8px 10px;}' +
   '.ldq .ldp-cost b{display:block;font-size:17px;font-weight:700;}' +
   // settimana
+  '.ldq .ldp-wk-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}.ldq .ldp-aff{cursor:help;}' +
   '.ldq .ldp-week{display:grid;grid-template-columns:repeat(var(--ldp-n,6),minmax(0,1fr));gap:10px;}' +
   '.ldq .ldp-day{border-radius:14px;background:var(--ld-neutral);padding:12px 12px 13px;display:flex;flex-direction:column;gap:6px;min-width:0;}' +
   '.ldq .ldp-oggi{outline:2px solid var(--ld-t1);}.ldq .ldp-best{outline:2px solid var(--ld-g);}' +
@@ -12903,35 +12867,38 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-bat{display:grid;grid-template-columns:300px minmax(0,1fr);padding:0;overflow:hidden;}' +
   '.ldq .ldp-now{padding:18px 20px;border-right:1px solid var(--ld-div);display:flex;flex-direction:column;}' +
   '.ldq .ldp-next{padding:18px 20px 16px;min-width:0;}' +
-  '.ldq .ldp-anello{display:flex;align-items:center;gap:16px;margin:10px 0 2px;--ldp-ct:var(--ld-t1);}' +
-  '.ldq .ldp-ring{width:112px;height:112px;flex:none;color:var(--ld-t1);}' +
-  '.ldq .ldp-parola{font-size:22px;font-weight:750;letter-spacing:-.4px;color:var(--ldp-ct);margin-bottom:4px;}' +
-  '.ldq .ldp-anello .ld-tiny{line-height:1.5;}.ldq .ldp-anello .ld-tiny b{color:var(--ld-t1);}' +
-  '.ldq .ldp-big{display:flex;align-items:center;gap:16px;margin:8px 0 4px;--ldp-c:var(--ld-t2);--ldp-ct:var(--ld-t1);}' +
-  '.ldq .ldp-tr{--ldp-c:var(--ld-r);--ldp-ct:var(--ld-r2);}.ldq .ldp-ta{--ldp-c:var(--ld-a);--ldp-ct:var(--ld-a2);}.ldq .ldp-tg{--ldp-c:var(--ld-g);--ldp-ct:var(--ld-g2);}' +
-  '.ldq .ldp-big b{font-size:52px;font-weight:750;letter-spacing:-2px;line-height:1;color:var(--ldp-ct);}' +
-  '.ldq .ldp-cell{position:relative;width:96px;height:44px;border:2.5px solid var(--ld-t1);border-radius:11px;padding:4px;flex:none;}' +
-  '.ldq .ldp-cell::after{content:"";position:absolute;right:-8px;top:12px;width:5px;height:16px;border-radius:0 3px 3px 0;background:var(--ld-t1);}' +
-  '.ldq .ldp-cell i{display:block;height:100%;min-width:7px;border-radius:5px;background:var(--ldp-c);}' +
+  '.ldq .ldp-lv{display:flex;align-items:baseline;gap:10px;margin:12px 0 0;--ldp-c:var(--ld-t2);--ldp-ct:var(--ld-t1);}' +
+  '.ldq .ldp-lr{--ldp-c:var(--ld-r);--ldp-ct:var(--ld-r2);}.ldq .ldp-la{--ldp-c:var(--ld-a);--ldp-ct:var(--ld-a2);}.ldq .ldp-lg{--ldp-c:var(--ld-g);--ldp-ct:var(--ld-g2);}' +
+  '.ldq .ldp-lv b{font-size:44px;font-weight:750;letter-spacing:-1.5px;line-height:1;}' +
+  '.ldq .ldp-parola{font-size:20px;font-weight:750;letter-spacing:-.3px;color:var(--ldp-ct);}' +
+  '.ldq .ldp-lv .ld-tiny{margin-left:auto;white-space:nowrap;}' +
+  '.ldq .ldp-pila{position:relative;margin:12px 9px 4px 0;height:36px;border:2px solid var(--ld-t2);border-radius:9px;padding:3px;}' +
+  '.ldq .ldp-pila::after{content:"";position:absolute;right:-8px;top:9px;width:5px;height:14px;border-radius:0 3px 3px 0;background:var(--ld-t2);}' +
+  '.ldq .ldp-pila-con{margin-bottom:24px;}' +
+  '.ldq .ldp-pila-in{position:relative;height:100%;}' +
+  '.ldq .ldp-pila-f{position:absolute;left:0;top:0;bottom:0;min-width:6px;border-radius:5px;background:var(--ldp-c);}' +
+  '.ldq .ldp-pila-max{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--ld-g) 45%,transparent) 0 4px,color-mix(in srgb,var(--ld-g) 16%,transparent) 4px 8px);}' +
+  '.ldq .ldp-pila-mk{position:absolute;top:-8px;bottom:-8px;width:2px;margin-left:-1px;background:var(--ld-g);}' +
+  '.ldq .ldp-pila-mk span{position:absolute;top:100%;left:0;margin-top:4px;font-size:11px;font-weight:600;color:var(--ld-g2);white-space:nowrap;transform:translateX(-50%);}' +
+  '.ldq .ldp-pila-mk.ldp-mk-r span{transform:translateX(-100%);}.ldq .ldp-pila-mk.ldp-mk-l span{transform:translateX(-14px);}' +
   '.ldq .ldp-facts{margin-top:auto;padding-top:14px;}' +
   '.ldq .ldp-fact{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:9px 0;border-top:1px solid var(--ld-div);font-size:13px;color:var(--ld-t2);}' +
   '.ldq .ldp-fact b{font-size:15px;color:var(--ld-t1);white-space:nowrap;}.ldq .ldp-fact b.ld-tr{color:var(--ld-r2);}.ldq .ldp-fact b.ld-tg{color:var(--ld-g2);}' +
   '.ldq .ldp-leg{display:flex;gap:14px;font-size:11.5px;color:var(--ld-t2);align-items:center;}' +
   '.ldq .ldp-leg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px;}' +
-  // strisce orarie
-  '.ldq .ldp-st{display:grid;grid-template-columns:64px minmax(0,1fr) 92px;column-gap:14px;row-gap:7px;align-items:center;}' +
-  '.ldq .ldp-ax{position:relative;height:16px;font-size:11px;color:var(--ld-t2);}' +
-  '.ldq .ldp-ax span{position:absolute;transform:translateX(-50%);}' +
-  '.ldq .ldp-ax span:first-child{transform:none;}.ldq .ldp-ax span:last-child{transform:translateX(-100%);}' +
-  '.ldq .ldp-dn{font-size:13px;font-weight:650;white-space:nowrap;}.ldq .ldp-dn small{display:block;font-size:11px;font-weight:500;color:var(--ld-t2);}' +
-  '.ldq .ldp-strip{display:flex;gap:2px;height:28px;}' +
-  '.ldq .ldp-strip div{border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:650;color:#fff;overflow:hidden;white-space:nowrap;min-width:0;}' +
   '.ldq .ldp-s-enel{background:var(--ld-r);}.ldq .ldp-s-bat{background:var(--ld-g);}.ldq .ldp-s-sole{background:var(--ld-a);}' +
-  '.ldq .ldp-strip .ldp-s-sole{color:#5a3705;}' +
-  '.ldq .ldp-strip .ldp-s-past{background:repeating-linear-gradient(135deg,transparent 0 5px,var(--ld-neutral) 5px 6px);color:var(--ld-t2);font-weight:500;}' +
-  '.ldq .ldp-strip .ldp-s-vuoto{background:none;}' +
-  '.ldq .ldp-tot{text-align:right;font-size:14px;font-weight:700;color:var(--ld-r2);white-space:nowrap;}.ldq .ldp-tot.ld-tg{color:var(--ld-g2);}' +
-  '.ldq .ldp-tot small{display:block;font-size:11px;font-weight:500;color:var(--ld-t2);}' +
+  // curva della batteria nei prossimi giorni
+  '.ldq .ldp-cv-row{display:flex;}.ldq .ldp-cv-row>div{min-width:0;overflow:hidden;white-space:nowrap;padding:0 6px;}' +
+  '.ldq .ldp-cv-d b{font-size:13px;font-weight:650;}' +
+  '.ldq .ldp-cv-e>div{text-align:right;}.ldq .ldp-cv-e b{display:block;font-size:13px;font-weight:700;}.ldq .ldp-cv-e small{font-size:11px;color:var(--ld-t2);}' +
+  '.ldq .ldp-cv{position:relative;height:170px;margin:4px 0;}' +
+  '.ldq .ldp-cv svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;color:var(--ld-t1);}' +
+  '.ldq .ldp-cv-y{position:absolute;left:4px;transform:translateY(-50%);font-size:10.5px;color:var(--ld-t2);}' +
+  '.ldq .ldp-cv-dot{position:absolute;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%;background:var(--ld-g);}' +
+  '.ldq .ldp-cv-now{background:var(--ld-t1);box-shadow:0 0 0 3px var(--ld-bg);}' +
+  '.ldq .ldp-cv-tag{position:absolute;transform:translate(-50%,-150%);font-size:11.5px;font-weight:650;white-space:nowrap;}' +
+  '.ldq .ldp-cv-tag.ldp-cv-r{transform:translate(calc(-100% - 8px),-50%);}.ldq .ldp-cv-tag.ldp-cv-l{transform:translate(8px,-150%);}' +
+  '.ldq .ldp-cv-zero{transform:translate(-4px,-140%);}' +
   // righe dei riquadri in fondo
   '.ldq .ldp-row{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--ld-div);font-size:13.5px;}' +
   '.ldq .ldp-row:first-of-type{border-top:none;}.ldq .ldp-row ha-icon{color:var(--ld-t2);}' +
@@ -12947,21 +12914,12 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-prog-t small{display:block;font-size:12.5px;color:var(--ld-t2);margin-top:2px;}' +
   '.ldq .ldp-prog>ha-icon{color:var(--ld-t2);}' +
   '.ldq .ldp-prog:focus-visible{outline:2px solid var(--ld-p);outline-offset:2px;}' +
-  // tooltip della stima: stessa ricetta dei tooltip dei grafici energia e temperature
-  '.ldq .ldp-acc{position:relative;touch-action:pan-y;}' +
-  '.ldq .ldp-hl{position:absolute;top:0;height:calc(100% - 14px);border-radius:5px;background:var(--ld-neutral);opacity:0;pointer-events:none;transition:opacity .1s;}' +
-  '.ldq .ldp-tip{position:absolute;bottom:calc(100% + 6px);z-index:5;pointer-events:none;min-width:150px;padding:9px 11px 8px;border-radius:11px;' +
-  'background:var(--ld-bg);border:1px solid var(--ld-div);box-shadow:0 6px 20px rgba(0,0,0,.13);font-size:11.5px;opacity:0;transition:opacity .1s;}' +
-  '.ldq .ldp-acc-on .ldp-hl,.ldq .ldp-acc-on .ldp-tip{opacity:1;}' +
-  '.ldq .ldp-tt{font-weight:700;margin-bottom:5px;white-space:nowrap;}' +
-  '.ldq .ldp-tr{display:flex;justify-content:space-between;gap:14px;color:var(--ld-t2);padding:1px 0;white-space:nowrap;}.ldq .ldp-tr b{color:var(--ld-t1);}.ldq .ldp-tr b.ld-tr{color:var(--ld-r2);}' +
-  '.ldq .ldp-tdot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:0;}.ldq .ldp-tdash{border:1px dashed var(--ld-t2);}' +
   // schermi stretti
   '@container (max-width:1100px){.ldq .ldp-top{grid-template-columns:minmax(0,1fr);}}' +
   '@container (max-width:900px){.ldq .ldp-bot{grid-template-columns:minmax(0,1fr);}.ldq .ldp-bat{grid-template-columns:minmax(0,1fr);}' +
   '.ldq .ldp-now{border-right:none;border-bottom:1px solid var(--ld-div);}.ldq .ldp-facts{margin-top:0;}}' +
   '@container (max-width:640px){.ldq .ldp{padding:8px;}.ldq .ldp-week{grid-template-columns:repeat(3,minmax(0,1fr));}.ldq .ldp-hero h2{font-size:24px;}' +
-  '.ldq .ldp-strip span{display:none;}.ldq .ldp-st{grid-template-columns:44px minmax(0,1fr) 62px;column-gap:8px;}.ldq .ldp-leg{display:none;}}' +
+  '.ldq .ldp-cv-row>div{padding:0 2px;}.ldq .ldp-cv-s .ldp-cv-x{display:none;}.ldq .ldp-cv-d b,.ldq .ldp-cv-e b{font-size:11.5px;}.ldq .ldp-cv-e small{display:none;}.ldq .ldp-cv{height:140px;}.ldq .ldp-leg{display:none;}}' +
   '</style>');
 
 customElements.define('casa-mgdd-laundry-card', LaundryCard);
