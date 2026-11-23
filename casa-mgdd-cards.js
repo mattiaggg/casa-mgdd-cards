@@ -10,9 +10,10 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
- * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card.
+ * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
+ * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.103.3
+ * Version: 1.104.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -16532,4 +16533,278 @@ window.customCards.push({
   type: 'casa-mgdd-laundry-tile-card',
   name: 'Casa MGDD Tile lavatrice',
   description: 'Tile della lavatrice AEG: stato, programma impostato, orari (fine, partenza programmata). Il pulsante verso la pagina di programmazione (`programma:`) compare solo se la lavatrice e\u2019 programmata o pronta con il controllo remoto attivo.',
+});
+
+// ============================================================================
+// casa-mgdd-purifier-tile-card \u2014 Tile di un purificatore d'aria (entita' fan)
+// ============================================================================
+// Stessa famiglia della tile lavatrice: icona colorata, nome breve, modalita' in
+// pillola, riga grigia con filtri o timer, tasto accensione a destra e sotto i
+// segmenti delle modalita' (le `preset_modes` dell'entita', ognuna con il suo
+// nome). Colore per modalita', non per qualita' dell'aria, che la dice gia' la
+// casa-mgdd-air-card subito sotto: verde = auto, blu = manuale, viola = notte,
+// ambra = un filtro da pulire o cambiare.
+// Spento: tile a una riga come le native, col solo tasto per riaccenderlo.
+// Non disponibile: tile a una riga senza comandi.
+// Comandi: fan.turn_on / fan.turn_off / fan.set_preset_mode. Il resto della tile
+// apre il more-info. Mockup docs/mockup-tile-purificatori-2026-11-23.html
+// (cartella OneDrive), banco dev/purificatori-tile.html.
+//
+// Opzioni:
+//   entity: fan.x                (obbligatoria)
+//   name: Soggiorno
+//   modes: [auto, medium, ...]   default: preset_modes dell'entita'
+//   filters: [{entity, name, avviso}]  sensori in %; `avviso` e' la frase sotto
+//                                 soglia (default "Cambia il <name>")
+//   filter_alert: 10             soglia in % per l'avviso
+//   timer: sensor.x              minuti allo spegnimento (0 = nessun timer)
+//   auto_plus: switch.x          se acceso, la pillola dice "Auto+"
+
+const PU_MODES = {
+  auto: { n: 'Auto', i: 'fan-auto', c: 'g' },
+  sleep: { n: 'Notte', i: 'weather-night', c: 'p' },
+  low: { n: 'Bassa', i: 'fan-speed-1', c: 'b' },
+  medium: { n: 'Medio', i: 'fan-speed-2', c: 'b' },
+  high: { n: 'Alta', i: 'fan-speed-3', c: 'b' },
+  turbo: { n: 'Turbo', i: 'fan-speed-3', c: 'b' },
+};
+
+function puMode(m) {
+  return PU_MODES[m] || { n: m ? m.charAt(0).toUpperCase() + m.slice(1).replace(/_/g, ' ') : '', i: 'fan', c: 'b' };
+}
+
+class PurifierTileCard extends HTMLElement {
+  setConfig(config) {
+    if (!config || !config.entity || !/^fan\./.test(config.entity)) throw new Error('Indicare `entity:` (un\u2019entita\u2019 fan)');
+    this.config = Object.assign({ filters: [], filter_alert: 10 }, config);
+    this._sig = null;
+    this._pend = null;
+    if (!this._wired) {
+      this._wired = true;
+      this.addEventListener('click', (e) => this._click(e));
+      this.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        if (!e.target.classList || !e.target.classList.contains('pu')) return;
+        e.preventDefault();
+        this._more();
+      });
+    }
+    this._render();
+  }
+
+  static getStubConfig(hass) {
+    const f = hass && Object.keys(hass.states).find((id) => id.startsWith('fan.'));
+    return { entity: f || 'fan.purificatore' };
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 12, min_columns: 6 };
+  }
+
+  getCardSize() {
+    return 2;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const c = this.config;
+    const ids = [c.entity, c.timer, c.auto_plus].concat((c.filters || []).map((f) => f.entity));
+    const st = hass.states[c.entity];
+    const a = st ? st.attributes : {};
+    const sig = mgddStatesSig(hass, ids) + '|' + a.preset_mode + '|' + a.percentage + '|' + (hass.themes && hass.themes.darkMode ? 'D' : 'L');
+    if (this._pend && st && (Date.now() - this._pend.t > 8000 || (this._pend.mode ? a.preset_mode === this._pend.mode : st.state === this._pend.state))) {
+      this._pend = null;
+      this._sig = null;
+    }
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  _more() {
+    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: this.config.entity }, bubbles: true, composed: true }));
+  }
+
+  _call(service, data, pend) {
+    this._pend = Object.assign({ t: Date.now() }, pend);
+    this._render();
+    const p = this._hass.callService('fan', service, Object.assign({ entity_id: this.config.entity }, data || {}));
+    if (p && p.catch) {
+      p.catch((err) => {
+        this._pend = null;
+        this._sig = null;
+        this._render();
+        this.dispatchEvent(new CustomEvent('hass-notification', {
+          detail: { message: (this.config.name || 'Purificatore') + ': comando non riuscito (' + ((err && err.message) || err) + ')' },
+          bubbles: true, composed: true,
+        }));
+      });
+    }
+  }
+
+  _click(e) {
+    const t = e.target.closest && e.target.closest('[data-pu-mode],[data-pu-pw]');
+    if (t && this.contains(t)) {
+      e.stopPropagation();
+      const st = this._hass && this._hass.states[this.config.entity];
+      if (!st) return;
+      if (t.hasAttribute('data-pu-pw')) {
+        const on = this._pend && this._pend.state ? this._pend.state === 'on' : st.state === 'on';
+        this._call(on ? 'turn_off' : 'turn_on', null, { state: on ? 'off' : 'on' });
+      } else {
+        const m = t.getAttribute('data-pu-mode');
+        if (m !== st.attributes.preset_mode) this._call('set_preset_mode', { preset_mode: m }, { mode: m });
+      }
+      return;
+    }
+    if (e.target.closest && e.target.closest('.pu')) this._more();
+  }
+
+  // il primo filtro sotto soglia, se c'e'
+  _filters() {
+    const h = this._hass;
+    const out = [];
+    let alert = null;
+    (this.config.filters || []).forEach((f) => {
+      const s = h.states[f.entity];
+      const v = s ? parseFloat(s.state) : NaN;
+      if (isNaN(v)) return;
+      const name = f.name || 'filtro';
+      out.push({ name, v, s, f });
+      if (!alert && v < this.config.filter_alert) alert = { name, v, s, f };
+    });
+    return { out, alert };
+  }
+
+  _model() {
+    const h = this._hass;
+    const c = this.config;
+    const st = h.states[c.entity];
+    const name = c.name || (st && st.attributes.friendly_name) || c.entity;
+    if (!st || st.state === 'unavailable' || st.state === 'unknown') return { name, riposo: true, sub: 'Non raggiungibile', pw: false };
+    const pend = this._pend;
+    const on = pend && pend.state ? pend.state === 'on' : st.state === 'on';
+    if (!on) return { name, riposo: true, sub: pend && pend.state === 'off' ? 'Si spegne\u2026' : 'Spento', pw: true };
+
+    const a = st.attributes;
+    const modes = c.modes || a.preset_modes || [];
+    const mode = pend && pend.mode ? pend.mode : a.preset_mode;
+    const pm = mode ? puMode(mode) : null;
+    let ico; let col; let pill; let spin = '';
+    if (pm) {
+      col = pm.c;
+      pill = mode === 'auto' && c.auto_plus && h.states[c.auto_plus] && h.states[c.auto_plus].state === 'on' ? 'Auto+' : pm.n;
+      ico = mode === 'auto' ? 'air-purifier' : mode === 'sleep' ? 'weather-night' : 'fan';
+      if (col === 'b') spin = mode === 'turbo' || mode === 'high' ? ' pu-spin pu-fast' : ' pu-spin';
+    } else {
+      // velocita' fissa scelta altrove (more-info, app): nessun segmento acceso
+      const stp = Number(a.percentage_step) || 0;
+      const p = Number(a.percentage) || 0;
+      col = 'b'; ico = 'fan'; spin = ' pu-spin';
+      pill = stp && p ? 'Velocit\u00e0 ' + Math.round(p / stp) + ' di ' + Math.round(100 / stp) : p ? p + ' %' : 'Acceso';
+    }
+
+    const fl = this._filters();
+    let l3 = '';
+    const tm = c.timer && h.states[c.timer] ? parseFloat(h.states[c.timer].state) : NaN;
+    if (tm > 0) {
+      const now = new Date();
+      l3 = 'Si spegne ' + ltAlle(new Date(now.getTime() + tm * 60000), now) + ' \u00b7 tra ' + lpDur(tm).replace(/ 00$/, '');
+    } else if (fl.alert) {
+      const f = fl.alert;
+      const ore = f.s.attributes && f.s.attributes.time_remaining != null ? parseFloat(f.s.attributes.time_remaining) : NaN;
+      l3 = '<span class="pu-warn">' + mgddEsc(f.f.avviso || 'Cambia il ' + f.name.toLowerCase()) + '</span> \u00b7 ' + Math.round(f.v) + ' %' +
+        (isNaN(ore) ? '' : ' \u00b7 ancora ' + Math.round(ore) + ' h');
+    } else if (fl.out.length) {
+      const t = fl.out.map((f) => f.name.toLowerCase() + ' ' + Math.round(f.v) + ' %').join(' \u00b7 ');
+      l3 = mgddEsc(t.charAt(0).toUpperCase() + t.slice(1));
+    }
+    if (fl.alert && !(tm > 0)) { ico = 'air-filter'; col = 'a'; spin = ''; }
+    return { name, ico, col, spin, pill, pc: pm ? pm.c : 'b', l3, modes, mode };
+  }
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    const x = this._model();
+    const dark = !!(this._hass.themes && this._hass.themes.darkMode);
+    const pw = (on) => '<button class="pu-pw' + (on ? ' pu-on' : '') + '" data-pu-pw aria-label="' + (on ? 'Spegni' : 'Accendi') + ' ' + mgddEsc(x.name) + '">' + ldIco('power') + '</button>';
+    let html;
+    if (x.riposo) {
+      html = '<div class="puq' + (dark ? ' pu-dark' : '') + '">' +
+        '<div class="pu pu-z" role="button" tabindex="0" aria-label="' + mgddEsc(x.name) + ': ' + mgddEsc(x.sub) + '">' +
+        '<div class="pu-zi">' + ldIco('air-purifier-off') + '</div>' +
+        '<div class="pu-txt"><div class="pu-zn">' + mgddEsc(x.name) + '</div><div class="pu-zs">' + mgddEsc(x.sub) + '</div></div>' +
+        (x.pw ? pw(false) : '') +
+        '</div></div>';
+    } else {
+      const seg = x.modes.length ? '<div class="pu-seg">' + x.modes.map((m) => {
+        const d = puMode(m);
+        const on = m === x.mode;
+        return '<button class="' + (on ? 'pu-sel pu-s' + d.c : '') + '" data-pu-mode="' + mgddEsc(m) + '" aria-pressed="' + on + '">' + ldIco(d.i) + '<span>' + mgddEsc(d.n) + '</span></button>';
+      }).join('') + '</div>' : '';
+      html = '<div class="puq' + (dark ? ' pu-dark' : '') + '">' +
+        '<div class="pu" role="button" tabindex="0" aria-label="' + mgddEsc(x.name) + ': ' + mgddEsc(x.pill) + '">' +
+        '<div class="pu-row">' +
+        '<div class="pu-ic pu-' + x.col + x.spin + '">' + ldIco(x.ico) + '</div>' +
+        '<div class="pu-txt"><div class="pu-l1"><b>' + mgddEsc(x.name) + '</b><span class="pu-pill pu-p' + x.pc + '">' + mgddEsc(x.pill) + '</span></div>' +
+        (x.l3 ? '<div class="pu-l3">' + x.l3 + '</div>' : '') +
+        '</div>' + pw(true) + '</div>' + seg +
+        '</div></div>';
+    }
+    mgddPaint(this, PU_STYLES, html);
+  }
+}
+
+const PU_STYLES = '<style>' +
+  '.puq{--pu-t1:var(--primary-text-color,#1c1c1e);--pu-t2:var(--secondary-text-color,#6b6f76);--pu-n:rgba(127,127,127,.1);' +
+  '--pu-b:#1F6FD1;--pu-bbg:#3B8BEB1f;--pu-p:#6D5AE6;--pu-pbg:#6D5AE61a;--pu-g:#0E9B6C;--pu-gbg:#1D9E751f;--pu-a:#BA7517;--pu-abg:#EF9F2729;' +
+  'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--pu-t1);font-variant-numeric:tabular-nums;container:pu/inline-size;}' +
+  '.puq.pu-dark{--pu-n:rgba(255,255,255,.08);--pu-b:#6AAAF5;--pu-bbg:#3B8BEB26;--pu-p:#8B7CF0;--pu-pbg:#6D5AE633;--pu-g:#3CC79A;--pu-gbg:#1D9E7526;--pu-a:#F2B45A;}' +
+  '.puq *{box-sizing:border-box;}' +
+  '.puq .pu{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--ha-card-border-color,var(--divider-color,rgba(127,127,127,.2)));' +
+  'border-radius:var(--ha-card-border-radius,12px);box-shadow:var(--ha-card-box-shadow,none);padding:12px 12px 12px 14px;cursor:pointer;-webkit-tap-highlight-color:transparent;outline:none;}' +
+  '.puq .pu:focus-visible{box-shadow:0 0 0 2px var(--pu-g);}' +
+  '.puq .pu-row{display:flex;align-items:center;gap:12px;}' +
+  '.puq .pu-ic{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;flex:none;background:var(--pu-n);color:var(--pu-t2);--mdc-icon-size:24px;}' +
+  '.puq .pu-ic ha-icon{width:24px;height:24px;display:inline-flex;}' +
+  '.puq .pu-g{background:var(--pu-gbg);color:var(--pu-g);}.puq .pu-b{background:var(--pu-bbg);color:var(--pu-b);}' +
+  '.puq .pu-p{background:var(--pu-pbg);color:var(--pu-p);}.puq .pu-a{background:var(--pu-abg);color:var(--pu-a);}' +
+  '.puq .pu-spin ha-icon{animation:pu-sp 2.4s linear infinite;}.puq .pu-fast ha-icon{animation-duration:.9s;}' +
+  '@keyframes pu-sp{to{transform:rotate(360deg);}}' +
+  '.puq .pu-txt{flex:1;min-width:0;}' +
+  '.puq .pu-l1{display:flex;align-items:center;gap:8px;min-width:0;}' +
+  '.puq .pu-l1 b{font-size:15px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.puq .pu-pill{display:inline-flex;align-items:center;font-size:11px;font-weight:650;border-radius:20px;padding:3px 8px;white-space:nowrap;flex:none;}' +
+  '.puq .pu-pg{color:var(--pu-g);background:var(--pu-gbg);}.puq .pu-pb{color:var(--pu-b);background:var(--pu-bbg);}.puq .pu-pp{color:var(--pu-p);background:var(--pu-pbg);}' +
+  '.puq .pu-l3{font-size:12.5px;color:var(--pu-t2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.puq .pu-l3 b{color:var(--pu-t1);font-weight:650;}.puq .pu-warn{color:var(--pu-a);font-weight:650;}' +
+  '.puq .pu-pw{flex:none;width:38px;height:38px;border-radius:50%;border:1px solid var(--divider-color,rgba(127,127,127,.2));background:var(--pu-n);color:var(--pu-t1);' +
+  'display:grid;place-items:center;padding:0;cursor:pointer;--mdc-icon-size:20px;-webkit-tap-highlight-color:transparent;}' +
+  '.puq .pu-pw ha-icon{width:20px;height:20px;display:inline-flex;}.puq .pu-pw.pu-on{color:var(--pu-g);}' +
+  '.puq .pu-pw:focus-visible,.puq .pu-seg button:focus-visible{outline:2px solid var(--pu-g);outline-offset:2px;}' +
+  '.puq .pu-seg{display:flex;gap:4px;margin-top:11px;background:var(--pu-n);border-radius:11px;padding:3px;}' +
+  '.puq .pu-seg button{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:5px;height:34px;border:0;border-radius:9px;background:transparent;' +
+  'color:var(--pu-t2);font:600 12.5px Inter,-apple-system,"Segoe UI",sans-serif;cursor:pointer;padding:0 4px;--mdc-icon-size:17px;-webkit-tap-highlight-color:transparent;}' +
+  '.puq .pu-seg button ha-icon{width:17px;height:17px;display:inline-flex;flex:none;}' +
+  '.puq .pu-seg button span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.puq .pu-seg .pu-sel{background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--pu-t1);box-shadow:0 1px 2px rgba(0,0,0,.22);}' +
+  '.puq .pu-seg .pu-sg ha-icon{color:var(--pu-g);}.puq .pu-seg .pu-sb ha-icon{color:var(--pu-b);}.puq .pu-seg .pu-sp ha-icon{color:var(--pu-p);}' +
+  // spento / non raggiungibile: stesse misure della tile nativa di HA
+  '.puq .pu.pu-z{height:56px;padding:0 10px;display:flex;align-items:center;gap:10px;}' +
+  '.puq .pu-zi{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;flex:none;background:var(--pu-n);color:var(--pu-t2);--mdc-icon-size:24px;}' +
+  '.puq .pu-zi ha-icon{width:24px;height:24px;display:inline-flex;}' +
+  '.puq .pu-zn{font-size:14px;font-weight:500;letter-spacing:.1px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.puq .pu-zs{font-size:12px;color:var(--pu-t2);line-height:16px;letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.puq .pu-z .pu-pw{width:34px;height:34px;--mdc-icon-size:18px;}.puq .pu-z .pu-pw ha-icon{width:18px;height:18px;}' +
+  // molto stretto: i segmenti tengono solo la scritta
+  '@container pu (max-width:300px){.puq .pu-seg button ha-icon{display:none;}}' +
+  '@media (prefers-reduced-motion: reduce){.puq .pu-spin ha-icon{animation:none;}}' +
+  '</style>';
+
+customElements.define('casa-mgdd-purifier-tile-card', PurifierTileCard);
+window.customCards.push({
+  type: 'casa-mgdd-purifier-tile-card',
+  name: 'Casa MGDD Tile purificatore',
+  description: 'Tile di un purificatore d\u2019aria (entita\u2019 fan): modalita\u2019 in pillola, filtri o timer, tasto accensione e segmenti delle modalita\u2019. Opzioni: name, modes, filters, filter_alert, timer, auto_plus.',
 });

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco tile purificatori</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+<style>
+  body { margin: 0; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  body.dark { background: #111; --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --divider-color: rgba(225,225,225,.12); }
+  body.light { background: #f3f4f5; --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272; --divider-color: rgba(0,0,0,.12); }
+  .bar { display: flex; gap: 6px; padding: 10px 16px; font-size: 12px; background: #222; color: #ddd; align-items: center; }
+  .bar button { font: inherit; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 16px; }
+  .wrap.narrow { max-width: 360px; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--secondary-text-color); margin: 18px 0 6px; }
+  #log { font: 12px monospace; color: var(--secondary-text-color); margin: 16px; white-space: pre-wrap; }
+  ha-icon { display: inline-flex; align-items: center; justify-content: center; }
+  ha-icon i { font-size: var(--mdc-icon-size, 24px); line-height: 1; }
+</style>
+</head>
+<body class="dark">
+<div class="bar">
+  <button id="dark">Chiaro / scuro</button>
+  <button id="narrow">Largo / stretto</button>
+  <span>I comandi cambiano lo stato finto dopo 600 ms (l'ultimo caso fallisce)</span>
+</div>
+<div class="wrap" id="host"></div>
+<div id="log"></div>
+<script>
+  window.customCards = window.customCards || [];
+  customElements.define('ha-icon', class extends HTMLElement {
+    static get observedAttributes() { return ['icon']; }
+    connectedCallback() { this._draw(); }
+    attributeChangedCallback() { this._draw(); }
+    _draw() { this.innerHTML = '<i class="mdi mdi-' + (this.getAttribute('icon') || '').replace('mdi:', '') + '"></i>'; }
+  });
+</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const S = (v, attrs) => ({ state: String(v), last_changed: new Date().toISOString(), last_updated: new Date().toISOString(), attributes: attrs || {} });
+  const SOG = { entity: 'fan.purificatore_soggiorno', name: 'Soggiorno', timer: 'sensor.purificatore_soggiorno_time_remaining', auto_plus: 'switch.purificatore_soggiorno_auto_plus',
+    filters: [{ entity: 'sensor.purificatore_soggiorno_nanoprotect_filter', name: 'Filtro' }, { entity: 'sensor.purificatore_soggiorno_pre_filter', name: 'pre-filtro', avviso: 'Pulisci il pre-filtro' }] };
+  const CAM = { entity: 'fan.eleva_300x_air_purifier', name: 'Camera', filters: [{ entity: 'sensor.eleva_300x_air_purifier_durata_del_filtro', name: 'Filtro' }] };
+  function base() {
+    return {
+      'fan.purificatore_soggiorno': S('on', { preset_modes: ['auto', 'medium', 'turbo', 'sleep'], preset_mode: 'auto', percentage: null, percentage_step: 20, friendly_name: 'Purificatore Soggiorno' }),
+      'fan.eleva_300x_air_purifier': S('on', { preset_modes: ['auto', 'sleep'], preset_mode: 'auto', percentage: null, percentage_step: 25, friendly_name: 'Eleva 300X Air Purifier' }),
+      'sensor.purificatore_soggiorno_time_remaining': S(0),
+      'switch.purificatore_soggiorno_auto_plus': S('on'),
+      'sensor.purificatore_soggiorno_nanoprotect_filter': S(20, { time_remaining: '1914' }),
+      'sensor.purificatore_soggiorno_pre_filter': S(28, { time_remaining: '201' }),
+      'sensor.eleva_300x_air_purifier_durata_del_filtro': S(91),
+    };
+  }
+  const fan = (s, id, state, attrs) => { s[id] = S(state, Object.assign({}, s[id].attributes, attrs || {})); return s; };
+  const CASI = [
+    ['Soggiorno, Auto+ (oggi)', SOG, () => {}],
+    ['Soggiorno, Auto senza Auto+', SOG, (s) => { s['switch.purificatore_soggiorno_auto_plus'] = S('off'); }],
+    ['Soggiorno, Turbo', SOG, (s) => fan(s, SOG.entity, 'on', { preset_mode: 'turbo', percentage: 100 })],
+    ['Soggiorno, Medio', SOG, (s) => fan(s, SOG.entity, 'on', { preset_mode: 'medium', percentage: 60 })],
+    ['Soggiorno, Notte con timer 3 h', SOG, (s) => { fan(s, SOG.entity, 'on', { preset_mode: 'sleep' }); s[SOG.timer] = S(180); }],
+    ['Soggiorno, pre-filtro da pulire', SOG, (s) => { s['sensor.purificatore_soggiorno_pre_filter'] = S(4, { time_remaining: '29' }); }],
+    ['Soggiorno, velocita fissa senza preset', SOG, (s) => fan(s, SOG.entity, 'on', { preset_mode: null, percentage: 40 })],
+    ['Camera, Auto (oggi)', CAM, () => {}],
+    ['Camera, Notte', CAM, (s) => fan(s, CAM.entity, 'on', { preset_mode: 'sleep' })],
+    ['Camera, filtro da cambiare', CAM, (s) => { s['sensor.eleva_300x_air_purifier_durata_del_filtro'] = S(6); }],
+    ['Camera, spento', CAM, (s) => fan(s, CAM.entity, 'off')],
+    ['Camera, non raggiungibile', CAM, (s) => { s[CAM.entity] = S('unavailable'); }],
+    ['Nome lungo, comando che fallisce', Object.assign({}, CAM, { name: 'Purificatore Camera Matrimoniale' }), () => {}, true],
+  ];
+  let dark = true;
+  const cards = [];
+  const host = document.getElementById('host');
+  const log = (t) => { document.getElementById('log').textContent = new Date().toLocaleTimeString() + '  ' + t + '\n' + document.getElementById('log').textContent; };
+  function hassFor(x) {
+    return {
+      states: x.states, themes: { darkMode: dark },
+      callService: (dom, svc, data) => {
+        log(dom + '.' + svc + ' ' + JSON.stringify(data));
+        if (x.fail) return new Promise((_, rej) => setTimeout(() => rej(new Error('500 Internal Server Error')), 600));
+        return new Promise((res) => setTimeout(() => {
+          const id = data.entity_id;
+          if (svc === 'turn_off') fan(x.states, id, 'off');
+          if (svc === 'turn_on') fan(x.states, id, 'on');
+          if (svc === 'set_preset_mode') fan(x.states, id, 'on', { preset_mode: data.preset_mode, percentage: null });
+          x.c.hass = hassFor(x);
+          res();
+        }, 600));
+      },
+    };
+  }
+  CASI.forEach(([titolo, cfg, fn, fail]) => {
+    const h2 = document.createElement('h2');
+    h2.textContent = titolo;
+    host.appendChild(h2);
+    const c = document.createElement('casa-mgdd-purifier-tile-card');
+    c.setConfig(cfg);
+    host.appendChild(c);
+    const states = base();
+    fn(states);
+    cards.push({ c, states, fail });
+  });
+  function push() { cards.forEach((x) => { x.c.hass = hassFor(x); }); }
+  push();
+  document.addEventListener('hass-more-info', (e) => log('more-info -> ' + e.detail.entityId));
+  document.addEventListener('hass-notification', (e) => log('notifica -> ' + e.detail.message));
+  document.getElementById('dark').onclick = () => { dark = !dark; document.body.className = dark ? 'dark' : 'light'; push(); };
+  document.getElementById('narrow').onclick = () => host.classList.toggle('narrow');
+</script>
+</body>
+</html>
