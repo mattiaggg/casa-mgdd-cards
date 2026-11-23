@@ -12,7 +12,7 @@
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card.
  *
- * Version: 1.103.0
+ * Version: 1.103.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -16455,7 +16455,7 @@ class LaundryTileCard extends HTMLElement {
       '<div class="lt-row">' +
       '<div class="lt-ic lt-' + x.c + (x.spin ? ' lt-spin' : '') + '">' + ldIco(x.ico) + '</div>' +
       '<div class="lt-txt">' +
-      '<div class="lt-l1"><b>' + mgddEsc(this.config.name) + '</b><span class="lt-pill lt-p' + x.c + '"><i></i>' + mgddEsc(x.pill) + '</span></div>' +
+      '<div class="lt-l1"><b>' + mgddEsc(this.config.name) + '</b><span class="lt-pill lt-p' + x.c + '">' + mgddEsc(x.pill) + '</span></div>' +
       (x.l2 ? '<div class="lt-l2">' + x.l2 + '</div>' : '') +
       (x.l3 ? '<div class="lt-l3">' + x.l3 + '</div>' : '') +
       '</div>' +
@@ -16488,8 +16488,7 @@ const LT_STYLES = '<style>' +
   '.ltq .lt-txt{flex:1;min-width:0;}' +
   '.ltq .lt-l1{display:flex;align-items:center;gap:8px;min-width:0;}' +
   '.ltq .lt-l1 b{font-size:15px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-  '.ltq .lt-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:650;border-radius:20px;padding:3px 8px;white-space:nowrap;flex:none;}' +
-  '.ltq .lt-pill i{width:6px;height:6px;border-radius:50%;background:currentColor;}' +
+  '.ltq .lt-pill{display:inline-flex;align-items:center;font-size:11px;font-weight:650;border-radius:20px;padding:3px 8px;white-space:nowrap;flex:none;}' +
   '.ltq .lt-pb{color:var(--lt-b2);background:var(--lt-bbg);}.ltq .lt-pp{color:var(--lt-p);background:var(--lt-pbg);}.ltq .lt-pg{color:var(--lt-g2);background:var(--lt-gbg);}' +
   '.ltq .lt-pa{color:var(--lt-a2);background:var(--lt-abg);}.ltq .lt-pr{color:var(--lt-r2);background:var(--lt-rbg);}.ltq .lt-pn{color:var(--lt-t2);background:var(--lt-n);}' +
   '.ltq .lt-l2{font-size:13px;font-weight:550;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
