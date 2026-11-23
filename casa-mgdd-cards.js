@@ -12,7 +12,7 @@
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card.
  *
- * Version: 1.102.1
+ * Version: 1.102.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -16348,12 +16348,6 @@ function ltRiassuntoMacchina(hass) {
   return out.join(' \u00b7 ');
 }
 
-// "10 h 01", "3 giorni"
-function ltDa(ms) {
-  const m = Math.max(0, ms / 60000);
-  return m >= 48 * 60 ? Math.floor(m / 1440) + ' giorni' : lpDur(m);
-}
-
 // "alle <b>16:48</b>", "domani alle <b>03:30</b>"
 function ltAlle(d, now) {
   return lpAlle(d, now).replace(/(\d\d:\d\d)$/, '<b>$1</b>');
@@ -16438,14 +16432,9 @@ class LaundryTileCard extends HTMLElement {
     const alerts = Number(h.states[LT_ALERTS] ? h.states[LT_ALERTS].state : 0) || 0;
     const fase = LP_FASI[m.fase];
 
-    // scollegata: gli altri sensori restano fermi sull'ultimo valore, non valgono
-    if (!m.conn) {
-      return {
-        c: 'n', ico: 'washing-machine', pill: 'Disconnessa',
-        l2: m.connDa ? 'da ' + ltDa(now - m.connDa) : '',
-        l3: salvate ? 'Pronto da inviare: <b>' + mgddEsc(lpRiassunto(salvate)) + '</b>' : 'Accendila e premi Remote Start per comandarla da qui',
-      };
-    }
+    // scollegata: gli altri sensori restano fermi sull'ultimo valore, non valgono.
+    // Solo nome e stato, nessun altro dettaglio (richiesta dell'utente, 23/11/2026).
+    if (!m.conn) return { c: 'n', ico: 'washing-machine', pill: 'Disconnessa' };
     if (m.stato === 'Alarm' || alerts > 0) {
       return { c: 'r', ico: 'washing-machine-alert', pill: 'Intervento richiesto', l2: macchina, l3: 'Controlla la lavatrice o la app AEG' };
     }
