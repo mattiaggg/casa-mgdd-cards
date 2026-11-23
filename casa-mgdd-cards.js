@@ -12,7 +12,7 @@
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card.
  *
- * Version: 1.103.2
+ * Version: 1.103.3
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -12659,14 +12659,14 @@ const LD_PAGINA = {
     // Pila: la carica di adesso piena, a tratteggio fin dove arriva oggi secondo la simulazione.
     const sg = LD_PAGINA._simGiorni.call(this)[ldIso(now)];
     const pct = soc == null ? null : Math.max(0, Math.min(100, Math.round(soc)));
-    const maxOggi = sg && pct != null && sg.max > pct ? sg.max : null;
-    const parola = pct == null ? 'Non disponibile' : pct < 5 ? 'Vuota' : pct < 20 ? 'Bassa' : pct < 50 ? 'A metà' : pct < 90 ? 'Carica' : 'Piena';
+    const maxOggi = sg && pct != null && sg.max >= pct + 5 ? sg.max : null; // sotto 5 punti il tratteggio non si vedrebbe
+    const parola = pct == null ? 'Non disponibile' : pct < 5 ? 'Vuota' : pct < 30 ? 'Bassa' : pct < 70 ? 'A metà' : pct < 95 ? 'Carica' : 'Piena';
     const mk = maxOggi == null ? '' : '<div class="ldp-pila-mk' + (maxOggi > 65 ? ' ldp-mk-r' : maxOggi < 35 ? ' ldp-mk-l' : '') + '" style="left:' + maxOggi + '%"><span>max oggi ' + maxOggi + '%' +
       (sg.ora != null ? ' · ' + mgddPad2(sg.ora) + ':00' : '') + '</span></div>';
     if (casa != null) fatti += fact('La casa sta usando', String(casa.toFixed(2)).replace('.', ',') + ' kW');
     const sinistra = '<div class="ldp-now"><div class="ld-hd" style="margin:0"><span class="ld-lbl">Batteria adesso</span>' + pill + '</div>' +
-      '<div class="ldp-lv ldp-l' + tono + '"><b>' + (pct == null ? '—' : pct + '%') + '</b><span class="ldp-parola">' + parola + '</span>' +
-      (pct == null ? '' : '<span class="ld-tiny">' + ldNum((pct / 100) * cap) + ' di ' + ldNum(cap) + ' kWh</span>') + '</div>' +
+      '<div class="ldp-lv ldp-l' + tono + '"><b>' + (pct == null ? '—' : pct + '%') + '</b><span class="ldp-parola">' + parola + '</span></div>' +
+      (pct == null ? '' : '<div class="ld-tiny ldp-lv-k">' + ldNum((pct / 100) * cap) + ' di ' + ldNum(cap) + ' kWh</div>') +
       '<div class="ldp-pila ldp-l' + tono + (maxOggi == null ? '' : ' ldp-pila-con') + '"><div class="ldp-pila-in">' +
       (maxOggi == null ? '' : '<div class="ldp-pila-max" style="width:' + maxOggi + '%"></div>') +
       '<div class="ldp-pila-f" style="width:' + (pct || 0) + '%"></div>' + mk + '</div></div>' +
@@ -12694,12 +12694,13 @@ const LD_PAGINA = {
         if (fonti[i] === 'S' && fonti[i - 1] !== 'S') {
           let j = i;
           while (fonti[j] === 'S') j++;
-          svg += '<rect x="' + i + '" y="0" width="' + (j - i) + '" height="' + Z + '" fill="var(--ld-a)" fill-opacity=".13"/>';
+          svg += '<rect x="' + i + '" y="0" width="' + (j - i) + '" height="' + Z + '" fill="var(--ld-a)" fill-opacity=".035"/>' +
+            '<rect x="' + i + '" y="0" width="' + (j - i) + '" height="2.5" fill="var(--ld-a)"/>';
         }
       }
       for (let i = 0; i < N; i++) {
         const e = Number(enelOre[i]) || 0;
-        if (e > 0.005) svg += '<rect x="' + (i + 0.1) + '" y="' + (Z + 2) + '" width=".8" height="' + ((e / enMax) * (98 - Z - 2)).toFixed(2) + '" fill="var(--ld-r)"/>';
+        if (e > 0.005) svg += '<rect x="' + (i + 0.2) + '" y="' + (Z + 2) + '" width=".6" height="' + ((e / enMax) * (98 - Z - 2)).toFixed(2) + '" fill="var(--ld-r)" fill-opacity=".8"/>';
       }
       const pts = [];
       for (let i = 0; i < N; i++) pts.push((i + 0.5) + ',' + yS(sv(i)).toFixed(2));
@@ -12731,7 +12732,11 @@ const LD_PAGINA = {
       }
       if (esa) {
         const iE = Math.round((new Date(esa).getTime() - t0) / 3600e3);
-        if (iE > iN && iE < N && Math.abs(iE - iP) > 8) over += tag(iE, Z, 'ld-tr ldp-cv-zero', 'vuota ' + ldQuando(new Date(esa), now));
+        if (iE > iN && iE < N && Math.abs(iE - iP) > 8) {
+          const xe = px(iE);
+          over += '<i class="ldp-cv-dot ldp-cv-dz" style="left:' + xe.toFixed(2) + '%;top:' + Z + '%"></i>' +
+            '<span class="ldp-cv-tag ld-tr ldp-cv-zero' + (xe > 75 ? ' ldp-cv-zr' : '') + '" style="left:' + xe.toFixed(2) + '%;top:' + Z + '%">vuota ' + ldQuando(new Date(esa), now) + '</span>';
+        }
       }
       // un giorno corto (oggi, dalla sera) su telefono perde il nome del giorno e l'unità
       const col = (g, body) => '<div class="' + (g.n < 16 ? 'ldp-cv-s' : '') + '" style="flex:' + g.n + ' 1 0">' + body + '</div>';
@@ -12739,7 +12744,7 @@ const LD_PAGINA = {
       const piede = gg.map((g) => col(g, g.enel < 0.05 ? '<b class="ld-tg">0</b><small>da Enel</small>'
         : '<b class="ld-tr">' + ldNum(g.enel) + '<span class="ldp-cv-x"> kWh</span></b><small>da Enel</small>')).join('');
       destra = '<div class="ld-hd"><span class="ld-lbl">Batteria nei prossimi giorni</span><div class="ldp-leg"><span><i class="ldp-s-bat"></i>carica</span>' +
-        '<span><i class="ldp-s-sole" style="opacity:.45"></i>ore di sole</span><span><i class="ldp-s-enel"></i>kWh da Enel</span></div></div>' +
+        '<span><i class="ldp-s-sole"></i>ore di sole</span><span><i class="ldp-s-enel"></i>kWh da Enel</span></div></div>' +
         '<div class="ldp-cv-row ldp-cv-d">' + testa + '</div>' +
         '<div class="ldp-cv"><svg viewBox="0 0 ' + N + ' 100" preserveAspectRatio="none">' + svg + '</svg>' +
         (px(iP) < 14 && sv(iP) > sv(iN) ? '' : '<span class="ldp-cv-y" style="top:' + yS(yMax) + '%">' + yMax + '%</span>') + over + '</div>' +
@@ -12866,12 +12871,12 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   // batteria
   '.ldq .ldp-bat{display:grid;grid-template-columns:300px minmax(0,1fr);padding:0;overflow:hidden;}' +
   '.ldq .ldp-now{padding:18px 20px;border-right:1px solid var(--ld-div);display:flex;flex-direction:column;}' +
-  '.ldq .ldp-next{padding:18px 20px 16px;min-width:0;}' +
+  '.ldq .ldp-next{padding:18px 20px 16px;min-width:0;display:flex;flex-direction:column;}' +
   '.ldq .ldp-lv{display:flex;align-items:baseline;gap:10px;margin:12px 0 0;--ldp-c:var(--ld-t2);--ldp-ct:var(--ld-t1);}' +
   '.ldq .ldp-lr{--ldp-c:var(--ld-r);--ldp-ct:var(--ld-r2);}.ldq .ldp-la{--ldp-c:var(--ld-a);--ldp-ct:var(--ld-a2);}.ldq .ldp-lg{--ldp-c:var(--ld-g);--ldp-ct:var(--ld-g2);}' +
   '.ldq .ldp-lv b{font-size:44px;font-weight:750;letter-spacing:-1.5px;line-height:1;}' +
   '.ldq .ldp-parola{font-size:20px;font-weight:750;letter-spacing:-.3px;color:var(--ldp-ct);}' +
-  '.ldq .ldp-lv .ld-tiny{margin-left:auto;white-space:nowrap;}' +
+  '.ldq .ldp-parola{white-space:nowrap;}.ldq .ldp-lv-k{margin-top:4px;}' +
   '.ldq .ldp-pila{position:relative;margin:12px 9px 4px 0;height:36px;border:2px solid var(--ld-t2);border-radius:9px;padding:3px;}' +
   '.ldq .ldp-pila::after{content:"";position:absolute;right:-8px;top:9px;width:5px;height:14px;border-radius:0 3px 3px 0;background:var(--ld-t2);}' +
   '.ldq .ldp-pila-con{margin-bottom:24px;}' +
@@ -12890,15 +12895,16 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   // curva della batteria nei prossimi giorni
   '.ldq .ldp-cv-row{display:flex;}.ldq .ldp-cv-row>div{min-width:0;overflow:hidden;white-space:nowrap;padding:0 6px;}' +
   '.ldq .ldp-cv-d b{font-size:13px;font-weight:650;}' +
-  '.ldq .ldp-cv-e>div{text-align:right;}.ldq .ldp-cv-e b{display:block;font-size:13px;font-weight:700;}.ldq .ldp-cv-e small{font-size:11px;color:var(--ld-t2);}' +
-  '.ldq .ldp-cv{position:relative;height:170px;margin:4px 0;}' +
+  '.ldq .ldp-cv-e>div{text-align:left;}.ldq .ldp-cv-e b{display:block;font-size:13px;font-weight:700;}.ldq .ldp-cv-e small{font-size:11px;color:var(--ld-t2);}' +
+  '.ldq .ldp-cv{position:relative;flex:1 1 170px;min-height:170px;margin:4px 0;}' +
   '.ldq .ldp-cv svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;color:var(--ld-t1);}' +
   '.ldq .ldp-cv-y{position:absolute;left:4px;transform:translateY(-50%);font-size:10.5px;color:var(--ld-t2);}' +
   '.ldq .ldp-cv-dot{position:absolute;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%;background:var(--ld-g);}' +
   '.ldq .ldp-cv-now{background:var(--ld-t1);box-shadow:0 0 0 3px var(--ld-bg);}' +
   '.ldq .ldp-cv-tag{position:absolute;transform:translate(-50%,-150%);font-size:11.5px;font-weight:650;white-space:nowrap;}' +
   '.ldq .ldp-cv-tag.ldp-cv-r{transform:translate(calc(-100% - 8px),-50%);}.ldq .ldp-cv-tag.ldp-cv-l{transform:translate(8px,-150%);}' +
-  '.ldq .ldp-cv-zero{transform:translate(-4px,-140%);}' +
+  '.ldq .ldp-cv-zero{transform:translate(4px,-130%);background:var(--ld-bg);padding:1px 6px;border-radius:6px;}.ldq .ldp-cv-zero.ldp-cv-zr{transform:translate(calc(-100% - 4px),-130%);}' +
+  '.ldq .ldp-cv-dz{background:var(--ld-r);box-shadow:0 0 0 2px var(--ld-bg);}' +
   // righe dei riquadri in fondo
   '.ldq .ldp-row{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--ld-div);font-size:13.5px;}' +
   '.ldq .ldp-row:first-of-type{border-top:none;}.ldq .ldp-row ha-icon{color:var(--ld-t2);}' +
@@ -12919,7 +12925,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '@container (max-width:900px){.ldq .ldp-bot{grid-template-columns:minmax(0,1fr);}.ldq .ldp-bat{grid-template-columns:minmax(0,1fr);}' +
   '.ldq .ldp-now{border-right:none;border-bottom:1px solid var(--ld-div);}.ldq .ldp-facts{margin-top:0;}}' +
   '@container (max-width:640px){.ldq .ldp{padding:8px;}.ldq .ldp-week{grid-template-columns:repeat(3,minmax(0,1fr));}.ldq .ldp-hero h2{font-size:24px;}' +
-  '.ldq .ldp-cv-row>div{padding:0 2px;}.ldq .ldp-cv-s .ldp-cv-x{display:none;}.ldq .ldp-cv-d b,.ldq .ldp-cv-e b{font-size:11.5px;}.ldq .ldp-cv-e small{display:none;}.ldq .ldp-cv{height:140px;}.ldq .ldp-leg{display:none;}}' +
+  '.ldq .ldp-cv-row>div{padding:0 2px;}.ldq .ldp-cv-s .ldp-cv-x{display:none;}.ldq .ldp-cv-d b,.ldq .ldp-cv-e b{font-size:11.5px;}.ldq .ldp-cv-e small{display:none;}.ldq .ldp-cv{flex-basis:140px;min-height:140px;}.ldq .ldp-leg{display:none;}}' +
   '</style>');
 
 customElements.define('casa-mgdd-laundry-card', LaundryCard);
