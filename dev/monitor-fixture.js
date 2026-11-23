@@ -193,6 +193,8 @@
       ['ciabatta', 'Ciabatta soggiorno', 4, 4, 9],
       ['onedrive', 'OneDrive', 3, 3, 62],
       ['daikin', 'Daikin zona giorno ClimateControl', 2, 30, 1],
+      ['portagarage', 'Sensore porta garage', 3, 3, 12 / 1440],
+      ['presalav', 'Presa lavanderia', 1, 6, 3 / 24],
     ];
     un.forEach((u) => {
       const ids = [];

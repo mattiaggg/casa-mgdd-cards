@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.104.2
+ * Version: 1.104.3
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13092,6 +13092,17 @@ const MON_DEFAULTS = {
   },
   // batterie da non contare: la Powerwall e' un accumulo, i telefoni oscillano
   battery_exclude: 'powerwall|iphone',
+  // Entita' appena diventate non disponibili: segnalate subito (priorita' media,
+  // pillola, striscia in testa) per `hours` ore dalla caduta. Fuori i domini di
+  // configurazione e le entita' che cadono di continuo per natura (`exclude`,
+  // regex su entity_id e nome del dispositivo).
+  unavailable_watch: {
+    hours: 24,
+    exclude_domains: ['select', 'button', 'number', 'update', 'text', 'time', 'date', 'datetime', 'image',
+      'notify', 'event', 'scene', 'conversation', 'stt', 'tts', 'ai_task', 'input_button', 'wake_word', 'tag',
+      'automation'], // le automazioni non disponibili hanno gia' la loro voce ALTA
+    exclude: 'iphone|ipad|dreamebot',
+  },
 };
 
 const MON_TH = {
@@ -13225,6 +13236,7 @@ class MonitorCard extends HTMLElement {
       hosts: c.hosts || MON_DEFAULTS.hosts,
       access: c.access || MON_DEFAULTS.access,
       battery_exclude: c.battery_exclude != null ? c.battery_exclude : MON_DEFAULTS.battery_exclude,
+      unavailable_watch: merge('unavailable_watch'),
       thresholds: Object.assign({}, MON_TH, c.thresholds || {}),
     };
     this._scan = null;
@@ -13402,7 +13414,9 @@ class MonitorCard extends HTMLElement {
 
   _maybeScan() {
     const now = Date.now();
-    if (this._scan && now - this._scanAt < 30000) return;
+    // ogni 10 s: un'entita' che cade deve comparire subito. Scorrere ~1600
+    // stati costa pochi millisecondi.
+    if (this._scan && now - this._scanAt < 10000) return;
     if (!this._hass || !this._hass.states) return;
     this._scanAt = now;
     try {
@@ -13410,6 +13424,88 @@ class MonitorCard extends HTMLElement {
     } catch (e) {
       this._scan = null;
     }
+  }
+
+  // Entita' cadute da poco, raggruppate per dispositivo.
+  //
+  // "Da quando" non si puo' prendere da last_changed e basta: a ogni riavvio
+  // di HA tutte le entita' non disponibili ripartono con last_changed = ora
+  // del riavvio, e quelle morte da giorni sembrerebbero appena cadute. Quindi
+  // la card ricorda nel browser (localStorage) da quando ha visto ciascuna
+  // entita' non disponibile, e last_changed serve solo la prima volta.
+  // Limite: in un browser che non ha mai aperto la vista, subito dopo un
+  // riavvio, le vecchie compaiono come nuove finche' non passano `hours` ore.
+  _freshUnav(now, unav, groups, byDev, devName) {
+    const W = this.config.unavailable_watch || {};
+    const win = (W.hours || 24) * 3600000;
+    const xdom = W.exclude_domains || [];
+    let wre = null;
+    try {
+      wre = W.exclude ? new RegExp(W.exclude, 'i') : null;
+    } catch (e) {
+      wre = null;
+    }
+    const KEY = 'mgdd-monitor-unav-v1';
+    let mem = MonitorCard._unavMem;
+    if (!mem) {
+      try {
+        mem = JSON.parse(localStorage.getItem(KEY) || '{}') || {};
+      } catch (e) {
+        mem = {};
+      }
+    }
+    const st = this._hass.states;
+    const ents = this._hass.entities || {};
+    const next = {};
+    const out = {};
+    unav.forEach((id) => {
+      const lc = Date.parse(st[id].last_changed);
+      const since = mem[id] != null ? mem[id] : isNaN(lc) ? now : lc;
+      next[id] = since;
+      const dom = id.slice(0, id.indexOf('.'));
+      if (xdom.indexOf(dom) >= 0) return;
+      const did = ents[id] && ents[id].device_id;
+      const dn = did ? devName(did) : '';
+      if (wre && (wre.test(id) || (dn && wre.test(dn)))) return;
+      if (now - since > win) return;
+      const k = did || id;
+      const g = out[k] || (out[k] = { did: did, name: dn || (st[id].attributes || {}).friendly_name || id, ids: [], since: 0 });
+      g.ids.push(id);
+      if (since > g.since) g.since = since;
+    });
+    MonitorCard._unavMem = next;
+    try {
+      localStorage.setItem(KEY, JSON.stringify(next));
+    } catch (e) {
+      /* storage pieno o bloccato: resta la memoria della pagina */
+    }
+    return Object.keys(out)
+      .map((k) => {
+        const g = out[k];
+        const g2 = g.did ? groups[g.did] : null;
+        g.all = !!g.did && !!g2 && g2.ids.length >= (byDev[g.did] || []).length;
+        return g;
+      })
+      .sort((a, b) => b.since - a.since);
+  }
+
+  // "Sensore temperatura bagno Batteria" -> "Batteria" quando il dispositivo e' gia' nel titolo
+  _short(id, dev) {
+    let n = String(this._name(id));
+    if (dev && n.toLowerCase().indexOf(dev.toLowerCase()) === 0) n = n.slice(dev.length).trim();
+    return n || id;
+  }
+
+  _freshBanner() {
+    const sc = this._scan;
+    if (!sc || !sc.fresh || !sc.fresh.length) return '';
+    const now = Date.now();
+    const f = sc.fresh;
+    const list = f.slice(0, 4).map((g) => mgddEsc(g.name) + ' <span class="w">da ' + monDur(now - g.since) + '</span>').join(' · ') +
+      (f.length > 4 ? ' · e altri ' + (f.length - 4) : '');
+    return '<button type="button" class="mn-alert" data-nav="manutenzione"><i></i><span class="t">' +
+      (f.length === 1 ? 'Non disponibile da poco' : f.length + ' dispositivi non disponibili da poco') +
+      '</span><span class="d">' + list + '</span></button>';
   }
 
   _doScan(now) {
@@ -13558,7 +13654,10 @@ class MonitorCard extends HTMLElement {
       .map((d) => ({ d: d, n: unavDom[d] }))
       .sort((a, b) => b.n - a.n);
 
+    const fresh = this._freshUnav(now, unav, groups, byDev, devName);
+
     return {
+      fresh: fresh,
       at: now,
       total: total,
       domains: Object.keys(domains).length,
@@ -13795,7 +13894,24 @@ class MonitorCard extends HTMLElement {
       add(lvl, 'Batteria ' + b.name + ' al ' + monNum(b.val) + ' %',
         lvl === 'a' ? 'Da cambiare subito.' : lvl === 'm' ? 'Da cambiare a breve.' : 'Sotto il ' + T.battery_low + ' %: da tenere d’occhio.', b.id);
     });
-    const muti = sc.devRows.filter((r) => r.all && r.verdict !== 'atteso');
+    // appena cadute: priorita' media, una voce per dispositivo (al massimo 6)
+    const fr = sc.fresh || [];
+    const shownF = fr.length > 6 ? fr.slice(0, 5) : fr;
+    shownF.forEach((g) => {
+      const names = g.ids.map((id) => this._short(id, g.did ? g.name : ''));
+      add('m', g.all || !g.did ? '«' + g.name + '» non disponibile' : '«' + g.name + '»: ' + g.ids.length + (g.ids.length === 1 ? ' entità non disponibile' : ' entità non disponibili'),
+        'Da ' + monDur(now - g.since) + (g.did ? ' · ' + names.slice(0, 3).join(', ') + (names.length > 3 ? ' e altre ' + (names.length - 3) : '') : '') + '.',
+        g.ids[0]);
+    });
+    if (fr.length > 6) {
+      const rest = fr.slice(5);
+      add('m', 'Altri ' + rest.length + ' dispositivi non disponibili da poco', rest.map((g) => g.name).join(', ') + '.', null,
+        c.page === 'manutenzione' ? null : { label: 'Vedi', nav: 'manutenzione' });
+    }
+    const freshDev = {};
+    fr.forEach((g) => g.did && (freshDev[g.name] = 1));
+    // i muti gia' segnalati come appena caduti non si ripetono qui
+    const muti = sc.devRows.filter((r) => r.all && r.verdict !== 'atteso' && !freshDev[r.name]);
     if (muti.length === 1) {
       const r = muti[0];
       add('b', 'Dispositivo «' + r.name + '» muto da ' + monDur(now - r.since),
@@ -14199,6 +14315,7 @@ class MonitorCard extends HTMLElement {
       (sc ? this._chip('Aggiornamenti', sc.upd.on.length + ' su ' + (sc.upd.on.length + sc.upd.off + sc.upd.unav.length), sc.upd.on.length ? 'da installare' : '', 'warn', null, 'update.* (conteggio)').replace('class="mn-chip"', 'class="mn-chip" data-nav="manutenzione"') : '');
     return (
       this._head('HA Monitor', sub, extra) +
+      this._freshBanner() +
       '<section class="mn-chips" aria-label="Versioni">' + chips + '</section>' +
       this._hostTiles() +
       '<section class="mn-grid g2">' + this._health() + this._backup() + '</section>' +
@@ -14468,6 +14585,7 @@ class MonitorCard extends HTMLElement {
 
     return (
       this._head('Rete e infrastruttura', 'UniFi · UPS · connettività · servizi esposti') +
+      this._freshBanner() +
       conn +
       unifi +
       '<section class="mn-grid g2">' + ups + speed + '</section>' +
@@ -14727,6 +14845,10 @@ const MON_STYLES =
   '.mn-p3c{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}' +
   '.mn-p3c .mn-card{padding:12px;gap:2px}.mn-p3c b{font-size:20px;font-weight:700}' +
   '.mn-pnav{display:flex;gap:8px}' +
+  '.mn .mn-alert{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:12px 16px;border-radius:12px;' +
+  'background:var(--warnbg);color:var(--warnt);border:1px solid var(--warn)}' +
+  '.mn-alert i{width:8px;height:8px;border-radius:50%;background:var(--warn);align-self:center}' +
+  '.mn-alert .t{font-size:14px;font-weight:600}.mn-alert .d{font-size:13px;color:var(--tx)}.mn-alert .w{color:var(--warnt)}' +
   '.mn .mn-pnav button{flex:1;min-height:44px;display:flex;align-items:center;justify-content:center;border-radius:12px;border:1px solid var(--gr);font-size:14px}' +
   '@media (max-width:600px){.mn-cnt{grid-template-columns:repeat(2,minmax(0,1fr))}.mn-bk3{grid-template-columns:repeat(3,minmax(0,1fr))}.mn-bk3 b{font-size:20px}}' +
   '</style>';
