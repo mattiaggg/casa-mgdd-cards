@@ -12,7 +12,7 @@
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card.
  *
- * Version: 1.103.1
+ * Version: 1.103.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -16392,7 +16392,9 @@ class LaundryTileCard extends HTMLElement {
 
     // scollegata: gli altri sensori restano fermi sull'ultimo valore, non valgono.
     // Solo nome e stato, nessun altro dettaglio (richiesta dell'utente, 23/11/2026).
-    if (!m.conn) return { c: 'n', ico: 'washing-machine', pill: 'Disconnessa' };
+    // A riposo (scollegata o spenta) la tile ha l'aspetto di una tile nativa, per non
+    // stonare con le vicine; pillola e righe di dettaglio restano agli stati attivi.
+    if (!m.conn) return { riposo: true, ico: 'washing-machine-off', pill: 'Disconnessa' };
     if (m.stato === 'Alarm' || alerts > 0) {
       return { c: 'r', ico: 'washing-machine-alert', pill: 'Intervento richiesto', l2: macchina, l3: 'Controlla la lavatrice o la app AEG' };
     }
@@ -16436,11 +16438,11 @@ class LaundryTileCard extends HTMLElement {
       if (m.rc === 'Temporary Locked') return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Sta eseguendo un comando, un attimo\u2026' };
       return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Premi Remote Start sulla lavatrice per programmarla' };
     }
-    // Off o stati non previsti
+    if (m.stato === 'Off') return { riposo: true, ico: 'washing-machine-off', pill: LP_STATI.Off || 'Spenta' };
+    // stati non previsti
     return {
       c: 'n', ico: 'washing-machine', pill: LP_STATI[m.stato] || m.stato,
       l2: salvate ? 'Ultime scelte: ' + mgddEsc(lpRiassunto(salvate)) : '',
-      l3: m.stato === 'Off' ? 'Accendila e premi Remote Start per programmarla' : '',
     };
   }
 
@@ -16449,6 +16451,14 @@ class LaundryTileCard extends HTMLElement {
     const now = this._now();
     const x = this._model(now);
     const dark = !!(this._hass.themes && this._hass.themes.darkMode);
+    if (x.riposo) {
+      mgddPaint(this, LT_STYLES, '<div class="ltq' + (dark ? ' lt-dark' : '') + '">' +
+        '<div class="lt lt-z" role="button" tabindex="0" aria-label="' + mgddEsc(this.config.name) + ': ' + mgddEsc(x.pill) + '">' +
+        '<div class="lt-zi">' + ldIco(x.ico) + '</div>' +
+        '<div class="lt-txt"><div class="lt-zn">' + mgddEsc(this.config.name) + '</div><div class="lt-zs">' + mgddEsc(x.pill) + '</div></div>' +
+        '</div></div>');
+      return;
+    }
     const pct = x.bar != null ? Math.min(100, Math.max(2, x.bar * 100)).toFixed(1) : null;
     const html = '<div class="ltq' + (dark ? ' lt-dark' : '') + '">' +
       '<div class="lt" role="button" tabindex="0" aria-label="' + mgddEsc(this.config.name) + ': ' + mgddEsc(x.pill) + '">' +
@@ -16498,6 +16508,12 @@ const LT_STYLES = '<style>' +
   'border-radius:11px;padding:8px 6px 8px 9px;font:650 12.5px Inter,-apple-system,"Segoe UI",sans-serif;cursor:pointer;--mdc-icon-size:16px;}' +
   '.ltq .lt-go ha-icon{width:16px;height:16px;display:inline-flex;}.ltq .lt-go ha-icon:first-child{color:var(--lt-p);}' +
   '.ltq .lt-go:focus-visible{outline:2px solid var(--lt-p);outline-offset:2px;}' +
+  // a riposo: stesse misure della tile nativa di HA (56 px, icona tonda 36 px, 14/12 px)
+  '.ltq .lt.lt-z{height:56px;padding:0 10px;display:flex;align-items:center;gap:10px;}' +
+  '.ltq .lt-zi{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;flex:none;background:var(--lt-n);color:var(--lt-t2);--mdc-icon-size:24px;}' +
+  '.ltq .lt-zi ha-icon{width:24px;height:24px;display:inline-flex;}' +
+  '.ltq .lt-zn{font-size:14px;font-weight:500;letter-spacing:.1px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.ltq .lt-zs{font-size:12px;color:var(--lt-t2);line-height:16px;letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
   '.ltq .lt-bar{height:4px;border-radius:2px;background:var(--lt-n);margin-top:11px;overflow:hidden;}' +
   '.ltq .lt-bar span{display:block;height:100%;border-radius:2px;background:var(--lt-b);}' +
   // telefono: il pulsante perde la scritta, cosi' nome e programma restano leggibili
