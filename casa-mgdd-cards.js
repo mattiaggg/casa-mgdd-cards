@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.104.3
+ * Version: 1.104.4
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13910,17 +13910,43 @@ class MonitorCard extends HTMLElement {
     }
     const freshDev = {};
     fr.forEach((g) => g.did && (freshDev[g.name] = 1));
-    // i muti gia' segnalati come appena caduti non si ripetono qui
-    const muti = sc.devRows.filter((r) => r.all && r.verdict !== 'atteso' && !freshDev[r.name]);
-    if (muti.length === 1) {
-      const r = muti[0];
-      add('b', 'Dispositivo «' + r.name + '» muto da ' + monDur(now - r.since),
-        'Tutte le sue ' + r.n + ' entità sono non disponibili.', r.ids[0]);
-    } else if (muti.length > 1) {
-      add('b', muti.length + ' dispositivi muti',
-        muti.slice(0, 4).map((r) => r.name).join(', ') +
-          (muti.length === 5 ? ' e un altro' : muti.length > 5 ? ' e altri ' + (muti.length - 4) : '') + ': tutte le entità non disponibili.',
-        null, c.page === 'manutenzione' ? null : { label: 'Vedi', nav: 'manutenzione' });
+    // Dispositivi del tutto muti (tutte le entita' non disponibili): restano
+    // MEDIA finche' non tornano, non solo nelle prime 24 h. Oltre `silent_days`
+    // (30) passano a BASSA come "da rimuovere?", per non tenere la pillola
+    // accesa per sempre su dispositivi abbandonati. Il "da quando" viene dalla
+    // memoria del browser (vedi _freshUnav): last_changed riparte a ogni riavvio.
+    // I muti gia' segnalati come appena caduti non si ripetono qui.
+    const W = c.unavailable_watch || {};
+    let wre = null;
+    try {
+      wre = W.exclude ? new RegExp(W.exclude, 'i') : null;
+    } catch (e) {
+      wre = null;
+    }
+    const mem = MonitorCard._unavMem || {};
+    const muti = sc.devRows
+      .filter((r) => r.all && !freshDev[r.name] && !(wre && (wre.test(r.name) || r.ids.some((id) => wre.test(id)))))
+      .map((r) => {
+        const s = Math.min.apply(null, r.ids.map((id) => (mem[id] != null ? mem[id] : r.since)));
+        return Object.assign({}, r, { since: isFinite(s) ? s : r.since });
+      })
+      .sort((a, b) => b.since - a.since);
+    const vecchi = muti.filter((r) => now - r.since > T.silent_days * 86400000);
+    const recenti = muti.filter((r) => now - r.since <= T.silent_days * 86400000);
+    const shownM = recenti.length > 8 ? recenti.slice(0, 7) : recenti;
+    shownM.forEach((r) => {
+      add('m', '«' + r.name + '» non disponibile da ' + monDur(now - r.since),
+        'Tutte le sue ' + r.n + (r.n === 1 ? ' entità è' : ' entità sono') + ' non disponibili: batteria, copertura radio o dispositivo spento.', r.ids[0]);
+    });
+    if (recenti.length > 8) {
+      const rest = recenti.slice(7);
+      add('m', 'Altri ' + rest.length + ' dispositivi non disponibili', rest.map((r) => r.name).join(', ') + '.', null,
+        c.page === 'manutenzione' ? null : { label: 'Vedi', nav: 'manutenzione' });
+    }
+    if (vecchi.length) {
+      add('b', vecchi.length === 1 ? '«' + vecchi[0].name + '» muto da ' + monDur(now - vecchi[0].since) : vecchi.length + ' dispositivi muti da oltre ' + T.silent_days + ' giorni',
+        (vecchi.length === 1 ? '' : vecchi.map((r) => r.name).join(', ') + '. ') + 'Da rimuovere, se non servono più.',
+        vecchi.length === 1 ? vecchi[0].ids[0] : null);
     }
     const ord = { a: 0, m: 1, b: 2 };
     return out.sort((x, y) => ord[x.lvl] - ord[y.lvl]);
