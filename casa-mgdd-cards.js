@@ -10,9 +10,9 @@
  * casa-mgdd-presence-card, casa-mgdd-air-card, casa-mgdd-vmc-card,
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
- * casa-mgdd-laundry-program-card.
+ * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card.
  *
- * Version: 1.101.2
+ * Version: 1.102.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -16309,4 +16309,259 @@ window.customCards.push({
   type: 'casa-mgdd-laundry-program-card',
   name: 'Casa MGDD Programma lavatrice',
   description: 'Programma la lavatrice AEG (electrolux_status): programma e opzioni con i vincoli della lavatrice, partenza o fine all\u2019ora scelta, durata letta dalla lavatrice. Usa script.lavatrice_programma e input_text.lavatrice_programma_impostazioni. Per una vista panel.',
+});
+
+// ============================================================================
+// casa-mgdd-laundry-tile-card — Tile della lavatrice AEG per la vista home
+// ============================================================================
+// Una riga: stato, programma impostato sulla lavatrice, orari. Il pulsante verso
+// la pagina di programmazione (opzione `programma`) compare solo quando la
+// lavatrice si puo' davvero programmare: gia' programmata (Delayed Start, per
+// modificarla o annullarla) oppure pronta con il controllo remoto acceso
+// (remotecontrol = Enabled). In lavaggio, finita, in errore o scollegata niente
+// pulsante (richiesta dell'utente, 23/11/2026).
+// Il resto della tile apre il more-info di `entity` (appliancestate di default).
+// La tile non manda comandi. Usa LP_E, lpStato e gli altri helper della card
+// programma. Banco: dev/lavatrici-tile.html.
+
+const LT_DOOR = 'binary_sensor.aeg_lavatrice_aeg_9000_doorstate';
+const LT_ALERTS = 'sensor.aeg_lavatrice_aeg_9000_alerts';
+
+// "Cotone · 40° · 1000 giri" da quello che la lavatrice ha impostato adesso
+function ltRiassuntoMacchina(hass) {
+  const v = (id) => (hass.states[id] ? hass.states[id].state : '');
+  const o = v(LP_E.prog);
+  const p = lpProg(o);
+  if (!p) return o && o !== 'unknown' && o !== 'unavailable' ? o : '';
+  const out = [p.n.replace(/ 60°$/, '')];
+  const t = v(LP_E.temp);
+  if (p.ST) {
+    out.push('vapore ' + v(LP_E.steam).replace('Steam ', ''));
+  } else if (p.T.length) {
+    if (t === 'Cold') out.push('Fredda');
+    else if (/^\d+ Celsius$/.test(t)) out.push(parseInt(t, 10) + '°');
+  }
+  if (p.S.length) {
+    if (v(LP_E.n) === 'on' || v(LP_E.rh) === 'on') out.push('senza centrifuga');
+    else if (/^\d+ Rpm$/.test(v(LP_E.spin))) out.push(parseInt(v(LP_E.spin), 10) + ' giri');
+  }
+  return out.join(' \u00b7 ');
+}
+
+// "10 h 01", "3 giorni"
+function ltDa(ms) {
+  const m = Math.max(0, ms / 60000);
+  return m >= 48 * 60 ? Math.floor(m / 1440) + ' giorni' : lpDur(m);
+}
+
+// "alle <b>16:48</b>", "domani alle <b>03:30</b>"
+function ltAlle(d, now) {
+  return lpAlle(d, now).replace(/(\d\d:\d\d)$/, '<b>$1</b>');
+}
+
+class LaundryTileCard extends HTMLElement {
+  setConfig(config) {
+    this.config = Object.assign({ name: 'Lavatrice AEG', entity: LP_E.stato, programma: '/lovelace/lavatrici-programma' }, config || {});
+    this._sig = null;
+    if (!this._wired) {
+      this._wired = true;
+      this.addEventListener('click', (e) => this._click(e));
+      this.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        this._click(e);
+      });
+    }
+    this._render();
+  }
+
+  static getStubConfig() {
+    return { programma: '/lovelace/lavatrici-programma' };
+  }
+
+  getGridOptions() {
+    return { rows: 'auto', columns: 12, min_columns: 6 };
+  }
+
+  getCardSize() {
+    return 2;
+  }
+
+  connectedCallback() {
+    // orari e conti alla rovescia avanzano anche senza cambi di stato
+    if (!this._tick) this._tick = setInterval(() => this._render(), 30000);
+    this._render();
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._tick);
+    this._tick = null;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const ids = Object.keys(LP_E).map((k) => LP_E[k]).concat([LT_DOOR, LT_ALERTS]);
+    const st = hass.states[LP_E.stato];
+    const sig = mgddStatesSig(hass, ids) + (st ? st.last_changed : '') + (hass.themes && hass.themes.darkMode ? 'D' : 'L');
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  _now() {
+    return this._hass && this._hass._ora ? new Date(this._hass._ora) : new Date();
+  }
+
+  _click(e) {
+    const go = e.target.closest && e.target.closest('[data-lt-go]');
+    if (go && this.contains(go)) {
+      history.pushState(null, '', this.config.programma);
+      const ev = new Event('location-changed', { bubbles: true, composed: true });
+      ev.detail = { replace: false };
+      window.dispatchEvent(ev);
+      return;
+    }
+    const tile = e.target.closest && e.target.closest('.lt');
+    if (!tile || !this.config.entity) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: this.config.entity }, bubbles: true, composed: true }));
+  }
+
+  // -> {c: colore (n b p g a r), ico, pill, l2, l3 (HTML gia' sicuro), bar 0..1, btn, spin}
+  _model(now) {
+    const h = this._hass;
+    const m = lpStato(h);
+    const sm = h.states[LP_E.stato];
+    const da = sm ? new Date(sm.last_changed) : null;
+    const macchina = mgddEsc(ltRiassuntoMacchina(h));
+    const salvate = lpParse(h.states[LP_E.impostazioni] ? h.states[LP_E.impostazioni].state : null);
+    const alerts = Number(h.states[LT_ALERTS] ? h.states[LT_ALERTS].state : 0) || 0;
+    const fase = LP_FASI[m.fase];
+
+    // scollegata: gli altri sensori restano fermi sull'ultimo valore, non valgono
+    if (!m.conn) {
+      return {
+        c: 'n', ico: 'washing-machine', pill: 'Disconnessa',
+        l2: m.connDa ? 'da ' + ltDa(now - m.connDa) : '',
+        l3: salvate ? 'Pronto da inviare: <b>' + mgddEsc(lpRiassunto(salvate)) + '</b>' : 'Accendila e premi Remote Start per comandarla da qui',
+      };
+    }
+    if (m.stato === 'Alarm' || alerts > 0) {
+      return { c: 'r', ico: 'washing-machine-alert', pill: 'Intervento richiesto', l2: macchina, l3: 'Controlla la lavatrice o la app AEG' };
+    }
+    if (m.stato === 'Running' && m.fase === 'Anticrease') {
+      return { c: 'g', ico: 'washing-machine', pill: 'Antipiega', l2: macchina, l3: 'Lavaggio finito: si pu\u00f2 aprire e svuotare' };
+    }
+    if (m.stato === 'Running') {
+      const fine = m.tte ? new Date(now.getTime() + m.tte * 60000) : null;
+      // avanzamento: minuti da quando e' partita su minuti totali previsti
+      const trascorso = da ? (now - da) / 60000 : null;
+      const bar = fine && trascorso != null && trascorso >= 0 ? trascorso / (trascorso + m.tte) : null;
+      return {
+        c: 'b', ico: 'washing-machine', spin: true, pill: fase ? fase.charAt(0).toUpperCase() + fase.slice(1) : 'In corso', l2: macchina,
+        l3: fine ? 'Finisce ' + ltAlle(fine, now) + ' \u00b7 mancano ' + lpDur(m.tte) : 'In corso',
+        bar,
+      };
+    }
+    if (m.stato === 'Paused') {
+      return { c: 'a', ico: 'washing-machine', pill: 'In pausa', l2: macchina, l3: m.tte ? 'Mancano ' + lpDur(m.tte) + ' quando riparte' : '' };
+    }
+    if (m.stato === 'Delayed Start') {
+      // durante l'attesa starttime conta i minuti alla partenza e timetoend e' la durata del lavaggio
+      const parte = new Date(now.getTime() + m.rit * 60000);
+      const fine = m.tte ? new Date(parte.getTime() + m.tte * 60000) : null;
+      return {
+        c: 'p', ico: 'calendar-clock', pill: 'Programmata', l2: macchina,
+        l3: 'Parte ' + ltAlle(parte, now) + ' (tra ' + lpDur(m.rit) + ')' + (fine ? ' \u00b7 finisce ' + lpQuando(fine, now) : ''),
+        btn: 'Modifica',
+      };
+    }
+    if (m.stato === 'End Of Cycle') {
+      const aperta = h.states[LT_DOOR] && h.states[LT_DOOR].state === 'on';
+      return {
+        c: 'g', ico: 'washing-machine', pill: 'Finito', l2: macchina,
+        l3: (da ? 'Finito ' + ltAlle(da, now) : 'Finito') + (aperta ? '' : ' \u00b7 da svuotare'),
+      };
+    }
+    if (m.pronta) {
+      const l2 = macchina + (m.tte ? ' \u00b7 circa ' + lpDur(m.tte) : '');
+      if (m.remoto) return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Controllo remoto attivo', btn: 'Programma' };
+      if (m.rc === 'Temporary Locked') return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Sta eseguendo un comando, un attimo\u2026' };
+      return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Premi Remote Start sulla lavatrice per programmarla' };
+    }
+    // Off o stati non previsti
+    return {
+      c: 'n', ico: 'washing-machine', pill: LP_STATI[m.stato] || m.stato,
+      l2: salvate ? 'Ultime scelte: ' + mgddEsc(lpRiassunto(salvate)) : '',
+      l3: m.stato === 'Off' ? 'Accendila e premi Remote Start per programmarla' : '',
+    };
+  }
+
+  _render() {
+    if (!this.config || !this._hass) return;
+    const now = this._now();
+    const x = this._model(now);
+    const dark = !!(this._hass.themes && this._hass.themes.darkMode);
+    const pct = x.bar != null ? Math.min(100, Math.max(2, x.bar * 100)).toFixed(1) : null;
+    const html = '<div class="ltq' + (dark ? ' lt-dark' : '') + '">' +
+      '<div class="lt" role="button" tabindex="0" aria-label="' + mgddEsc(this.config.name) + ': ' + mgddEsc(x.pill) + '">' +
+      '<div class="lt-row">' +
+      '<div class="lt-ic lt-' + x.c + (x.spin ? ' lt-spin' : '') + '">' + ldIco(x.ico) + '</div>' +
+      '<div class="lt-txt">' +
+      '<div class="lt-l1"><b>' + mgddEsc(this.config.name) + '</b><span class="lt-pill lt-p' + x.c + '"><i></i>' + mgddEsc(x.pill) + '</span></div>' +
+      (x.l2 ? '<div class="lt-l2">' + x.l2 + '</div>' : '') +
+      (x.l3 ? '<div class="lt-l3">' + x.l3 + '</div>' : '') +
+      '</div>' +
+      (x.btn && this.config.programma ? '<button class="lt-go" data-lt-go>' + ldIco('calendar-clock') + '<span>' + x.btn + '</span>' + ldIco('chevron-right') + '</button>' : '') +
+      '</div>' +
+      (pct ? '<div class="lt-bar"><span style="width:' + pct + '%"></span></div>' : '') +
+      '</div></div>';
+    mgddPaint(this, LT_STYLES, html);
+  }
+}
+
+const LT_STYLES = '<style>' +
+  '.ltq{--lt-t1:var(--primary-text-color,#1c1c1e);--lt-t2:var(--secondary-text-color,#6b6f76);--lt-n:rgba(127,127,127,.1);' +
+  '--lt-b:#3B8BEB;--lt-b2:#1F6FD1;--lt-bbg:#3B8BEB1f;--lt-p:#6D5AE6;--lt-pbg:#6D5AE61a;--lt-g2:#0E9B6C;--lt-gbg:#1D9E751f;' +
+  '--lt-a2:#BA7517;--lt-abg:#EF9F2729;--lt-r2:#B93C3C;--lt-rbg:#E24B4A1c;' +
+  'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--lt-t1);font-variant-numeric:tabular-nums;}' +
+  '.ltq.lt-dark{--lt-n:rgba(255,255,255,.08);--lt-b2:#6AAAF5;--lt-bbg:#3B8BEB26;--lt-p:#8B7CF0;--lt-pbg:#6D5AE633;--lt-g2:#3CC79A;--lt-gbg:#1D9E7526;--lt-a2:#F2B45A;--lt-r2:#F07572;--lt-rbg:#E24B4A22;}' +
+  '.ltq{container:lt/inline-size;}' +
+  '.ltq *{box-sizing:border-box;}' +
+  '.ltq .lt{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--ha-card-border-color,var(--divider-color,rgba(127,127,127,.2)));' +
+  'border-radius:var(--ha-card-border-radius,12px);box-shadow:var(--ha-card-box-shadow,none);padding:12px 12px 12px 14px;cursor:pointer;-webkit-tap-highlight-color:transparent;outline:none;}' +
+  '.ltq .lt:focus-visible{box-shadow:0 0 0 2px var(--lt-p);}' +
+  '.ltq .lt-row{display:flex;align-items:center;gap:12px;}' +
+  '.ltq .lt-ic{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;flex:none;background:var(--lt-n);color:var(--lt-t2);--mdc-icon-size:24px;}' +
+  '.ltq .lt-ic ha-icon{width:24px;height:24px;display:inline-flex;}' +
+  '.ltq .lt-b{background:var(--lt-bbg);color:var(--lt-b2);}.ltq .lt-p{background:var(--lt-pbg);color:var(--lt-p);}.ltq .lt-g{background:var(--lt-gbg);color:var(--lt-g2);}' +
+  '.ltq .lt-a{background:var(--lt-abg);color:var(--lt-a2);}.ltq .lt-r{background:var(--lt-rbg);color:var(--lt-r2);}' +
+  '.ltq .lt-spin ha-icon{animation:lt-sp 2.4s linear infinite;}' +
+  '@keyframes lt-sp{to{transform:rotate(360deg);}}' +
+  '.ltq .lt-txt{flex:1;min-width:0;}' +
+  '.ltq .lt-l1{display:flex;align-items:center;gap:8px;min-width:0;}' +
+  '.ltq .lt-l1 b{font-size:15px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.ltq .lt-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:650;border-radius:20px;padding:3px 8px;white-space:nowrap;flex:none;}' +
+  '.ltq .lt-pill i{width:6px;height:6px;border-radius:50%;background:currentColor;}' +
+  '.ltq .lt-pb{color:var(--lt-b2);background:var(--lt-bbg);}.ltq .lt-pp{color:var(--lt-p);background:var(--lt-pbg);}.ltq .lt-pg{color:var(--lt-g2);background:var(--lt-gbg);}' +
+  '.ltq .lt-pa{color:var(--lt-a2);background:var(--lt-abg);}.ltq .lt-pr{color:var(--lt-r2);background:var(--lt-rbg);}.ltq .lt-pn{color:var(--lt-t2);background:var(--lt-n);}' +
+  '.ltq .lt-l2{font-size:13px;font-weight:550;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.ltq .lt-l3{font-size:12.5px;color:var(--lt-t2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.ltq .lt-l3 b{color:var(--lt-t1);font-weight:650;}' +
+  '.ltq .lt-go{flex:none;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--divider-color,rgba(127,127,127,.2));background:var(--lt-n);color:var(--lt-t1);' +
+  'border-radius:11px;padding:8px 6px 8px 9px;font:650 12.5px Inter,-apple-system,"Segoe UI",sans-serif;cursor:pointer;--mdc-icon-size:16px;}' +
+  '.ltq .lt-go ha-icon{width:16px;height:16px;display:inline-flex;}.ltq .lt-go ha-icon:first-child{color:var(--lt-p);}' +
+  '.ltq .lt-go:focus-visible{outline:2px solid var(--lt-p);outline-offset:2px;}' +
+  '.ltq .lt-bar{height:4px;border-radius:2px;background:var(--lt-n);margin-top:11px;overflow:hidden;}' +
+  '.ltq .lt-bar span{display:block;height:100%;border-radius:2px;background:var(--lt-b);}' +
+  // telefono: il pulsante perde la scritta, cosi' nome e programma restano leggibili
+  '@container lt (max-width:400px){.ltq .lt-go span{display:none;}.ltq .lt-go{padding:8px 4px 8px 8px;}.ltq .lt-row{gap:10px;}}' +
+  '@media (prefers-reduced-motion: reduce){.ltq .lt-spin ha-icon{animation:none;}}' +
+  '</style>';
+
+customElements.define('casa-mgdd-laundry-tile-card', LaundryTileCard);
+window.customCards.push({
+  type: 'casa-mgdd-laundry-tile-card',
+  name: 'Casa MGDD Tile lavatrice',
+  description: 'Tile della lavatrice AEG: stato, programma impostato, orari (fine, partenza programmata). Il pulsante verso la pagina di programmazione (`programma:`) compare solo se la lavatrice e\u2019 programmata o pronta con il controllo remoto attivo.',
 });

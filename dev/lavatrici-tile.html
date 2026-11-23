@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco tile lavatrice</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+<style>
+  body { margin: 0; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  body.dark { background: #111; --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --divider-color: rgba(225,225,225,.12); }
+  body.light { background: #f3f4f5; --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272; --divider-color: rgba(0,0,0,.12); }
+  .bar { display: flex; gap: 6px; padding: 10px 16px; font-size: 12px; background: #222; color: #ddd; align-items: center; }
+  .bar button { font: inherit; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 16px; }
+  .wrap.narrow { max-width: 360px; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--secondary-text-color); margin: 18px 0 6px; }
+  #log { font: 12px monospace; color: var(--secondary-text-color); margin: 16px; white-space: pre-wrap; }
+  ha-icon { display: inline-flex; align-items: center; justify-content: center; }
+  ha-icon i { font-size: var(--mdc-icon-size, 24px); line-height: 1; }
+</style>
+</head>
+<body class="dark">
+<div class="bar">
+  <button id="dark">Chiaro / scuro</button>
+  <button id="narrow">Largo / stretto</button>
+</div>
+<div class="wrap" id="host"></div>
+<div id="log"></div>
+<script>
+  window.customCards = window.customCards || [];
+  customElements.define('ha-icon', class extends HTMLElement {
+    static get observedAttributes() { return ['icon']; }
+    connectedCallback() { this._draw(); }
+    attributeChangedCallback() { this._draw(); }
+    _draw() { this.innerHTML = '<i class="mdi mdi-' + (this.getAttribute('icon') || '').replace('mdi:', '') + '"></i>'; }
+  });
+</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const P = 'aeg_lavatrice_aeg_9000_';
+  const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+  const S = (v, min) => ({ state: String(v), last_changed: ago(min || 120), last_updated: new Date().toISOString(), attributes: {} });
+  function base() {
+    return {
+      ['sensor.' + P + 'connectivitystate']: S('Connected'),
+      ['sensor.' + P + 'remotecontrol']: S('Enabled'),
+      ['sensor.' + P + 'appliancestate']: S('Ready To Start'),
+      ['sensor.' + P + 'cyclephase']: S('Unavailable'),
+      ['sensor.' + P + 'timetoend']: S(185),
+      ['sensor.' + P + 'alerts']: S(0),
+      ['binary_sensor.' + P + 'doorstate']: S('off'),
+      ['number.' + P + 'starttime']: S(0),
+      ['select.' + P + 'userselections_programuid']: S('Cotton Pr Cottons'),
+      ['select.' + P + 'userselections_analogtemperature']: S('40 Celsius'),
+      ['select.' + P + 'userselections_analogspinspeed']: S('1000 Rpm'),
+      ['select.' + P + 'userselections_extrarinsenumber']: S('None'),
+      ['select.' + P + 'userselections_timemanagerlevel']: S('Normal'),
+      ['select.' + P + 'userselections_steamvalue']: S('Steam Off'),
+      ['switch.' + P + 'userselections_anticreasenosteam']: S('off'),
+      ['switch.' + P + 'userselections_anticreasewsteam']: S('off'),
+      ['switch.' + P + 'userselections_prewashphase']: S('off'),
+      ['switch.' + P + 'userselections_stain']: S('off'),
+      ['switch.' + P + 'userselections_nightcycle']: S('off'),
+      ['switch.' + P + 'userselections_rinsehold']: S('off'),
+      'input_text.lavatrice_programma_impostazioni': S('{"p":"Cotton Pr Cottons","t":40,"sp":1000,"ac":"no","r":0,"tm":"Normal","st":"Max","pw":0,"sm":0,"n":0,"rh":0,"w":"subito","h":"07:00"}'),
+      'sensor.lavatrici_durate_aeg': S('x'),
+    };
+  }
+  const set = (st, k, v, min) => { st[k] = S(v, min); return st; };
+  const CASI = [
+    ['In corso (lavaggio)', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Running', 70); set(s, 'sensor.' + P + 'cyclephase', 'Wash'); set(s, 'sensor.' + P + 'timetoend', 72); set(s, 'sensor.' + P + 'remotecontrol', 'Not Safety Relevant Enabled'); }],
+    ['In corso, antipiega', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Running', 190); set(s, 'sensor.' + P + 'cyclephase', 'Anticrease'); set(s, 'sensor.' + P + 'timetoend', 0); }],
+    ['Programmata', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Delayed Start', 10); set(s, 'number.' + P + 'starttime', 492); set(s, 'sensor.' + P + 'timetoend', 198); set(s, 'select.' + P + 'userselections_programuid', 'Cotton Pr Eco40-60'); set(s, 'select.' + P + 'userselections_analogspinspeed', '1200 Rpm'); set(s, 'sensor.' + P + 'remotecontrol', 'Temporary Locked'); }],
+    ['Pronta, remoto attivo', (s) => { set(s, 'select.' + P + 'userselections_programuid', 'Delicate Pr Delicates'); set(s, 'select.' + P + 'userselections_analogtemperature', '30 Celsius'); set(s, 'select.' + P + 'userselections_analogspinspeed', '800 Rpm'); set(s, 'sensor.' + P + 'timetoend', 65); }],
+    ['Pronta, remoto spento', (s) => { set(s, 'sensor.' + P + 'remotecontrol', 'Not Safety Relevant Enabled'); }],
+    ['Pronta, occupata', (s) => { set(s, 'sensor.' + P + 'remotecontrol', 'Temporary Locked'); }],
+    ['Fine ciclo', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'End Of Cycle', 35); set(s, 'sensor.' + P + 'timetoend', 0); }],
+    ['In pausa', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Paused'); set(s, 'sensor.' + P + 'timetoend', 40); }],
+    ['Allarme', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Alarm'); set(s, 'sensor.' + P + 'alerts', 1); }],
+    ['Spenta (collegata)', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Off'); }],
+    ['Disconnessa (sensori congelati su Running)', (s) => { set(s, 'sensor.' + P + 'connectivitystate', 'Disconnected', 601); set(s, 'sensor.' + P + 'appliancestate', 'Running'); set(s, 'sensor.' + P + 'cyclephase', 'Anticrease'); }],
+  ];
+  let dark = true;
+  const cards = [];
+  const host = document.getElementById('host');
+  const log = (t) => { document.getElementById('log').textContent = new Date().toLocaleTimeString() + '  ' + t + '\n' + document.getElementById('log').textContent; };
+  CASI.forEach(([titolo, fn]) => {
+    const h2 = document.createElement('h2');
+    h2.textContent = titolo;
+    host.appendChild(h2);
+    const c = document.createElement('casa-mgdd-laundry-tile-card');
+    c.setConfig({ programma: '/lovelace/lavatrici-programma' });
+    host.appendChild(c);
+    const states = base();
+    fn(states);
+    cards.push({ c, states });
+  });
+  function push() {
+    cards.forEach(({ c, states }) => { c.hass = { states, themes: { darkMode: dark }, callService: () => Promise.resolve() }; });
+  }
+  push();
+  window.addEventListener('location-changed', () => log('navigate -> ' + location.pathname));
+  document.addEventListener('hass-more-info', (e) => log('more-info -> ' + e.detail.entityId));
+  document.getElementById('dark').onclick = () => { dark = !dark; document.body.className = dark ? 'dark' : 'light'; push(); };
+  document.getElementById('narrow').onclick = () => host.classList.toggle('narrow');
+</script>
+</body>
+</html>
