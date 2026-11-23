@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.104.4
+ * Version: 1.104.5
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13936,7 +13936,8 @@ class MonitorCard extends HTMLElement {
     const shownM = recenti.length > 8 ? recenti.slice(0, 7) : recenti;
     shownM.forEach((r) => {
       add('m', '«' + r.name + '» non disponibile da ' + monDur(now - r.since),
-        'Tutte le sue ' + r.n + (r.n === 1 ? ' entità è' : ' entità sono') + ' non disponibili: batteria, copertura radio o dispositivo spento.', r.ids[0]);
+        (r.n === 1 ? 'La sua unica entità è non disponibile' : 'Tutte le sue ' + r.n + ' entità sono non disponibili') +
+          ': batteria, copertura radio o dispositivo spento.', r.ids[0]);
     });
     if (recenti.length > 8) {
       const rest = recenti.slice(7);
