@@ -64,6 +64,7 @@ I banner di allerta della card meteo si provano con `dev/meteo-allerte.html` (ve
 Le tre pagine del monitor si provano con `dev/monitor.html` (`?page=sistema|rete|manutenzione`, dati normali o con allarmi, chiaro/scuro, ID sì/no); i dati finti stanno in `dev/monitor-fixture.js`.
 I comandi rapidi si provano con `dev/comandi.html`: stati della Nuki a pulsante, servizi che rispondono o falliscono, chiaro/scuro; le chiamate ai servizi finiscono nel registro sotto la card.
 La programmazione della lavatrice si prova con `dev/lavatrici-programma.html`: lavatrice simulata (scollegata, solo impostazioni, pronta, occupata, programmata, in lavaggio), script che accetta o rifiuta, chiaro/scuro.
+La vista energia intera (bilancio, UPS, flusso, carichi, prese, totali, i cinque grafici) si prova con `dev/energia.html`: stati e statistiche finti, flusso di sera, a mezzogiorno o con la batteria caricata dalla rete, prese che commutano, chiaro/scuro.
 
 ## Uso — banner Protezione Civile in `weather-alert-card`
 

@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco vista energia</title>
+<style>
+  body { margin: 0; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  body.dark { background: #111; --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --divider-color: rgba(225,225,225,.12); }
+  body.light { background: #f3f4f5; --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272; --divider-color: rgba(0,0,0,.12); }
+  .bar { display: flex; gap: 6px; padding: 10px 16px; font-size: 12px; background: #222; color: #ddd; align-items: center; flex-wrap: wrap; }
+  .bar button { font: inherit; }
+  .page { display: grid; grid-template-columns: minmax(300px,1fr) minmax(0,2fr) minmax(300px,1fr); gap: 12px; padding: 12px; align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 1100px) { .page { grid-template-columns: 1fr; } }
+  @media (max-width: 700px) { .two { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body class="dark">
+<div class="bar">
+  <button id="dark">Chiaro / scuro</button>
+  <button data-sim="sera">Sera</button><button data-sim="sole">Mezzogiorno</button><button data-sim="carica">Rete → batteria</button>
+  <span>Dati finti: stati fissi, statistiche generate. Tocco su una presa: commuta dopo 400 ms.</span>
+</div>
+<div class="page">
+  <div class="col" id="c1"></div>
+  <div class="col" id="c2"></div>
+  <div class="col" id="c3"></div>
+</div>
+<script>window.customCards = window.customCards || [];</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+// ---------- stati finti (presi da HA il 24/11 sera) ----------
+const W = { unit_of_measurement: 'W' }, KWH = { unit_of_measurement: 'kWh' }, KW = { unit_of_measurement: 'kW' };
+const S = {};
+const put = (id, v, a) => { S[id] = { entity_id: id, state: String(v), attributes: a || {} }; };
+const SIMS = {
+  sera: { solar: 0, site: 0.046, batt: 0.002, load: 0.031, soc: 8 },
+  sole: { solar: 2.4, site: -0.3, batt: -1.5, load: 0.6, soc: 46 },
+  carica: { solar: 0, site: 2.1, batt: -1.75, load: 0.35, soc: 21 },
+};
+function sim(k) {
+  const s = SIMS[k];
+  put('sensor.powerwall3_solar_power', s.solar, KW); put('sensor.powerwall3_site_power', s.site, KW);
+  put('sensor.powerwall3_battery_power', s.batt, KW); put('sensor.powerwall3_load_power', s.load, KW);
+  put('sensor.powerwall3_charge', s.soc, { unit_of_measurement: '%' });
+}
+sim('sera');
+[['load_import', 1203.2], ['solar_export', 812.4], ['site_import', 655.1], ['site_export', 41.2], ['battery_import', 865.9], ['battery_export', 857.4]]
+  .forEach(([k, v]) => put('sensor.powerwall3_' + k, v, KWH));
+put('sensor.sonoff_10023341b5_energy_day', 3.5, KWH);
+const LOADS = { 'sensor.shelly_pro_3em_piano_induzione_power': 0, 'sensor.shellyproem50_em1_power': 8.4, 'sensor.shelly_pro_3em_luci_power': 26,
+  'sensor.ups_potenza': 54, 'sensor.shelly_em_condizionatore_power': 3.7, 'sensor.shelly_presa_stireria_power': 0,
+  'sensor.shelly_pm_mini_presa_specchio_bagno_mattia_power': 0, 'sensor.shelly_lavanderia_dx_switch_0_power': 78,
+  'sensor.shelly_lavanderia_sx_switch_0_power': 0, 'sensor.shelly_mobile_tv_switch_0_power': 4.5, 'sensor.shelly_presa_divano_switch_0_power': 0,
+  'sensor.shelly_presa_porta_finestra_power': 6.4, 'sensor.shelly_presa_camera_matrimoniale_power': 4.7, 'sensor.shelly_presa_bagno_mattia_power': 0,
+  'sensor.shelly_presa_bagno_deborah_power': 0 };
+Object.keys(LOADS).forEach((id) => put(id, LOADS[id], W));
+const SW = ['switch.shelly_presa_stireria', 'switch.shelly_lavanderia_dx_switch_0', 'switch.shelly_lavanderia_sx_switch_0', 'switch.shelly_mobile_tv_switch_0',
+  'switch.shelly_presa_porta_finestra', 'switch.shelly_presa_camera_matrimoniale', 'switch.shelly_presa_bagno_deborah'];
+['switch.shelly_presa_divano_switch_0', 'switch.shelly_presa_bagno_mattia'].forEach((id) => put(id, 'off'));
+SW.forEach((id) => put(id, 'on'));
+put('binary_sensor.ups_tower_rete', 'on'); put('sensor.ups_tower_livello_della_batteria', 100, { unit_of_measurement: '%' });
+put('sensor.ups_tower_durata_della_batteria', 61, { unit_of_measurement: 'min' }); put('sensor.ups_tower_tensione_di_bypass', 232, { unit_of_measurement: 'V' });
+
+// ---------- statistiche generate ----------
+function rnd(seed) { const x = Math.sin(seed * 9301 + 49297) * 233280; return x - Math.floor(x); }
+function hourVal(id, t) {
+  const d = new Date(t), h = d.getHours(), s = Math.floor(t / 3600000);
+  const sun = h >= 8 && h <= 16 ? Math.sin((h - 7.5) / 9.5 * Math.PI) * 0.8 : 0;
+  if (id.includes('charge')) return Math.max(0, Math.round(sun * 18 + rnd(s) * 2));
+  if (id.includes('solar')) return sun * (0.5 + rnd(s) * 0.5);
+  if (id.includes('load_import') || id.includes('house')) return 0.18 + rnd(s) * 0.5 + (h >= 19 && h <= 21 ? 0.3 : 0);
+  if (id.includes('site_import')) return h < 8 || h > 16 ? 0.25 + rnd(s + 1) * 0.3 : 0.05;
+  if (id.includes('site_export')) return sun > 0.6 ? 0.05 : 0;
+  if (id.includes('battery_import')) return sun > 0.4 ? 0.2 : 0;
+  if (id.includes('battery_export')) return h >= 16 && h <= 18 ? 0.25 : 0;
+  return 0.02 + rnd(s + id.length) * 0.08; // circuiti
+}
+function stats(msg) {
+  const out = {};
+  const t0 = new Date(msg.start_time).getTime(), t1 = new Date(msg.end_time).getTime();
+  const step = msg.period === 'hour' ? 3600000 : msg.period === '5minute' ? 300000 : 86400000;
+  msg.statistic_ids.forEach((id) => {
+    const rows = []; let cum = 500;
+    if (msg.period === 'month') {
+      const d = new Date(t0); d.setDate(1); d.setHours(0, 0, 0, 0);
+      while (d.getTime() < t1) {
+        const days = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+        const cur = d.getMonth() === new Date().getMonth() && d.getFullYear() === new Date().getFullYear();
+        const v = (id.includes('solar') ? 4 : 10) * (cur ? new Date().getDate() - 1 : days) * (0.85 + rnd(d.getMonth()) * 0.3);
+        cum += v; rows.push({ start: d.getTime(), end: d.getTime(), change: v, state: cum });
+        d.setMonth(d.getMonth() + 1);
+      }
+    } else {
+      let t = msg.period === 'day' ? new Date(new Date(t0).setHours(0, 0, 0, 0)).getTime() : Math.floor(t0 / step) * step;
+      for (; t < t1 - (msg.period === 'hour' ? 3600000 : 0); t += step) {
+        let v;
+        if (msg.period === 'day') { v = 0; for (let h = 0; h < 24; h++) v += hourVal(id, t + h * 3600000); if (t + 86400000 > t1) v *= (new Date().getHours() / 24); }
+        else v = hourVal(id, t);
+        cum += v;
+        rows.push({ start: t, end: t + step, change: v, state: cum, mean: v });
+      }
+    }
+    out[id] = rows;
+  });
+  return out;
+}
+function history(msg) {
+  const out = {}, now = Date.now();
+  msg.entity_ids.forEach((id) => {
+    out[id] = [];
+    for (let i = 0; i < 30; i++) out[id].push({ s: String(50 + Math.round(6 * Math.sin(i * .8) + 3 * Math.sin(i * 2.1))), lu: (now - 3600000 + i * 120000) / 1000 });
+  });
+  return out;
+}
+
+// ---------- hass finto ----------
+const cards = [];
+const hass = {
+  states: S, themes: { darkMode: true }, language: 'it',
+  callWS: async (msg) => {
+    await new Promise((r) => setTimeout(r, 150));
+    if (msg.type === 'recorder/statistics_during_period') return stats(msg);
+    if (msg.type === 'history/history_during_period') return history(msg);
+    return {};
+  },
+  callService: (dom, svc, data) => {
+    console.log('callService', dom, svc, JSON.stringify(data));
+    setTimeout(() => {
+      const id = data.entity_id; const st = S[id];
+      if (st) { put(id, st.state === 'on' ? 'off' : 'on'); push(); }
+    }, 400);
+  },
+};
+function push() { hass.states = Object.assign({}, S); cards.forEach((c) => { c.hass = hass; }); }
+function add(col, type, cfg) {
+  const el = document.createElement(type);
+  el.setConfig(cfg); el.hass = hass;
+  document.getElementById(col).appendChild(el); cards.push(el);
+}
+
+// ---------- configurazione = vista energy in HA ----------
+const CIRC = [['Piano induzione', 'sensor.shelly_pro_3em_piano_induzione_power'], ['Cucina', 'sensor.shellyproem50_em1_power'], ['Luci', 'sensor.shelly_pro_3em_luci_power'],
+  ['Rack / UPS', 'sensor.ups_potenza'], ['Condizionatore', 'sensor.shelly_em_condizionatore_power'], ['Stireria', 'sensor.shelly_presa_stireria_power', 'switch.shelly_presa_stireria', 'iron'],
+  ['Specchio bagno Mattia', 'sensor.shelly_pm_mini_presa_specchio_bagno_mattia_power'], ['Lavatrice', 'sensor.shelly_lavanderia_dx_switch_0_power', 'switch.shelly_lavanderia_dx_switch_0', 'wash'],
+  ['Asciugatrice', 'sensor.shelly_lavanderia_sx_switch_0_power', 'switch.shelly_lavanderia_sx_switch_0', 'dry'], ['Mobile TV', 'sensor.shelly_mobile_tv_switch_0_power', 'switch.shelly_mobile_tv_switch_0', 'tv'],
+  ['Presa divano', 'sensor.shelly_presa_divano_switch_0_power', 'switch.shelly_presa_divano_switch_0'], ['Porta finestra', 'sensor.shelly_presa_porta_finestra_power', 'switch.shelly_presa_porta_finestra'],
+  ['Camera matrimoniale', 'sensor.shelly_presa_camera_matrimoniale_power', 'switch.shelly_presa_camera_matrimoniale'], ['Stufa bagno Mattia', 'sensor.shelly_presa_bagno_mattia_power', 'switch.shelly_presa_bagno_mattia', 'heat'],
+  ['Bagno Deborah', 'sensor.shelly_presa_bagno_deborah_power', 'switch.shelly_presa_bagno_deborah']]
+  .map(([name, entity, sw, icon]) => Object.assign({ name, entity }, sw ? { switch: sw } : {}, icon ? { icon } : {}));
+add('c1', 'energy-power-card', { layout: 'balance', title: 'Casa · energia', cumulative: true, house: 'sensor.powerwall3_load_import', solar: 'sensor.powerwall3_solar_export',
+  grid_import: 'sensor.powerwall3_site_import', grid_export: 'sensor.powerwall3_site_export', battery_charge: 'sensor.powerwall3_battery_import',
+  battery_discharge: 'sensor.powerwall3_battery_export', power_entity: 'sensor.powerwall3_load_power' });
+add('c1', 'energy-controls-card', { layout: 'ups-status', ups: { status_entity: 'binary_sensor.ups_tower_rete', battery_entity: 'sensor.ups_tower_livello_della_batteria',
+  time_left_entity: 'sensor.ups_tower_durata_della_batteria', power_entity: 'sensor.ups_potenza', voltage_entity: 'sensor.ups_tower_tensione_di_bypass' } });
+add('c2', 'energy-flow-card', { solar_power: 'sensor.powerwall3_solar_power', battery_power: 'sensor.powerwall3_battery_power', battery_soc: 'sensor.powerwall3_charge',
+  grid_power: 'sensor.powerwall3_site_power', house_power: 'sensor.powerwall3_load_power', battery_min_flow: 150, arrival: 'ripple', grid_to_battery: false });
+const two = document.createElement('div'); two.className = 'two'; two.innerHTML = '<div id="c2a"></div><div id="c2b"></div>'; document.getElementById('c2').appendChild(two);
+add('c2a', 'energy-power-card', { layout: 'loads', power_entity: 'sensor.powerwall3_load_power', active_threshold: 1, active_count: 8, circuits: CIRC });
+add('c2b', 'energy-power-card', { layout: 'plugs', title: 'Prese', circuits: CIRC.filter((c) => c.switch) });
+add('c2', 'energy-power-card', { layout: 'devices', title: 'Totali per dispositivo', house_energy: 'sensor.powerwall3_load_import', days: 15, months: 9, mode: 'plain',
+  circuits: CIRC.map((c) => ({ name: c.name, energy: c.entity.replace('_power', '_energy') })) });
+add('c3', 'energy-monthly-card', { entity: 'sensor.powerwall3_load_import', period: 'day', days: 14, title: 'Consumo giornaliero', color: '#EF9F27' });
+add('c3', 'energy-monthly-card', { entity: 'sensor.powerwall3_load_import', months: 12, title: 'Consumo mensile' });
+add('c3', 'energy-monthly-card', { entity: 'sensor.powerwall3_charge', period: 'hour', hours: 48, metric: 'mean', y_max: 100, decimals: 0, title: 'Carica batteria', color: '#0FB57E' });
+add('c3', 'energy-power-card', { layout: 'prodcons', title: 'Produzione e consumo', production: 'sensor.powerwall3_solar_export', consumption: 'sensor.powerwall3_load_import', days: 10, grid_import: 'sensor.powerwall3_site_import' });
+add('c3', 'energy-monthly-card', { entity: 'sensor.sonoff_10023341b5_energy_day', period: 'day', days: 14, title: 'ENEL', color: '#00B4D8' });
+
+document.getElementById('dark').onclick = () => {
+  const d = document.body.classList.toggle('dark'); document.body.classList.toggle('light', !d);
+  hass.themes = { darkMode: d }; push();
+};
+document.querySelectorAll('[data-sim]').forEach((b) => { b.onclick = () => { sim(b.dataset.sim); push(); }; });
+</script>
+</body>
+</html>
