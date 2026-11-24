@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.107.0
+ * Version: 1.107.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -15910,6 +15910,30 @@ function lpStima(s, hass) {
   return best > 0 ? best : null;
 }
 
+// Stima anche senza la combinazione esatta: stesso programma con le opzioni piu' simili
+// (temperatura, risparmio tempo); ogni risciacquo in piu' o in meno vale circa 11 minuti
+// (misurato il 22-24/11: Cotone 187 -> 198, Eco 40-60 205 -> 214). Null se il programma
+// non e' mai stato letto dalla lavatrice.
+function lpStimaVicina(s, hass) {
+  const es = lpStima(s, hass);
+  if (es) return { min: es, esatta: true };
+  const st = hass.states[LP_E.durate];
+  const d = st && st.attributes ? st.attributes.durate : null;
+  const p = lpProg(s.p);
+  if (!d || !p) return null;
+  const want = [p.T.length && !p.ST ? lpTOpt(s.t) : null, p.F.has('TM') ? s.tm : null];
+  let best = null;
+  Object.keys(d).forEach((k) => {
+    const parts = k.split('|');
+    if (parts[0] !== p.o || !(Number(d[k]) > 0)) return;
+    const diff = want.reduce((n, w, i) => n + (w != null && parts[i + 1] !== w ? 1 : 0), 0);
+    const r = (parts[3] || '').match(/\d/);
+    const min = Number(d[k]) + ((p.F.has('R') ? s.r : 0) - (r ? Number(r[0]) : 0)) * 11;
+    if (!best || diff <= best.diff) best = { diff, min };
+  });
+  return best ? { min: Math.max(1, best.min), esatta: false } : null;
+}
+
 // Partenza: ritardo a passi di 30 minuti da adesso, da 0 a 1200 minuti.
 function lpPartenza(s, dur, now) {
   if (s.w === 'subito') return { k: 0, start: now, nota: 'Parte appena premi il pulsante.' };
@@ -16005,7 +16029,6 @@ class LaundryProgramCard extends HTMLElement {
     // telefono la cambiavano: 1.101.1). Dopo il primo tocco, se la lavatrice diventa
     // impostabile le si mandano le scelte per la durata vera.
     const m = lpStato(hass);
-    if (this._toccato && m.impostabile && !this._eraImpostabile) this._pianificaSync(1200);
     this._eraImpostabile = m.impostabile;
     const ids = Object.keys(LP_E).map((k) => LP_E[k]);
     const sig = mgddStatesSig(hass, ids) + (hass.states[LP_E.durate] ? hass.states[LP_E.durate].last_updated : '') + (hass.themes && hass.themes.darkMode ? 'D' : 'L');
@@ -16029,7 +16052,6 @@ class LaundryProgramCard extends HTMLElement {
     this._render();
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => this._salva(), 700);
-    this._pianificaSync(1800);
   }
 
   _salva() {
@@ -16220,9 +16242,9 @@ class LaundryProgramCard extends HTMLElement {
     const h = this._hass;
     const m = lpStato(h);
     if (m.pronta && m.tte > 0 && lpCorrisponde(this._s, h)) return { min: m.tte, src: 'lavatrice' };
-    const st = lpStima(this._s, h);
-    if (st) return { min: st, src: 'stima' };
-    return { min: null, src: !m.impostabile ? 'ignota' : this._toccato || this._syncP ? 'attesa' : 'leggibile' };
+    const st = lpStimaVicina(this._s, h);
+    if (st) return { min: st.min, src: st.esatta ? 'stima' : 'simile' };
+    return { min: null, src: !m.impostabile ? 'ignota' : this._syncP ? 'attesa' : 'leggibile' };
   }
 
   // ---------- disegno ----------
@@ -16244,11 +16266,41 @@ class LaundryProgramCard extends HTMLElement {
       '<div class="lp-grid"><div class="lp-col lp-heroa">' + hero + '</div>' +
       '<div class="lp-col lp-main">' + this._preferiti() + this._programma() + this._opzioni() + '</div>' +
       '<div class="lp-col lp-act">' + act + '</div></div></div></div>';
+    const pos = this._posizioni();
     mgddPaint(this, LP_STYLES, html);
+    this._rimetti(pos);
     this._dopo();
     // mgddPaint rimanda il ridisegno mentre qualcosa scorre (anche la fila degli orari):
     // allora le animazioni e la posizione della fila si riprendono quando ha finito
     if (this._mgddTimer) this._dopoPoi();
+  }
+
+  // Su iPhone il ridisegno completo (cambia la struttura: altro programma, elenco aperto)
+  // subito dopo un tocco riportava la vista in cima: la rete di mgddPaint non interviene
+  // se il tocco e' recente. Qui si ricordano tutti i contenitori che scorrono, anche fuori
+  // dagli shadow root di HA, e si rimettono dove erano per qualche frame.
+  _posizioni() {
+    const out = [];
+    const sc = document.scrollingElement || document.documentElement;
+    if (sc) out.push([sc, sc.scrollTop]);
+    let n = this;
+    while (n) {
+      n = n.parentNode || n.host || null;
+      if (n && n.nodeType === 1 && n !== sc && n.scrollTop > 0) out.push([n, n.scrollTop]);
+    }
+    return out;
+  }
+
+  _rimetti(pos) {
+    if (!pos.length) return;
+    const mossa = mgddLastMove;
+    let giri = 0;
+    const fix = () => {
+      if (mgddLastMove !== mossa) return; // l'utente sta scorrendo: comanda lui
+      pos.forEach((p) => { if (Math.abs(p[0].scrollTop - p[1]) > 2) p[0].scrollTop = p[1]; });
+      if (++giri < 6) requestAnimationFrame(fix);
+    };
+    fix();
   }
 
   _dopoPoi() {
@@ -16462,15 +16514,16 @@ class LaundryProgramCard extends HTMLElement {
     const src = {
       lavatrice: '<span class="lp-pill lp-pp">dalla lavatrice</span><span>calcolata dall’AEG con queste impostazioni</span>',
       stima: '<span class="lp-pill lp-pn">stima</span><span>ultima durata letta dalla lavatrice per questa combinazione</span>',
+      simile: '<span class="lp-pill lp-pn">stima</span><span>dalla durata letta per lo stesso programma con altre opzioni</span>',
       attesa: '<span class="lp-pill lp-pn">in arrivo</span><span>' + (this._sync && this._sync.stato === 'invio' ? 'sto mandando le impostazioni alla lavatrice…' : 'la lavatrice sta calcolando la durata…') + '</span>',
       ignota: '<span>Durata non ancora nota: si legge quando la lavatrice è accesa con questo programma.</span>',
       leggibile: '<span>La lavatrice ha altre impostazioni.</span>',
     }[d.src];
     // durata esatta senza cambiare opzioni: manda le scelte (senza avviare) solo su richiesta
     const leggi = m.impostabile && !this._syncP && !lpCorrisponde(s, this._hass) && !this._busy ?
-      '<button class="lp-mini" data-act="leggi">' + ldIco('timer-sync-outline') + 'Leggi la durata dalla lavatrice</button>' : '';
+      '<button class="lp-mini" data-act="leggi">' + ldIco('timer-sync-outline') + 'Chiedi la durata esatta alla lavatrice</button>' : '';
     const sync = this._sync && this._sync.stato === 'err' ? '<div class="lp-note lp-warn">Impostazioni non accettate: ' + mgddEsc(this._sync.testo) + '</div>' : '';
-    return this._heroHtml({ now, fine, start: pt.start, k: s.w === 'subito' ? 0 : pt.k, dur: d.min, approx: d.src === 'stima', rias: lpRiassunto(s),
+    return this._heroHtml({ now, fine, start: pt.start, k: s.w === 'subito' ? 0 : pt.k, dur: d.min, approx: d.src === 'stima' || d.src === 'simile', rias: lpRiassunto(s),
       extra: '<div class="lp-src">' + src + '</div>' + leggi + sync });
   }
 
@@ -16502,8 +16555,8 @@ class LaundryProgramCard extends HTMLElement {
   // Sotto il nome: durata gia' letta per quel programma, altrimenti la temperatura massima.
   _progSub(x) {
     const c = lpSanitize(Object.assign({}, this._s, { p: x.o }));
-    const st = lpStima(c, this._hass);
-    if (st) return '≈' + lpDur(st);
+    const st = lpStimaVicina(c, this._hass);
+    if (st) return '≈' + lpDur(st.min);
     if (x.ST) return 'vapore';
     if (!x.T.length) return 'senza acqua calda';
     return x.T.length === 1 ? lpTL(x.T[0]) : 'max ' + lpTL(x.T[x.T.length - 1]);
