@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.104.5
+ * Version: 1.105.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13092,11 +13092,16 @@ const MON_DEFAULTS = {
   },
   // batterie da non contare: la Powerwall e' un accumulo, i telefoni oscillano
   battery_exclude: 'powerwall|iphone',
-  // Entita' appena diventate non disponibili: segnalate subito (priorita' media,
-  // pillola, striscia in testa) per `hours` ore dalla caduta. Fuori i domini di
-  // configurazione e le entita' che cadono di continuo per natura (`exclude`,
-  // regex su entity_id e nome del dispositivo).
+  // Entita' che funzionavano (almeno un valore negli ultimi `worked_days`
+  // giorni) e ora sono non disponibili: priorita' media finche' non tornano,
+  // dopo `grace_minutes` minuti (assorbe i riavvii delle integrazioni); per
+  // `hours` ore dalla caduta anche la striscia gialla in testa. Quelle giu' da
+  // sempre non si segnalano. Fuori i domini di configurazione e le entita' che
+  // cadono di continuo per natura (`exclude`, regex su entity_id e nome del
+  // dispositivo).
   unavailable_watch: {
+    worked_days: 7,
+    grace_minutes: 2,
     hours: 24,
     exclude_domains: ['select', 'button', 'number', 'update', 'text', 'time', 'date', 'datetime', 'image',
       'notify', 'event', 'scene', 'conversation', 'stt', 'tts', 'ai_task', 'input_button', 'wake_word', 'tag',
@@ -13118,7 +13123,6 @@ const MON_TH = {
   battery_warn: 30,
   battery_low: 50,
   backup_age: 30, // ore dall'ultimo backup riuscito
-  silent_days: 30, // dispositivo muto da piu' giorni: "da rimuovere"
 };
 
 const MON_PAGES = { sistema: 1, rete: 1, manutenzione: 1 };
@@ -13426,18 +13430,21 @@ class MonitorCard extends HTMLElement {
     }
   }
 
-  // Entita' cadute da poco, raggruppate per dispositivo.
+  // Entita' che FUNZIONAVANO e ora sono non disponibili, raggruppate per
+  // dispositivo.
   //
-  // "Da quando" non si puo' prendere da last_changed e basta: a ogni riavvio
-  // di HA tutte le entita' non disponibili ripartono con last_changed = ora
-  // del riavvio, e quelle morte da giorni sembrerebbero appena cadute. Quindi
-  // la card ricorda nel browser (localStorage) da quando ha visto ciascuna
-  // entita' non disponibile, e last_changed serve solo la prima volta.
-  // Limite: in un browser che non ha mai aperto la vista, subito dopo un
-  // riavvio, le vecchie compaiono come nuove finche' non passano `hours` ore.
+  // Molte entita' sono non disponibili da sempre (prese spente, dispositivi
+  // dismessi, integrazioni cloud morte): segnalarle e' solo rumore. Per ogni
+  // entita' non disponibile si legge lo storico del recorder degli ultimi
+  // `worked_days` giorni (_fetchUnavHist): se c'e' almeno uno stato valido
+  // l'entita' funzionava, e "da quando" e' l'inizio dell'ultima serie di stati
+  // non disponibili. Lo storico sopravvive ai riavvii di HA, last_changed no.
+  // Se nella finestra e' sempre stata giu', si tace: resta solo nella tabella
+  // dei dispositivi della manutenzione. Finche' lo storico di un'entita' non
+  // e' arrivato (pochi istanti) l'entita' non si segnala.
   _freshUnav(now, unav, groups, byDev, devName) {
     const W = this.config.unavailable_watch || {};
-    const win = (W.hours || 24) * 3600000;
+    const grace = (W.grace_minutes != null ? W.grace_minutes : 2) * 60000;
     const xdom = W.exclude_domains || [];
     let wre = null;
     try {
@@ -13445,40 +13452,40 @@ class MonitorCard extends HTMLElement {
     } catch (e) {
       wre = null;
     }
-    const KEY = 'mgdd-monitor-unav-v1';
-    let mem = MonitorCard._unavMem;
-    if (!mem) {
-      try {
-        mem = JSON.parse(localStorage.getItem(KEY) || '{}') || {};
-      } catch (e) {
-        mem = {};
-      }
-    }
     const st = this._hass.states;
     const ents = this._hass.entities || {};
-    const next = {};
-    const out = {};
+    const watched = [];
     unav.forEach((id) => {
-      const lc = Date.parse(st[id].last_changed);
-      const since = mem[id] != null ? mem[id] : isNaN(lc) ? now : lc;
-      next[id] = since;
       const dom = id.slice(0, id.indexOf('.'));
       if (xdom.indexOf(dom) >= 0) return;
       const did = ents[id] && ents[id].device_id;
       const dn = did ? devName(did) : '';
       if (wre && (wre.test(id) || (dn && wre.test(dn)))) return;
-      if (now - since > win) return;
+      watched.push(id);
+    });
+    this._needUnavHist(watched, now);
+    const H = this._uh || {};
+    const worked = {};
+    const out = {};
+    watched.forEach((id) => {
+      const h = H[id];
+      if (!h || h.lc !== st[id].last_changed) return;
+      worked[id] = h.good ? 1 : -1;
+      if (!h.good) return;
+      let since = h.since;
+      if (since == null) {
+        const lc = Date.parse(st[id].last_changed);
+        since = isNaN(lc) ? now : lc;
+      }
+      worked[id] = since;
+      if (now - since < grace) return;
+      const did = ents[id] && ents[id].device_id;
       const k = did || id;
-      const g = out[k] || (out[k] = { did: did, name: dn || (st[id].attributes || {}).friendly_name || id, ids: [], since: 0 });
+      const g = out[k] || (out[k] = { did: did, name: did ? devName(did) : (st[id].attributes || {}).friendly_name || id, ids: [], since: 0 });
       g.ids.push(id);
       if (since > g.since) g.since = since;
     });
-    MonitorCard._unavMem = next;
-    try {
-      localStorage.setItem(KEY, JSON.stringify(next));
-    } catch (e) {
-      /* storage pieno o bloccato: resta la memoria della pagina */
-    }
+    this._worked = worked;
     return Object.keys(out)
       .map((k) => {
         const g = out[k];
@@ -13487,6 +13494,72 @@ class MonitorCard extends HTMLElement {
         return g;
       })
       .sort((a, b) => b.since - a.since);
+  }
+
+  // Chiede lo storico solo per le entita' nuove o cambiate (last_changed
+  // diverso da quello della richiesta precedente), e per tutte ogni ora,
+  // perche' la finestra di `worked_days` giorni scorre.
+  _needUnavHist(ids, now) {
+    if (!this._hass.callWS || this._uhBusy) return;
+    if (this._uhFail && now - this._uhFail < 60000) return;
+    const st = this._hass.states;
+    const H = this._uh || {};
+    const full = !this._uhAt || now - this._uhAt > 3600000;
+    const todo = full ? ids : ids.filter((id) => !H[id] || H[id].lc !== st[id].last_changed);
+    if (!todo.length) return;
+    this._fetchUnavHist(todo, ids, full);
+  }
+
+  async _fetchUnavHist(todo, ids, full) {
+    this._uhBusy = true;
+    const W = this.config.unavailable_watch || {};
+    const start = Date.now() - (W.worked_days || 7) * 86400000;
+    const st = this._hass.states;
+    const lcs = {};
+    todo.forEach((id) => (lcs[id] = st[id] ? st[id].last_changed : null));
+    const out = {};
+    const old = this._uh || {};
+    ids.forEach((id) => old[id] && (out[id] = old[id]));
+    try {
+      for (let i = 0; i < todo.length; i += 100) {
+        const chunk = todo.slice(i, i + 100);
+        const res = await this._hass.callWS({
+          type: 'history/history_during_period',
+          start_time: new Date(start).toISOString(),
+          entity_ids: chunk,
+          minimal_response: true,
+          no_attributes: true,
+          significant_changes_only: false,
+        });
+        chunk.forEach((id) => {
+          let good = false;
+          let since = null;
+          ((res && res[id]) || []).forEach((r) => {
+            const s = r.s != null ? r.s : r.state;
+            if (s === 'unavailable' || s === 'unknown') {
+              if (since == null) {
+                const t = r.lu != null ? r.lu * 1000 : r.lc != null ? r.lc * 1000 : Date.parse(r.last_changed || r.last_updated);
+                since = isNaN(t) ? null : t;
+              }
+            } else {
+              good = true;
+              since = null;
+            }
+          });
+          out[id] = { lc: lcs[id], good: good, since: good ? since : null };
+        });
+      }
+      if (full) this._uhAt = Date.now();
+      this._uhFail = 0;
+    } catch (e) {
+      /* storico non disponibile: si riprova fra un minuto */
+      this._uhFail = Date.now();
+    }
+    this._uh = out;
+    this._uhBusy = false;
+    this._scanAt = 0;
+    this._maybeScan();
+    this._schedule();
   }
 
   // "Sensore temperatura bagno Batteria" -> "Batteria" quando il dispositivo e' gia' nel titolo
@@ -13498,9 +13571,11 @@ class MonitorCard extends HTMLElement {
 
   _freshBanner() {
     const sc = this._scan;
-    if (!sc || !sc.fresh || !sc.fresh.length) return '';
+    if (!sc || !sc.fresh) return '';
     const now = Date.now();
-    const f = sc.fresh;
+    const win = ((this.config.unavailable_watch || {}).hours || 24) * 3600000;
+    const f = sc.fresh.filter((g) => now - g.since <= win);
+    if (!f.length) return '';
     const list = f.slice(0, 4).map((g) => mgddEsc(g.name) + ' <span class="w">da ' + monDur(now - g.since) + '</span>').join(' · ') +
       (f.length > 4 ? ' · e altri ' + (f.length - 4) : '');
     return '<button type="button" class="mn-alert" data-nav="manutenzione"><i></i><span class="t">' +
@@ -13613,18 +13688,34 @@ class MonitorCard extends HTMLElement {
       const t = Date.parse(st[id].last_changed);
       if (!isNaN(t) && t < g.since) g.since = t;
     });
+    const fresh = this._freshUnav(now, unav, groups, byDev, devName);
+
+    // Giudizio dallo storico (vedi _freshUnav): "da verificare" se qualche
+    // entita' funzionava fino a poco fa, "ferma da tempo" se negli ultimi
+    // `worked_days` giorni non ha mai avuto un valore. Senza storico (domini
+    // esclusi, storico non ancora arrivato) resta il giudizio di prima.
+    const wk = this._worked || {};
     const devRows = Object.keys(groups)
       .map((k) => {
         const g = groups[k];
         const tot = g.did ? (byDev[g.did] || []).length : g.ids.length;
         const all = !!g.did && g.ids.length >= tot;
-        const days = (now - g.since) / 86400000;
-        let verdict = 'atteso';
-        if (!g.did) verdict = 'verificare';
-        else if (all) verdict = days > T.silent_days ? 'rimuovere' : 'verificare';
-        return { name: g.name, n: g.ids.length, tot: tot, all: all, since: g.since, verdict: verdict, ids: g.ids };
+        const ws = g.ids.map((id) => wk[id]).filter((v) => v != null);
+        const good = ws.filter((v) => v > 0);
+        let verdict = all || !g.did ? 'verificare' : 'atteso';
+        let since = g.since;
+        let worked = false;
+        if (good.length) {
+          worked = true;
+          verdict = 'verificare';
+          since = Math.max.apply(null, good);
+        } else if (ws.length) {
+          verdict = 'ferma';
+          since = null;
+        }
+        return { name: g.name, n: g.ids.length, tot: tot, all: all, since: since, verdict: verdict, ids: g.ids, worked: worked };
       })
-      .sort((a, b) => b.n - a.n);
+      .sort((a, b) => (b.worked - a.worked) || (a.worked ? b.since - a.since : b.n - a.n));
 
     // app: le entita' update dell'integrazione Supervisor, tranne core/supervisor/os
     const apps = [];
@@ -13653,8 +13744,6 @@ class MonitorCard extends HTMLElement {
     const unavDomList = Object.keys(unavDom)
       .map((d) => ({ d: d, n: unavDom[d] }))
       .sort((a, b) => b.n - a.n);
-
-    const fresh = this._freshUnav(now, unav, groups, byDev, devName);
 
     return {
       fresh: fresh,
@@ -13894,67 +13983,32 @@ class MonitorCard extends HTMLElement {
       add(lvl, 'Batteria ' + b.name + ' al ' + monNum(b.val) + ' %',
         lvl === 'a' ? 'Da cambiare subito.' : lvl === 'm' ? 'Da cambiare a breve.' : 'Sotto il ' + T.battery_low + ' %: da tenere d’occhio.', b.id);
     });
-    // appena cadute: priorita' media, una voce per dispositivo (al massimo 6)
+    // Dispositivi che funzionavano e ora non rispondono (vedi _freshUnav):
+    // priorita' media finche' non tornano, una voce per dispositivo (al
+    // massimo 6). Quelli giu' da sempre non compaiono qui.
     const fr = sc.fresh || [];
     const shownF = fr.length > 6 ? fr.slice(0, 5) : fr;
     shownF.forEach((g) => {
       const names = g.ids.map((id) => this._short(id, g.did ? g.name : ''));
-      add('m', g.all || !g.did ? '«' + g.name + '» non disponibile' : '«' + g.name + '»: ' + g.ids.length + (g.ids.length === 1 ? ' entità non disponibile' : ' entità non disponibili'),
-        'Da ' + monDur(now - g.since) + (g.did ? ' · ' + names.slice(0, 3).join(', ') + (names.length > 3 ? ' e altre ' + (names.length - 3) : '') : '') + '.',
-        g.ids[0]);
+      const tit = g.all || !g.did
+        ? '«' + g.name + '» non disponibile'
+        : '«' + g.name + '»: ' + g.ids.length + (g.ids.length === 1 ? ' entità non disponibile' : ' entità non disponibili');
+      const det = g.all
+        ? (g.ids.length === 1 ? 'La sua unica entità non risponde' : 'Tutte le sue ' + g.ids.length + ' entità non rispondono') + ': batteria, copertura radio o dispositivo spento.'
+        : g.did ? names.slice(0, 3).join(', ') + (names.length > 3 ? ' e altre ' + (names.length - 3) : '') + '.' : '';
+      add('m', tit, 'Da ' + monDur(now - g.since) + (det ? ' · ' + det : '.'), g.ids[0]);
     });
     if (fr.length > 6) {
       const rest = fr.slice(5);
-      add('m', 'Altri ' + rest.length + ' dispositivi non disponibili da poco', rest.map((g) => g.name).join(', ') + '.', null,
+      add('m', 'Altri ' + rest.length + ' dispositivi non disponibili', rest.map((g) => g.name).join(', ') + '.', null,
         c.page === 'manutenzione' ? null : { label: 'Vedi', nav: 'manutenzione' });
-    }
-    const freshDev = {};
-    fr.forEach((g) => g.did && (freshDev[g.name] = 1));
-    // Dispositivi del tutto muti (tutte le entita' non disponibili): restano
-    // MEDIA finche' non tornano, non solo nelle prime 24 h. Oltre `silent_days`
-    // (30) passano a BASSA come "da rimuovere?", per non tenere la pillola
-    // accesa per sempre su dispositivi abbandonati. Il "da quando" viene dalla
-    // memoria del browser (vedi _freshUnav): last_changed riparte a ogni riavvio.
-    // I muti gia' segnalati come appena caduti non si ripetono qui.
-    const W = c.unavailable_watch || {};
-    let wre = null;
-    try {
-      wre = W.exclude ? new RegExp(W.exclude, 'i') : null;
-    } catch (e) {
-      wre = null;
-    }
-    const mem = MonitorCard._unavMem || {};
-    const muti = sc.devRows
-      .filter((r) => r.all && !freshDev[r.name] && !(wre && (wre.test(r.name) || r.ids.some((id) => wre.test(id)))))
-      .map((r) => {
-        const s = Math.min.apply(null, r.ids.map((id) => (mem[id] != null ? mem[id] : r.since)));
-        return Object.assign({}, r, { since: isFinite(s) ? s : r.since });
-      })
-      .sort((a, b) => b.since - a.since);
-    const vecchi = muti.filter((r) => now - r.since > T.silent_days * 86400000);
-    const recenti = muti.filter((r) => now - r.since <= T.silent_days * 86400000);
-    const shownM = recenti.length > 8 ? recenti.slice(0, 7) : recenti;
-    shownM.forEach((r) => {
-      add('m', '«' + r.name + '» non disponibile da ' + monDur(now - r.since),
-        (r.n === 1 ? 'La sua unica entità è non disponibile' : 'Tutte le sue ' + r.n + ' entità sono non disponibili') +
-          ': batteria, copertura radio o dispositivo spento.', r.ids[0]);
-    });
-    if (recenti.length > 8) {
-      const rest = recenti.slice(7);
-      add('m', 'Altri ' + rest.length + ' dispositivi non disponibili', rest.map((r) => r.name).join(', ') + '.', null,
-        c.page === 'manutenzione' ? null : { label: 'Vedi', nav: 'manutenzione' });
-    }
-    if (vecchi.length) {
-      add('b', vecchi.length === 1 ? '«' + vecchi[0].name + '» muto da ' + monDur(now - vecchi[0].since) : vecchi.length + ' dispositivi muti da oltre ' + T.silent_days + ' giorni',
-        (vecchi.length === 1 ? '' : vecchi.map((r) => r.name).join(', ') + '. ') + 'Da rimuovere, se non servono più.',
-        vecchi.length === 1 ? vecchi[0].ids[0] : null);
     }
     const ord = { a: 0, m: 1, b: 2 };
     return out.sort((x, y) => ord[x.lvl] - ord[y.lvl]);
   }
 
   // Contano solo le priorita' alta e media: le basse (batterie sotto il 50 %,
-  // notifiche, dispositivi muti) stanno nella lista della manutenzione.
+  // notifiche) stanno nella lista della manutenzione.
   _pill(issues) {
     const a = issues.filter((i) => i.lvl === 'a').length;
     const m = issues.filter((i) => i.lvl === 'm').length;
@@ -14642,14 +14696,14 @@ class MonitorCard extends HTMLElement {
     // non disponibili per dispositivo
     const verd = {
       verificare: '<span class="mn-critt">da verificare</span>',
-      rimuovere: '<span class="mn-warnt">da rimuovere</span>',
+      ferma: '<span class="mn-mu">ferma da tempo</span>',
       atteso: '<span class="mn-mu">parziale</span>',
     };
     const shown = sc.devRows.slice(0, 12);
     const others = sc.devRows.slice(12);
     const rows = shown.map((r) =>
       '<tr data-more="' + mgddEsc(r.ids[0]) + '"><td>' + mgddEsc(r.name) + '</td><td>' + r.n + (r.tot > r.n ? ' <span class="mn-fa">di ' + r.tot + '</span>' : '') + '</td>' +
-      '<td class="mn-mu">' + (isFinite(r.since) ? monDur(now - r.since) : '—') + '</td><td>' + verd[r.verdict] + '</td></tr>'
+      '<td class="mn-mu">' + (r.verdict === 'ferma' ? 'oltre ' + ((this.config.unavailable_watch || {}).worked_days || 7) + ' g' : isFinite(r.since) ? monDur(now - r.since) : '—') + '</td><td>' + verd[r.verdict] + '</td></tr>'
     ).join('') +
       (others.length
         ? '<tr class="rest"><td colspan="4">+ ' + (others.length === 1 ? 'un altro dispositivo' : 'altri ' + others.length + ' dispositivi') + ', ' +
@@ -14658,7 +14712,7 @@ class MonitorCard extends HTMLElement {
     const unavCard =
       '<div class="mn-card c12"><div class="mn-row"><h2 class="mn-h2">Entità non disponibili per dispositivo</h2><span class="mn-note">' + sc.unav + ' totali</span></div>' +
       '<div class="mn-tbl"><table class="sm"><thead><tr><th>Dispositivo</th><th>Entità</th><th>Da</th><th>Giudizio</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-      '<span class="mn-note">«Da verificare»: tutte le entità del dispositivo sono giù. «Parziale»: solo alcune, di solito sensori che si spengono con il dispositivo.</span>' +
+      '<span class="mn-note">«Da verificare»: funzionava fino a poco fa, oppure è giù tutto il dispositivo. «Ferma da tempo»: nessun valore negli ultimi ' + ((this.config.unavailable_watch || {}).worked_days || 7) + ' giorni, non si segnala. «Parziale»: solo alcune entità, di solito sensori che si spengono con il dispositivo.</span>' +
       this._id('hass.states + registro entità/dispositivi') + '</div>';
 
     // automazioni ferme

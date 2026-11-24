@@ -196,11 +196,16 @@
       ['portagarage', 'Sensore porta garage', 3, 3, 12 / 1440],
       ['presalav', 'Presa lavanderia', 1, 6, 3 / 24],
     ];
+    // storico: chi e' caduto da meno di 7 giorni prima funzionava, gli altri
+    // nello storico sono sempre giu' (come OneDrive, Echo, prese Meross/Nous)
+    const fellAt = {};
     un.forEach((u) => {
       const ids = [];
       for (let i = 0; i < u[3]; i++) {
         const dom = i % 5 === 0 ? 'select' : i % 3 === 0 ? 'switch' : 'sensor';
-        ids.push(s(dom + '.' + u[0] + '_' + i, i < u[2] ? 'unavailable' : '1', {}, { last_changed: iso(now - u[4] * D) }));
+        const id = s(dom + '.' + u[0] + '_' + i, i < u[2] ? 'unavailable' : '1', {}, { last_changed: iso(now - Math.min(u[4], 1.6) * D) });
+        if (i < u[2]) fellAt[id] = now - u[4] * D;
+        ids.push(id);
       }
       dev('u_' + u[0], u[1], ids);
     });
@@ -261,7 +266,19 @@
         });
         return out;
       }
-      if (msg.type === 'history/history_during_period') return { 'event.backup_backup_automatico': backupEvents };
+      if (msg.type === 'history/history_during_period') {
+        const out = {};
+        const t0 = Date.parse(msg.start_time);
+        msg.entity_ids.forEach((id) => {
+          if (id === 'event.backup_backup_automatico') out[id] = backupEvents;
+          else if (fellAt[id] != null) {
+            out[id] = fellAt[id] > t0
+              ? [{ s: '1', lu: t0 / 1000 }, { s: 'unavailable', lu: fellAt[id] / 1000 }]
+              : [{ s: 'unavailable', lu: t0 / 1000 }];
+          }
+        });
+        return out;
+      }
       if (msg.type === 'repairs/list_issues') {
         return { issues: scenario === 'allarmi' ? [{ domain: 'hacs', issue_id: 'restart_required', translation_key: 'restart_required', severity: 'warning', ignored: false }] : [] };
       }
