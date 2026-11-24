@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.109.0
+ * Version: 1.109.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -17592,6 +17592,38 @@ window.customCards.push({
 const LT_DOOR = 'binary_sensor.aeg_lavatrice_aeg_9000_doorstate';
 const LT_ALERTS = 'sensor.aeg_lavatrice_aeg_9000_alerts';
 
+// Avvisi della lavatrice. Lo stato di LT_ALERTS conta ogni attributo diverso da
+// OFF, anche "TOP_UP_SALT: WARNING-NOT_NEEDED" (sale, che la lavatrice non usa):
+// la tile restava rossa per niente (24/11/2026). Ogni attributo vale
+// "GRAVITA'-STATO"; per l'utente "Intervento richiesto" solo per un problema
+// grave (tipo E20), quindi contano solo le gravita' di LT_GRAVI. WARNING,
+// DIAGNOSTIC e ALERT_UNDER_TEST (visti finora, tutti NOT_NEEDED) si ignorano.
+// Il valore di un E20 vero non e' mai stato visto: la lista e' dedotta.
+const LT_GRAVI = ['ALERT', 'FAULT', 'ERROR', 'CRITICAL'];
+const LT_AVVISI = {
+  CHECK_DRAIN_FILTER: 'Controlla il filtro di scarico',
+  CHECK_INLET_TAP: 'Controlla il rubinetto dell’acqua',
+  WATER_LEAK: 'Perdita d’acqua',
+  CHECK_DOOR: 'Controlla l’oblò',
+  DOOR: 'Controlla l’oblò',
+  POWER_FAILURE: 'Mancanza di corrente durante il lavaggio',
+  UNSTABLE_SUPPLY_VOLTAGE: 'Tensione di rete instabile',
+  UNBALANCED_LAUNDRY: 'Carico sbilanciato',
+  DETERGENT_OVERDOSING: 'Troppo detersivo',
+  MACHINE_RESTART: 'La lavatrice si è riavviata',
+};
+function ltAvvisiGravi(hass) {
+  const s = hass.states[LT_ALERTS];
+  if (!s || !s.attributes) return [];
+  const out = [];
+  Object.keys(s.attributes).forEach((k) => {
+    const v = s.attributes[k];
+    if (typeof v !== 'string' || !/^[A-Z_]+$/.test(k)) return;
+    if (LT_GRAVI.indexOf(v.split('-')[0].toUpperCase()) >= 0) out.push(k);
+  });
+  return out;
+}
+
 // "Cotone · 40° · 1000 giri" da quello che la lavatrice ha impostato adesso
 function ltRiassuntoMacchina(hass) {
   const v = (id) => (hass.states[id] ? hass.states[id].state : '');
@@ -17661,7 +17693,7 @@ class LaundryTileCard extends HTMLElement {
     this._hass = hass;
     const ids = Object.keys(LP_E).map((k) => LP_E[k]).concat([LT_DOOR, LT_ALERTS]);
     const st = hass.states[LP_E.stato];
-    const sig = mgddStatesSig(hass, ids) + (st ? st.last_changed : '') + (hass.themes && hass.themes.darkMode ? 'D' : 'L');
+    const sig = mgddStatesSig(hass, ids) + (st ? st.last_changed : '') + ltAvvisiGravi(hass).join(',') + (hass.themes && hass.themes.darkMode ? 'D' : 'L');
     if (sig !== this._sig) {
       this._sig = sig;
       this._render();
@@ -17694,7 +17726,7 @@ class LaundryTileCard extends HTMLElement {
     const da = sm ? new Date(sm.last_changed) : null;
     const macchina = mgddEsc(ltRiassuntoMacchina(h));
     const salvate = lpParse(h.states[LP_E.impostazioni] ? h.states[LP_E.impostazioni].state : null);
-    const alerts = Number(h.states[LT_ALERTS] ? h.states[LT_ALERTS].state : 0) || 0;
+    const gravi = ltAvvisiGravi(h);
     const fase = LP_FASI[m.fase];
 
     // scollegata: gli altri sensori restano fermi sull'ultimo valore, non valgono.
@@ -17702,8 +17734,9 @@ class LaundryTileCard extends HTMLElement {
     // A riposo (scollegata o spenta) la tile ha l'aspetto di una tile nativa, per non
     // stonare con le vicine; pillola e righe di dettaglio restano agli stati attivi.
     if (!m.conn) return { riposo: true, ico: 'washing-machine-off', pill: 'Disconnessa' };
-    if (m.stato === 'Alarm' || alerts > 0) {
-      return { c: 'r', ico: 'washing-machine-alert', pill: 'Intervento richiesto', l2: macchina, l3: 'Controlla la lavatrice o la app AEG' };
+    if (m.stato === 'Alarm' || gravi.length) {
+      const cosa = gravi.length ? (LT_AVVISI[gravi[0]] || 'Avviso ' + gravi[0].toLowerCase().replace(/_/g, ' ')) : 'Controlla la lavatrice o la app AEG';
+      return { c: 'r', ico: 'washing-machine-alert', pill: 'Intervento richiesto', l2: macchina, l3: mgddEsc(cosa) };
     }
     if (m.stato === 'Running' && m.fase === 'Anticrease') {
       return { c: 'g', ico: 'washing-machine', pill: 'Antipiega', l2: macchina, l3: 'Lavaggio finito: si pu\u00f2 aprire e svuotare' };

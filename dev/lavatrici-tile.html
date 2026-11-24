@@ -78,6 +78,8 @@
     ['Fine ciclo', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'End Of Cycle', 35); set(s, 'sensor.' + P + 'timetoend', 0); }],
     ['In pausa', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Paused'); set(s, 'sensor.' + P + 'timetoend', 40); }],
     ['Allarme', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Alarm'); set(s, 'sensor.' + P + 'alerts', 1); }],
+    ['Pronta, avviso sale non grave (24/11: deve restare normale)', (s) => { s['sensor.' + P + 'alerts'] = Object.assign(S(1), { attributes: { CHECK_DRAIN_FILTER: 'ALERT_UNDER_TEST-NOT_NEEDED', TOP_UP_SALT: 'WARNING-NOT_NEEDED', DETERGENT_OVERDOSING: 'DIAGNOSTIC-NOT_NEEDED', DOOR: 'OFF' } }); }],
+    ['Avviso grave simulato (filtro scarico, tipo E20)', (s) => { s['sensor.' + P + 'alerts'] = Object.assign(S(1), { attributes: { CHECK_DRAIN_FILTER: 'ALERT-NEEDED', TOP_UP_SALT: 'OFF' } }); }],
     ['Spenta (collegata)', (s) => { set(s, 'sensor.' + P + 'appliancestate', 'Off'); }],
     ['Disconnessa (sensori congelati su Running)', (s) => { set(s, 'sensor.' + P + 'connectivitystate', 'Disconnected', 601); set(s, 'sensor.' + P + 'appliancestate', 'Running'); set(s, 'sensor.' + P + 'cyclephase', 'Anticrease'); }],
   ];
