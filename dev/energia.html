@@ -20,7 +20,7 @@
 <body class="dark">
 <div class="bar">
   <button id="dark">Chiaro / scuro</button>
-  <button data-sim="sera">Sera</button><button data-sim="sole">Mezzogiorno</button><button data-sim="carica">Rete → batteria</button>
+  <button data-sim="sera">Sera</button><button data-sim="sole">Mezzogiorno</button><button data-sim="carica">Rete → batteria</button><button id="vari">Cambia consumi</button><button id="stile">Particelle / scia</button>
   <span>Dati finti: stati fissi, statistiche generate. Tocco su una presa: commuta dopo 400 ms.</span>
 </div>
 <div class="page">
@@ -153,10 +153,10 @@ const CIRC = [['Piano induzione', 'sensor.shelly_pro_3em_piano_induzione_power']
 add('c1', 'energy-power-card', { layout: 'balance', title: 'Casa · energia', cumulative: true, house: 'sensor.powerwall3_load_import', solar: 'sensor.powerwall3_solar_export',
   grid_import: 'sensor.powerwall3_site_import', grid_export: 'sensor.powerwall3_site_export', battery_charge: 'sensor.powerwall3_battery_import',
   battery_discharge: 'sensor.powerwall3_battery_export', power_entity: 'sensor.powerwall3_load_power' });
-add('c1', 'energy-controls-card', { layout: 'ups-status', ups: { status_entity: 'binary_sensor.ups_tower_rete', battery_entity: 'sensor.ups_tower_livello_della_batteria',
+add('c1', 'energy-controls-card', { layout: 'ups-status', title: 'UPS', ups: { status_entity: 'binary_sensor.ups_tower_rete', battery_entity: 'sensor.ups_tower_livello_della_batteria',
   time_left_entity: 'sensor.ups_tower_durata_della_batteria', power_entity: 'sensor.ups_potenza', voltage_entity: 'sensor.ups_tower_tensione_di_bypass' } });
 add('c2', 'energy-flow-card', { solar_power: 'sensor.powerwall3_solar_power', battery_power: 'sensor.powerwall3_battery_power', battery_soc: 'sensor.powerwall3_charge',
-  grid_power: 'sensor.powerwall3_site_power', house_power: 'sensor.powerwall3_load_power', battery_min_flow: 150, arrival: 'ripple', grid_to_battery: false });
+  grid_power: 'sensor.powerwall3_site_power', house_power: 'sensor.powerwall3_load_power', battery_min_flow: 150, arrival: 'ripple', grid_to_battery: false, style: 'particles' });
 const two = document.createElement('div'); two.className = 'two'; two.innerHTML = '<div id="c2a"></div><div id="c2b"></div>'; document.getElementById('c2').appendChild(two);
 add('c2a', 'energy-power-card', { layout: 'loads', power_entity: 'sensor.powerwall3_load_power', active_threshold: 1, active_count: 8, circuits: CIRC });
 add('c2b', 'energy-power-card', { layout: 'plugs', title: 'Prese', circuits: CIRC.filter((c) => c.switch) });
@@ -171,6 +171,18 @@ add('c3', 'energy-monthly-card', { entity: 'sensor.sonoff_10023341b5_energy_day'
 document.getElementById('dark').onclick = () => {
   const d = document.body.classList.toggle('dark'); document.body.classList.toggle('light', !d);
   hass.themes = { darkMode: d }; push();
+};
+document.getElementById('vari').onclick = () => {
+  const k = 0.6 + Math.random() * 0.8;
+  put('sensor.powerwall3_load_power', (+S['sensor.powerwall3_load_power'].state * k).toFixed(3), KW);
+  put('sensor.powerwall3_site_power', (+S['sensor.powerwall3_site_power'].state * k).toFixed(3), KW);
+  Object.keys(LOADS).forEach((id) => { if (LOADS[id]) put(id, (LOADS[id] * (0.6 + Math.random() * 0.8)).toFixed(1), W); });
+  put('sensor.ups_potenza', Math.round(54 * k), W);
+  push();
+};
+document.getElementById('stile').onclick = () => {
+  const f = document.querySelector('energy-flow-card');
+  f.config.style = f.config.style === 'particles' ? 'beam' : 'particles'; f._akeys = ''; push();
 };
 document.querySelectorAll('[data-sim]').forEach((b) => { b.onclick = () => { sim(b.dataset.sim); push(); }; });
 </script>

@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.108.1
+ * Version: 1.109.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -130,9 +130,17 @@ const MGDD_MAX_WAIT = 2000;
 // sempre. Meglio arrendersi presto che tenere in piedi un diff furbo e fragile.
 function mgddPatchNode(vecchio, nuovo) {
   if (vecchio.nodeType !== nuovo.nodeType) return false;
-  // testo e commenti: si copia il contenuto se e' cambiato
+  // testo e commenti: si copia il contenuto se e' cambiato. Se il genitore ha
+  // l'attributo data-tw (v1.109) e il testo e' un numero, il numero scorre dal
+  // valore vecchio al nuovo invece di saltare.
   if (vecchio.nodeType === 3 || vecchio.nodeType === 8) {
-    if (vecchio.data !== nuovo.data) vecchio.data = nuovo.data;
+    if (vecchio.data !== nuovo.data) {
+      const p = vecchio.parentNode;
+      if (!(vecchio.nodeType === 3 && p && p.hasAttribute && p.hasAttribute('data-tw') && mgddTween(vecchio, nuovo.data))) {
+        if (vecchio._mgddTw) vecchio._mgddTw.stop = true;
+        vecchio.data = nuovo.data;
+      }
+    }
     return true;
   }
   if (vecchio.nodeType !== 1) return true;
@@ -262,13 +270,77 @@ class MgddSeq {
   }
 }
 // Esegue fn(seq) una volta sola per l'elemento, al fotogramma dopo il disegno.
+// Se nei 2,5 s successivi mgddPaint deve ricostruire il contenuto (arrivano le
+// statistiche, compare una sezione), l'ingresso si ripete sui nodi nuovi: prima
+// restava attaccato ai nodi buttati via e non si vedeva (v1.109).
 function mgddIntro(el, fn) {
   if (el._mgddIntro) return;
   el._mgddIntro = true;
   if (mgddReduce()) return;
+  el._mgddIntroFn = fn;
+  el._mgddIntroAt = Date.now();
   requestAnimationFrame(() => {
     try { fn(new MgddSeq()); } catch (e) { /* l'ingresso e' un abbellimento: mai bloccare la card */ }
   });
+}
+function mgddIntroReplay(el) {
+  if (!el._mgddIntroFn || Date.now() - el._mgddIntroAt > 2500) { el._mgddIntroFn = null; return; }
+  const fn = el._mgddIntroFn;
+  requestAnimationFrame(() => {
+    try { fn(new MgddSeq()); } catch (e) { /* niente */ }
+  });
+}
+// Fa scorrere un numero dentro un nodo di testo dal valore mostrato a `testo`
+// (400 ms). Torna false se vecchio e nuovo non sono lo stesso numero con lo
+// stesso contorno ("54 W" -> "61 W" si', "54 W" -> "In attesa" no): allora chi
+// chiama scrive il testo e basta.
+function mgddTween(node, testo) {
+  if (mgddReduce()) return false;
+  const re = /-?\d+(?:[.,]\d+)?/;
+  const a = re.exec(node._mgddTw && !node._mgddTw.stop ? node._mgddTw.to : node.data);
+  const b = re.exec(testo);
+  if (!a || !b) return false;
+  const src = node._mgddTw && !node._mgddTw.stop ? node._mgddTw.to : node.data;
+  if (src.slice(0, a.index) !== testo.slice(0, b.index) ||
+    src.slice(a.index + a[0].length) !== testo.slice(b.index + b[0].length)) return false;
+  if (node._mgddTw && !node._mgddTw.stop && node._mgddTw.to === testo) return true;
+  const num = (m) => parseFloat(m[0].replace(',', '.'));
+  // si parte dal valore che si vede adesso, anche se a meta' di uno scorrimento
+  const cur = re.exec(node.data);
+  const from = cur ? num(cur) : num(a);
+  const to = num(b);
+  if (!isFinite(from) || !isFinite(to) || from === to) return false;
+  const dec = (b[0].split(/[.,]/)[1] || '').length;
+  const sep = b[0].indexOf(',') >= 0 ? ',' : '.';
+  const pre = testo.slice(0, b.index);
+  const post = testo.slice(b.index + b[0].length);
+  if (node._mgddTw) node._mgddTw.stop = true;
+  const tw = { to: testo, stop: false };
+  node._mgddTw = tw;
+  const t0 = performance.now();
+  const step = (now) => {
+    if (tw.stop || !node.isConnected) return;
+    const k = Math.min(1, (now - t0) / 400);
+    const e = 1 - Math.pow(1 - k, 3);
+    node.data = k === 1 ? testo : pre + (from + (to - from) * e).toFixed(dec).replace('.', sep) + post;
+    if (k < 1) requestAnimationFrame(step);
+    else tw.stop = true;
+  };
+  requestAnimationFrame(step);
+  return true;
+}
+// Per chi scrive il testo da se' (flusso energia): stesso scorrimento, o scrittura secca.
+function mgddSetNum(el, testo) {
+  if (!el) return;
+  const tn = el.firstChild;
+  if (tn && tn.nodeType === 3 && el.childNodes.length === 1) {
+    if (tn.data === testo && !tn._mgddTw) return;
+    if (mgddTween(tn, testo)) return;
+    if (tn._mgddTw) tn._mgddTw.stop = true;
+    tn.data = testo;
+    return;
+  }
+  el.textContent = testo;
 }
 // Curva monotona (Fritsch-Carlson) per i grafici ad area: non sfora mai sopra il
 // massimo ne' sotto lo zero, a differenza della Catmull-Rom.
@@ -409,6 +481,7 @@ function mgddPaint(el, styles, html) {
   const inputStamp = mgddLastInput;
   el._mgddBody.innerHTML = html;
   el._mgddHtml = html;
+  if (el._mgddIntroFn) mgddIntroReplay(el);
   if (sc && top0 > 0) {
     // La correzione del browser non arriva sempre nello stesso frame dello
     // scambio: si ricontrolla per qualche frame. Soglia bassa, perche' anche uno
@@ -2559,7 +2632,7 @@ class EnergyPowerCard extends HTMLElement {
       '<div class="epb-cell" data-entity="' + (entity || '') + '">' +
       '<div class="epb-cl">' + label + '</div>' + value + (extra || '') + '</div>';
     const kwhCell = cell(c.house, periodLab,
-      '<div class="epb-cv epb-cv-s">' + this._fmt(house, '', 1) +
+      '<div class="epb-cv epb-cv-s" data-tw>' + this._fmt(house, '', 1) +
       '<span class="epb-cu">kWh</span></div>',
       chip ? '<div class="epb-cc">' + chip + '</div>' : '');
     let hero;
@@ -2567,7 +2640,7 @@ class EnergyPowerCard extends HTMLElement {
       hero =
         '<div class="epb-duo">' +
         cell(c.power_entity, 'adesso',
-          '<div class="epb-cv">' + this._fmt(power, '', power < 10 ? 1 : 0) +
+          '<div class="epb-cv" data-tw>' + this._fmt(power, '', power < 10 ? 1 : 0) +
           '<span class="epb-cu">W</span></div>') +
         kwhCell + '</div>';
       // v1.108 (variante "Essenziale"): niente semicerchio, ripeteva la barra. La
@@ -2626,7 +2699,7 @@ class EnergyPowerCard extends HTMLElement {
       '<div class="epb-kl">' + label + '</div></div>';
     // riga dell'autosufficienza: titolo a sinistra, percentuale a destra
     const selfRow = power !== null
-      ? '<div class="epb-sh"><span>Autosufficienza</span><b>' + pctTxt + '<small>%</small></b></div>'
+      ? '<div class="epb-sh"><span>Autosufficienza</span><b data-tw>' + pctTxt + '<small>%</small></b></div>'
       : '';
 
     mgddPaint(this, this._styles(),
@@ -3344,7 +3417,7 @@ class EnergyPowerCard extends HTMLElement {
         '<span class="load-dot" style="background:' + color + '"></span>' +
         '<span class="load-name">' + c.name + '</span>' +
         '<span class="load-pct">' + pctOf(c.val) + '</span>' +
-        '<span class="load-w">' + this._fmt(c.val, ' W', c.val < 10 ? 1 : 0) + '</span>' +
+        '<span class="load-w" data-tw>' + this._fmt(c.val, ' W', c.val < 10 ? 1 : 0) + '</span>' +
         '</div>'
       );
     });
@@ -3438,7 +3511,7 @@ class EnergyPowerCard extends HTMLElement {
         '<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' +
         this._plugIcon(x.icon) + '</svg></span>' +
         '<span class="mv-n">' + x.name + '</span>' +
-        '<span class="mv-s">' + det + '</span>' +
+        '<span class="mv-s" data-tw>' + det + '</span>' +
         '</div>';
     });
     if (!tiles) tiles = '<div class="pwempty">Nessun circuito con interruttore configurato.</div>';
@@ -4731,7 +4804,7 @@ class EnergyControlsCard extends HTMLElement {
     const cella = (label, valore, unita, entity, sotto) =>
       '<div' + (entity ? ' data-entity="' + entity + '"' : '') + '>' +
       '<div class="ups-l">' + label + '</div>' +
-      '<div class="ups-v">' + valore + (unita ? '<span class="ups-u">' + unita + '</span>' : '') + '</div>' +
+      '<div class="ups-v" data-tw>' + valore + (unita ? '<span class="ups-u">' + unita + '</span>' : '') + '</div>' +
       (sotto || '') + '</div>';
 
     // v1.108: la batteria come livello "liquido" con un'onda leggera (stile Kokonut
@@ -4746,7 +4819,7 @@ class EnergyControlsCard extends HTMLElement {
     };
     const liquido =
       '<div class="ups-lq"' + (c.battery_entity ? ' data-entity="' + c.battery_entity + '"' : '') + '>' +
-      '<svg viewBox="0 0 64 64" width="56" height="56" aria-hidden="true">' +
+      '<svg viewBox="0 0 64 64" width="64" height="64" aria-hidden="true">' +
       '<defs><clipPath id="' + cid + '"><circle cx="32" cy="32" r="27"/></clipPath></defs>' +
       '<circle cx="32" cy="32" r="30" fill="none" stroke="' + colore + '" stroke-opacity=".4" stroke-width="2"/>' +
       '<g clip-path="url(#' + cid + ')">' +
@@ -4755,18 +4828,28 @@ class EnergyControlsCard extends HTMLElement {
         '<path class="ups-w2" d="' + onda(top + 2, 3) + '" fill="' + colore + '" fill-opacity=".45"/>' +
         '<path class="ups-w1" d="' + onda(top + 4, 2.5) + '" fill="' + colore + '"/>') +
       '</g></svg>' +
-      '<span class="ups-lqv">' + (batteria === null ? '--' : this._fmt(batteria, '', 0)) + '<small>%</small></span></div>';
+      '<span class="ups-lqv" data-tw>' + (batteria === null ? '--' : this._fmt(batteria, '', 0)) + '<small>%</small></span></div>';
 
+    // v1.109 (come il mockup): a rete lo stato e' una riga discreta in testa, col
+    // titolo a sinistra e un pallino verde che pulsa. Su batteria resta la fascia
+    // rossa a tutta larghezza: e' l'avviso che conta, non va ridotto a una scritta.
+    const titolo = this.config.title ? '<span class="ups-t">' + this.config.title + '</span>' : '';
+    const testa = suBatteria
+      ? '<div class="ups-band b"' + (c.status_entity ? ' data-entity="' + c.status_entity + '"' : '') + '>' +
+        '<i class="ups-dot"></i><span class="ups-txt">' + testo + '</span>' +
+        '<span class="ups-when">' + coda + '</span></div>'
+      : '<div class="ups-hd">' + titolo +
+        '<span class="ups-st' + (noto ? '' : ' na') + '"' + (c.status_entity ? ' data-entity="' + c.status_entity + '"' : '') + '>' +
+        '<i class="ups-pg"></i>' + testo + (coda ? ' · ' + coda : '') + '</span></div>';
+    // anello sull'ultimo punto della curva del carico
+    const fine = this._upsEnd !== undefined && this._upsEnd !== null
+      ? '<i class="ups-mk" style="top:' + this._upsEnd.toFixed(1) + 'px"></i>' : '';
     const html =
-      '<div class="ups-c">' +
-      '<div class="ups-band' + (suBatteria ? ' b' : '') + '"' +
-      (c.status_entity ? ' data-entity="' + c.status_entity + '"' : '') + '>' +
-      '<i class="ups-dot"></i><span class="ups-txt">' + testo + '</span>' +
-      '<span class="ups-when">' + coda + '</span></div>' +
+      '<div class="ups-c ups-m">' + testa +
       '<div class="ups-vals ups-vals2">' + liquido +
       cella('Autonomia', autonomia === null ? '--' : this._fmt(autonomia, '', 0), 'min', c.time_left_entity) +
       cella('Carico', potenza === null ? '--' : this._fmt(potenza, '', 0), 'W', c.power_entity,
-        '<div class="ups-sp">' + (this._upsSpark || '') + '</div>') +
+        '<div class="ups-sp">' + (this._upsSpark || '') + fine + '</div>') +
       '</div>' +
       '</div>';
 
@@ -4814,6 +4897,8 @@ class EnergyControlsCard extends HTMLElement {
       const H = 24;
       const P = pts.map((p) => [Math.max(0, (p[0] - t0) / 3600000) * W, H - 1 - (p[1] / mx) * (H - 4)]);
       P.push([W, P[P.length - 1][1]]);
+      // y dell'ultimo punto in px del riquadro (alto 22 px, viewBox 24)
+      this._upsEnd = (P[P.length - 1][1] / H) * 22;
       // a gradini: la potenza resta quella finche' non cambia
       let d = 'M' + P[0][0].toFixed(1) + ',' + P[0][1].toFixed(1);
       for (let i = 1; i < P.length; i++) d += ' H' + P[i][0].toFixed(1) + ' V' + P[i][1].toFixed(1);
@@ -4905,7 +4990,22 @@ class EnergyControlsCard extends HTMLElement {
       '.ups-w2{animation:upsWave 5s linear infinite reverse;}' +
       '@keyframes upsWave{from{translate:0 0;}to{translate:-40px 0;}}' +
       '@media (prefers-reduced-motion:reduce){.ups-w1,.ups-w2{animation:none;}}' +
-      '.ups-sp{height:22px;margin-top:3px;}' +
+      '.ups-sp{height:22px;margin-top:3px;position:relative;}' +
+      // v1.109: testa discreta a rete, livello piu' grande, anello in fondo alla curva
+      '.ups-m{padding-top:2px;}' +
+      '.ups-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px 0;}' +
+      '.ups-t{font-size:14px;font-weight:650;color:var(--primary-text-color,#1c1c1e);}' +
+      '.ups-st{display:flex;align-items:center;gap:7px;margin-left:auto;font-size:12px;font-weight:550;' +
+      'color:var(--secondary-text-color,#6b6f76);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}' +
+      '.ups-pg{width:8px;height:8px;border-radius:50%;background:#0fb57e;flex:0 0 auto;animation:upsPing 2s infinite;}' +
+      '.ups-st.na .ups-pg{background:#8a8d93;animation:none;}' +
+      '@keyframes upsPing{0%{box-shadow:0 0 0 0 rgba(15,181,126,.55);}70%{box-shadow:0 0 0 7px rgba(15,181,126,0);}100%{box-shadow:0 0 0 0 rgba(15,181,126,0);}}' +
+      '.ups-vals2>.ups-lq{width:64px;height:64px;}' +
+      '.ups-lqv{font-size:16px;}' +
+      '.ups-m .ups-v{font-size:22px;}' +
+      '.ups-mk{position:absolute;right:0;width:9px;height:9px;border-radius:50%;transform:translate(50%,-50%);' +
+      'border:2px solid #0fb57e;box-sizing:border-box;background:var(--ha-card-background,var(--card-background-color,#fff));}' +
+      '@media (prefers-reduced-motion:reduce){.ups-pg{animation:none;}}' +
       '.ups-sp svg{display:block;width:100%;height:22px;}' +
       '</style>'
     );
@@ -5578,7 +5678,7 @@ class EnergyMonthlyCard extends HTMLElement {
       '<div class="emc-card">' +
       '<div class="emc-top">' +
       '<div class="emc-titles"><span class="emc-title">' + cfg.title + '</span>' + (bigCap ? '<span class="emc-sub">' + bigCap + '</span>' : '') + '</div>' +
-      '<div class="emc-big">' + bigVal + '</div>' +
+      '<div class="emc-big" data-tw>' + bigVal + '</div>' +
       '</div>' +
       body +
       '</div>' +
@@ -5942,10 +6042,16 @@ class EnergyFlowCard extends HTMLElement {
     const u = this.querySelector('[data-u=' + id + ']');
     if (!v) return;
     if (val === null || val === undefined) { v.textContent = '—'; u.textContent = ''; return; }
-    if (unit) { v.textContent = String(Math.round(val)); u.textContent = unit; return; } // unità fissa (es. batteria in %)
+    // v1.109: a parita' di unita' il numero scorre dal vecchio al nuovo (mgddSetNum);
+    // se l'unita' cambia (W <-> kW) si scrive secco, uno scorrimento 843 -> 1.1 non avrebbe senso
+    const put = (txt, un) => {
+      if (u.textContent === un) mgddSetNum(v, txt);
+      else { v.textContent = txt; u.textContent = un; }
+    };
+    if (unit) { put(String(Math.round(val)), unit); return; } // unità fissa (es. batteria in %)
     const a = Math.abs(val);
-    if (a >= 1000) { v.textContent = (val / 1000).toFixed(1); u.textContent = 'kW'; }
-    else { v.textContent = String(Math.round(val)); u.textContent = 'W'; }
+    if (a >= 1000) put((val / 1000).toFixed(1), 'kW');
+    else put(String(Math.round(val)), 'W');
   }
 
   _pcount(power) {
@@ -6039,13 +6145,17 @@ class EnergyFlowCard extends HTMLElement {
     this._flows = flows;
     // v1.108: sopra 1200 W due scie per linea, sfalsate di mezzo percorso. Il "+"
     // nella firma fa ricostruire le scie quando un flusso passa la soglia.
-    const keys = Object.keys(flows).sort().map((k) => k + (flows[k] > 1200 ? '+' : '')).join(',');
+    // style: particles (v1.109): da 1 a 5 gocce per linea, piu' numerose con la
+    // potenza (logaritmo), distribuite uniformemente sul percorso
+    const parts = this.config.style === 'particles';
+    const quante = (w) => (parts ? Math.max(1, Math.min(5, Math.round(1 + 1.6 * Math.log10(1 + w / 20)))) : (w > 1200 ? 2 : 1));
+    const keys = Object.keys(flows).sort().map((k) => k + ':' + quante(flows[k])).join(',');
     if (keys !== this._akeys) {
       this._akeys = keys;
       this._pulses = [];
       Object.keys(flows).forEach((k) => {
-        this._pulses.push({ key: k, head: 0 });
-        if (flows[k] > 1200) this._pulses.push({ key: k, head: 0.5 });
+        const n = quante(flows[k]);
+        for (let i = 0; i < n; i++) this._pulses.push({ key: k, head: i / n });
       });
     }
     // il sole gira piano quando produce
@@ -6170,6 +6280,31 @@ class EnergyFlowCard extends HTMLElement {
     ctx.globalAlpha = 1; ctx.shadowBlur = 0;
   }
 
+  // style: particles (v1.109): goccia con la coda (otto cerchi sempre piu' piccoli e
+  // trasparenti) e un alone; compare e svanisce ai due capi invece di spuntare dal nodo
+  _drop(poly, m, head, color) {
+    const ctx = this._ctx, dark = this._dark;
+    const fade = Math.max(0, Math.min(1, head / 0.07, (1 - head) / 0.07));
+    if (!fade) return;
+    const step = 4.2 / Math.max(40, m.L);
+    const ph = this._ptAt(poly, m, head);
+    ctx.globalAlpha = 0.35 * fade; ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = dark ? 14 : 9;
+    ctx.beginPath(); ctx.arc(ph[0], ph[1], 5.5, 0, 7); ctx.fill();
+    ctx.shadowBlur = 0;
+    for (let j = 7; j >= 1; j--) {
+      const h = head - j * step;
+      if (h < 0) continue;
+      const p = this._ptAt(poly, m, h);
+      ctx.globalAlpha = Math.max(0.08, 0.8 - j * 0.1) * fade; ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(p[0], p[1], Math.max(0.7, 3.3 - j * 0.38), 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = fade; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(ph[0], ph[1], 3.3, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.95)';
+    ctx.beginPath(); ctx.arc(ph[0], ph[1], 1.6, 0, 7); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
   // nodi [sorgente, destinazione] di un flusso, tenendo conto dell'eventuale reverse
   _flowEnds(key) {
     const def = this._flowDef(key); if (!def) return null;
@@ -6223,10 +6358,12 @@ class EnergyFlowCard extends HTMLElement {
           const m = this._meta(poly), power = this._flows[pl.key] || 0;
           // velocita' in pixel al secondo, crescente col logaritmo della potenza:
           // 46 W scorre piano, 2 kW corre, e nessuna linea sembra ferma
-          const px = 70 + 110 * Math.log10(1 + power / 30);
+          const parts = this.config.style === 'particles';
+          const px = parts ? 28 + 62 * Math.log10(1 + power / 30) : 70 + 110 * Math.log10(1 + power / 30);
           pl.head += dt * px / Math.max(40, m.L);
           if (pl.head > 1) { pl.head -= 1; const en = this._flowEnds(pl.key); if (en) this._hit(en[1], NCOL[def[2]]); }
-          this._beam(poly, m, pl.head, NCOL[def[2]], Math.min(0.6, 90 / Math.max(40, m.L)));
+          if (parts) this._drop(poly, m, pl.head, NCOL[def[2]]);
+          else this._beam(poly, m, pl.head, NCOL[def[2]], Math.min(0.6, 90 / Math.max(40, m.L)));
         });
         ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
       }
