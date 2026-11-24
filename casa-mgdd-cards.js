@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.105.1
+ * Version: 1.105.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -16651,7 +16651,15 @@ class LaundryTileCard extends HTMLElement {
     }
     if (m.pronta) {
       const l2 = macchina + (m.tte ? ' \u00b7 circa ' + lpDur(m.tte) : '');
-      if (m.remoto) return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Controllo remoto attivo', btn: 'Programma' };
+      if (m.remoto) {
+        // Con Remote Start la lavatrice carica il suo programma di base: se non ha le
+        // ultime impostazioni mandate da HA, quel programma non l'ha scelto nessuno e
+        // non si mostra (richiesta dell'utente, 24/11/2026).
+        if (!salvate || !lpCorrisponde(salvate, h)) {
+          return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2: 'Controllo remoto attivo', l3: 'Programma da scegliere', btn: 'Programma' };
+        }
+        return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Controllo remoto attivo', btn: 'Programma' };
+      }
       if (m.rc === 'Temporary Locked') return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Sta eseguendo un comando, un attimo\u2026' };
       return { c: 'a', ico: 'washing-machine', pill: 'Pronta', l2, l3: 'Premi Remote Start sulla lavatrice per programmarla' };
     }
