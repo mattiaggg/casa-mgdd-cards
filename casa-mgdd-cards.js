@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.106.0
+ * Version: 1.107.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -16263,19 +16263,6 @@ class LaundryProgramCard extends HTMLElement {
     const q = (sel) => this.querySelector(sel);
     const anim = typeof this.animate === 'function' && !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const ease = 'cubic-bezier(.2,.8,.2,1)';
-    // fila degli orari: l'orario scelto resta in vista
-    const strip = q('.lp-slots');
-    const on = strip && strip.querySelector('.lp-on');
-    if (on) {
-      const key = on.dataset.slot;
-      if (strip !== this._strip || key !== this._slotKey) {
-        const left = Math.max(0, on.offsetLeft - (strip.clientWidth - on.offsetWidth) / 2);
-        if (anim && strip === this._strip && strip.scrollTo) strip.scrollTo({ left, behavior: 'smooth' });
-        else strip.scrollLeft = left;
-        this._strip = strip;
-        this._slotKey = key;
-      }
-    }
     // ingresso: i riquadri salgono in fila, la barra del lavaggio si disegna
     if (this._entra && anim && this.offsetParent !== null) {
       this._entra = false;
@@ -16338,6 +16325,16 @@ class LaundryProgramCard extends HTMLElement {
   // ---------- scorri per confermare ----------
 
   _slDown(e) {
+    const bl = e.target && e.target.closest ? e.target.closest('[data-blk]') : null;
+    if (bl && this.contains(bl)) {
+      const day = bl.parentElement;
+      const span = Number(day.dataset.span);
+      e.preventDefault();
+      try { day.setPointerCapture(e.pointerId); } catch (err) { /* niente */ }
+      bl.classList.add('lp-grab');
+      this._drag = { day, bl, span, dur: day.dataset.dur === '' ? null : Number(day.dataset.dur), x0: e.clientX, l0: bl.offsetLeft, max: day.clientWidth * 1200 / span, kk: null };
+      return;
+    }
     const k = e.target && e.target.closest ? e.target.closest('[data-knob]') : null;
     if (!k || !this.contains(k)) return;
     const sl = k.parentElement;
@@ -16350,6 +16347,22 @@ class LaundryProgramCard extends HTMLElement {
   _slMove(e) {
     const d = this._drag;
     if (!d) return;
+    if (d.day) {
+      const l = Math.max(0, Math.min(d.max, d.l0 + e.clientX - d.x0));
+      const k = Math.round(l / d.max * 40);
+      d.bl.style.left = l + 'px';
+      d.day.querySelector('.lp-dw').style.width = l + 'px';
+      if (k !== d.kk) {
+        d.kk = k;
+        const now = this._now();
+        const st = new Date(now.getTime() + k * 1800000);
+        const qs = this.querySelector('[data-dq=s]');
+        const qe = this.querySelector('[data-dq=e]');
+        if (qs) qs.textContent = k ? lpQuando(st, now) : 'subito';
+        if (qe && d.dur != null) qe.textContent = lpQuando(new Date(st.getTime() + d.dur * 60000), now);
+      }
+      return;
+    }
     d.x = Math.max(0, Math.min(d.max, e.clientX - d.x0));
     d.k.style.transform = 'translateX(' + d.x + 'px)';
     d.f.style.width = (d.x + d.k.offsetWidth + 4) + 'px';
@@ -16359,6 +16372,21 @@ class LaundryProgramCard extends HTMLElement {
     const d = this._drag;
     if (!d) return;
     this._drag = null;
+    if (d.day) {
+      d.bl.classList.remove('lp-grab');
+      const k = d.kk != null && !annullato ? d.kk : Math.round(d.l0 / d.max * 40);
+      // il blocco scatta sulla mezz'ora (transizione CSS con rimbalzo)
+      const pos = (k * 30 / d.span * 100).toFixed(2) + '%';
+      d.bl.style.left = pos;
+      d.day.querySelector('.lp-dw').style.width = pos;
+      if (d.kk != null && !annullato) {
+        this._modifica((s) => {
+          if (!k) s.w = 'subito';
+          else { s.w = 'avvio'; s.h = lpHM(new Date(this._now().getTime() + k * 1800000)); }
+        });
+      } else if (this._dopoDrag) { this._dopoDrag = false; this._render(); }
+      return;
+    }
     if (!annullato && d.x >= d.max * 0.85) {
       this._toccato = true;
       this._invia();
@@ -16535,7 +16563,7 @@ class LaundryProgramCard extends HTMLElement {
     const noSpin = s.n || s.rh;
     let out = '';
     const st = [];
-    if (p.T.length && !p.ST) st.push(this._stepper('t', 'Temperatura', p.T, s.t, lpTL(s.t), '', p.T.length === 1 ? 'unica possibile' : '', false, ''));
+    if (p.T.length && !p.ST) st.push(this._stepper('t', 'Temperatura', p.T, s.t, lpTL(s.t), '', p.T.length === 1 ? 'unica' : '', false, ''));
     if (p.S.length) {
       st.push(this._stepper('sp', 'Centrifuga', p.S, s.sp, noSpin ? 'No' : s.sp === 0 ? 'Nessuna' : String(s.sp), noSpin || s.sp === 0 ? '' : 'giri', '', noSpin,
         noSpin ? (s.n ? 'Ciclo notte: niente centrifuga finale. Con − / + il ciclo notte si spegne.' : 'Stop con acqua: niente centrifuga finale. Con − / + si spegne.') : ''));
@@ -16558,24 +16586,23 @@ class LaundryProgramCard extends HTMLElement {
     if (F.has('TM')) {
       o.push('<div class="lp-o"><div class="lp-lbl">Risparmio tempo<small>accorcia il lavaggio</small></div>' + this._seg('set', Object.keys(LP_TM).map((k) => ({ v: 'tm', val: k, l: LP_TM[k], on: k === s.tm }))) + '</div>');
     }
-    if (o.length) out += '<div class="lp-c lp-opz">' + o.join('') + '</div>';
+    // Altre opzioni: elenco con interruttori nello stile della pagina, nello stesso riquadro
     const ex = [];
-    if (F.has('PW') || p.PWfix) ex.push({ k: 'pw', n: 'Prelavaggio', d: p.PWfix ? 'Sempre attivo in questo programma' : 'Per lo sporco ostinato', fix: !!p.PWfix });
-    if (F.has('SM')) ex.push({ k: 'sm', n: 'Smacchiatore', d: s.t >= 40 ? 'Per le macchie, da 40° in su' : 'Solo da 40° in su', off: s.t < 40 });
-    if (F.has('N')) ex.push({ k: 'n', n: 'Ciclo notte', d: 'Silenzioso, senza centrifuga finale' });
-    if (F.has('RH')) ex.push({ k: 'rh', n: 'Stop con acqua', d: 'Il bucato resta in acqua a fine ciclo' });
+    if (F.has('PW') || p.PWfix) ex.push({ k: 'pw', n: 'Prelavaggio', d: p.PWfix ? 'sempre attivo in questo programma' : 'per lo sporco ostinato', ic: 'water-plus-outline', fix: !!p.PWfix });
+    if (F.has('SM')) ex.push({ k: 'sm', n: 'Smacchiatore', d: s.t >= 40 ? 'per le macchie, da 40° in su' : 'solo da 40° in su', ic: 'spray-bottle', off: s.t < 40 });
+    if (F.has('N')) ex.push({ k: 'n', n: 'Ciclo notte', d: 'silenzioso, senza centrifuga finale', ic: 'weather-night' });
+    if (F.has('RH')) ex.push({ k: 'rh', n: 'Stop con acqua', d: 'il bucato resta in acqua a fine ciclo', ic: 'water' });
     if (ex.length) {
       let cnt = 0;
       const rows = ex.map((e) => {
         const on = e.fix || (!e.off && s[e.k]);
         if (on && !e.fix) cnt++;
-        return '<div class="lp-row"><div>' + e.n + '<small>' + e.d + '</small></div><button class="lp-sw' + (on ? ' lp-on' : '') + '" data-sw="' + e.k + '" role="switch" aria-checked="' + (on ? 'true' : 'false') +
-          '" aria-label="' + e.n + '"' + (e.fix || e.off ? ' disabled' : '') + '></button></div>';
+        return '<button class="lp-it' + (on ? ' lp-on' : '') + '" data-sw="' + e.k + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '"' + (e.fix || e.off ? ' disabled' : '') + '>' +
+          '<span class="lp-ic">' + ldIco(e.ic) + '</span><span class="lp-itx"><b>' + e.n + '</b><span>' + e.d + '</span></span><span class="lp-swi"></span></button>';
       }).join('');
-      out += '<div class="lp-c"><button class="lp-sum" data-act="extra" aria-expanded="' + (this._extra ? 'true' : 'false') + '"><span>Altre opzioni</span><span class="lp-pill lp-pn">' +
-        (cnt ? cnt + (cnt === 1 ? ' attiva' : ' attive') : 'nessuna') + '</span>' + ldIco(this._extra ? 'chevron-up' : 'chevron-down') + '</button>' +
-        (this._extra ? '<div class="lp-rows">' + rows + '</div>' : '') + '</div>';
+      o.push('<div class="lp-o lp-ex"><div class="lp-lbl">Altre opzioni<small>' + (cnt ? cnt + (cnt === 1 ? ' attiva' : ' attive') : 'nessuna attiva') + '</small></div>' + rows + '</div>');
     }
+    if (o.length) out += '<div class="lp-c lp-opz">' + o.join('') + '</div>';
     return out;
   }
 
@@ -16585,16 +16612,34 @@ class LaundryProgramCard extends HTMLElement {
     const s = this._s;
     const d = this._durata();
     const pt = lpPartenza(s, d.min, now);
-    const sel = s.w === 'subito' ? 0 : pt.k;
-    let slots = '';
-    for (let k = 0; k <= 40; k++) {
-      const st = new Date(now.getTime() + k * 1800000);
-      const f = d.min != null ? new Date(st.getTime() + d.min * 60000) : null;
-      const gs = lpGiorno(st, now);
-      const gf = f ? lpGiorno(f, now) : '';
-      slots += '<button class="lp-slot' + (k === sel ? ' lp-on' : '') + '" data-slot="' + k + '"><b>' + (k ? (gs ? '<i>' + gs.slice(0, 3) + '</i>' : '') + lpHM(st) : 'Subito') + '</b>' +
-        '<span>' + (f ? 'fine ' + (gf ? gf.slice(0, 3) + ' ' : '') + lpHM(f) : k ? 'tra ' + lpDur(k * 30) : 'adesso') + '</span></button>';
+    const sel = s.w === 'subito' || pt.k == null ? 0 : pt.k;
+    // Le prossime 20 ore in una striscia; il lavaggio e' un blocco lungo quanto dura
+    // (120 min tratteggiati se la durata non e' nota) che si trascina a passi di 30 min.
+    const dur = d.min != null ? d.min : 120;
+    const span = 1200 + dur;
+    const pc = (min) => (Math.max(0, Math.min(span, min)) / span * 100).toFixed(2) + '%';
+    const t0 = now.getHours() * 60 + now.getMinutes();
+    let notti = '';
+    for (let g = -1; g <= 1; g++) {
+      const a = g * 1440 + 22 * 60 - t0;
+      const b = a + 9 * 60;
+      if (b > 0 && a < span) notti += '<i class="lp-dn" style="left:' + pc(a) + ';width:' + pc(Math.min(b, span) - Math.max(a, 0)) + '"></i>';
     }
+    let tacche = '';
+    for (let mm = Math.ceil(t0 / 180) * 180 - t0; mm < span; mm += 180) {
+      if (mm / span < 0.05 || mm / span > 0.95) continue;
+      tacche += '<i class="lp-dtk" style="left:' + pc(mm) + '"></i><span class="lp-dtl" style="left:' + pc(mm) + '">' + mgddPad2(Math.floor((t0 + mm) / 60) % 24) + '</span>';
+    }
+    const st0 = new Date(now.getTime() + sel * 1800000);
+    const fi0 = d.min != null ? new Date(st0.getTime() + d.min * 60000) : null;
+    const giornata = '<div class="lp-day" data-span="' + span + '" data-dur="' + (d.min != null ? d.min : '') + '"><div class="lp-dtr">' + notti + '</div>' + tacche +
+      '<i class="lp-dnow"></i><i class="lp-dw" style="width:' + pc(sel * 30) + '"></i>' +
+      '<div class="lp-blk' + (d.min == null ? ' lp-blk-x' : '') + '" data-blk="1" role="slider" aria-label="Partenza" aria-valuemin="0" aria-valuemax="40" aria-valuenow="' + sel + '" style="left:' + pc(sel * 30) + ';width:' + pc(dur) + '"></div></div>' +
+      '<div class="lp-big2"><div><span>Parte</span><b data-dq="s">' + (sel ? lpQuando(st0, now) : 'subito') + '</b></div>' +
+      '<div><span>Finisce</span><b data-dq="e">' + (fi0 ? lpQuando(fi0, now) : '—') + '</b></div></div>' +
+      '<div class="lp-nudge"><button data-slot="' + Math.max(0, sel - 1) + '"' + (sel <= 0 ? ' disabled' : '') + '>' + ldIco('minus') + '30 min</button>' +
+      '<button data-slot="0"' + (sel === 0 ? ' disabled' : '') + '>Subito</button>' +
+      '<button data-slot="' + Math.min(40, sel + 1) + '"' + (sel >= 40 ? ' disabled' : '') + '>' + ldIco('plus') + '30 min</button></div>';
     // "Finisci alle" (scelta salvata da una versione precedente) e casi limite: si spiega
     const nota = s.w === 'fine' || (pt.k != null && /tempo|massimo/.test(pt.nota)) ? '<div class="lp-note">' + pt.nota + '</div>' : '';
     let lab;
@@ -16608,7 +16653,7 @@ class LaundryProgramCard extends HTMLElement {
     else if (pt.k == null) lab = 'Aspetto la durata…';
     else { dis = false; lab = s.w === 'subito' || !pt.k ? 'Scorri per avviare' : 'Scorri per programmare'; }
     const busy = this._busy === 'invio';
-    return '<div class="lp-c"><div class="lp-lbl">Quando<small>passi di 30 min, al massimo 20 h</small></div><div class="lp-slots">' + slots + '</div>' + nota + '</div>' +
+    return '<div class="lp-c"><div class="lp-lbl">Quando<small>trascina il lavaggio</small></div>' + giornata + nota + '</div>' +
       '<div class="lp-sl' + (dis && !busy ? ' lp-sl-off' : '') + (busy ? ' lp-sl-busy' : '') + '"><span class="lp-slf"></span><div class="lp-slt"><span>' + lab + '</span></div>' +
       '<div class="lp-knob" data-knob="1" role="button" aria-label="' + lab + '">' + ldIco(busy ? 'timer-sand' : dis ? 'lock-outline' : 'chevron-double-right') + '</div></div>';
   }
@@ -16723,7 +16768,7 @@ const LP_STYLES = '<style>' +
   '.lpq .lp-mbtn ha-icon{--mdc-icon-size:18px;width:18px;height:18px;}' +
   // temperatura e centrifuga
   '.lpq .lp-two2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}.lpq .lp-two2.lp-one{grid-template-columns:minmax(0,1fr);}' +
-  '.lpq .lp-stc{padding:12px 12px 13px;}' +
+  '.lpq .lp-stc{padding:12px 12px 13px;display:flex;flex-direction:column;}.lpq .lp-stc .lp-lbl{white-space:nowrap;}.lpq .lp-stc .lp-lbl small{overflow:hidden;text-overflow:ellipsis;}.lpq .lp-stc .lp-stp{margin-top:auto;}' +
   '.lpq .lp-stp{display:flex;align-items:center;justify-content:space-between;gap:6px;}' +
   '.lpq .lp-stp button{width:36px;height:36px;border-radius:50%;border:1px solid var(--lp-div);background:var(--lp-n);display:grid;place-items:center;cursor:pointer;padding:0;flex:none;}' +
   '.lpq .lp-stp button:disabled{opacity:.35;cursor:default;}' +
@@ -16743,6 +16788,16 @@ const LP_STYLES = '<style>' +
   '.lpq .lp-note{font-size:12.5px;color:var(--lp-t2);line-height:1.45;margin-top:8px;}.lpq .lp-note b{color:var(--lp-t1);}' +
   '.lpq .lp-warn{color:var(--lp-a2);}' +
   '.lpq .lp-dim{opacity:.45;}.lpq .lp-stp.lp-dim{opacity:1;}' +
+  '.lpq .lp-ex{border-top:1px solid var(--lp-div);margin:0 -15px;padding:14px 15px 0;}'+
+  '.lpq .lp-it{width:100%;display:flex;align-items:center;gap:11px;border:0;border-top:1px solid var(--lp-div);background:none;padding:10px 0;text-align:left;cursor:pointer;}' +
+  '.lpq .lp-ex .lp-lbl+.lp-it{border-top:0;padding-top:2px;}.lpq .lp-it:disabled{cursor:default;}.lpq .lp-it:disabled:not(.lp-on){opacity:.45;}' +
+  '.lpq .lp-ic{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:rgba(127,127,127,.13);color:var(--lp-t2);transition:background .25s,color .25s;}' +
+  '.lpq .lp-ic ha-icon{--mdc-icon-size:18px;width:18px;height:18px;}.lpq .lp-it.lp-on .lp-ic{background:var(--lp-pbg);color:var(--lp-p2);}' +
+  '.lpq .lp-itx{flex:1;min-width:0;}.lpq .lp-itx b{display:block;font-size:14px;font-weight:600;}.lpq .lp-itx span{display:block;font-size:12px;color:var(--lp-t2);margin-top:1px;}' +
+  '.lpq .lp-swi{flex:none;width:46px;height:28px;border-radius:14px;background:var(--lp-n);border:1px solid var(--lp-div);position:relative;transition:background .25s,border-color .25s;}' +
+  '.lpq .lp-swi::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:var(--lp-t2);transition:left .35s cubic-bezier(.34,1.56,.64,1),background .25s;}' +
+  '.lpq .lp-it.lp-on .lp-swi{background:var(--lp-pbg);border-color:var(--lp-pbd);}.lpq .lp-it.lp-on .lp-swi::after{left:21px;background:var(--lp-p);}.lpq.lp-dark .lp-it.lp-on .lp-swi::after{background:var(--lp-p2);}' +
+  '.lpq .lp-it:disabled.lp-on .lp-swi{opacity:.6;}' +
   '.lpq .lp-sum{width:100%;display:flex;align-items:center;gap:8px;border:0;background:none;padding:0;color:var(--lp-t1);font-size:14px;font-weight:650;cursor:pointer;}' +
   '.lpq .lp-sum span:first-child{margin-right:auto;}.lpq .lp-sum ha-icon{color:var(--lp-t2);}' +
   '.lpq .lp-rows{margin-top:6px;}' +
@@ -16752,13 +16807,27 @@ const LP_STYLES = '<style>' +
   '.lpq .lp-sw{width:44px;height:26px;border-radius:13px;background:var(--lp-n);position:relative;flex:none;border:0;cursor:pointer;padding:0;}' +
   '.lpq .lp-sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:left .15s;}' +
   '.lpq .lp-sw.lp-on{background:var(--lp-g);}.lpq .lp-sw.lp-on::after{left:21px;}.lpq .lp-sw:disabled{opacity:.5;cursor:default;}' +
-  // quando: fila di orari con l'ora di fine
-  '.lpq .lp-slots{position:relative;display:flex;gap:6px;overflow-x:auto;padding:1px 1px 4px;scrollbar-width:none;-webkit-overflow-scrolling:touch;}' +
-  '.lpq .lp-slots::-webkit-scrollbar{display:none;}' +
-  '.lpq .lp-slot{flex:none;border:1px solid var(--lp-div);background:var(--lp-n);border-radius:12px;padding:7px 10px;text-align:center;min-width:66px;cursor:pointer;}' +
-  '.lpq .lp-slot b{display:block;font-size:14px;font-weight:700;white-space:nowrap;}' +
-  '.lpq .lp-slot b i{font-style:normal;font-size:10.5px;font-weight:600;color:var(--lp-t2);margin-right:3px;}' +
-  '.lpq .lp-slot span{display:block;font-size:11px;font-weight:600;color:var(--lp-t1);white-space:nowrap;margin-top:1px;}' +
+  // quando: la giornata con il blocco del lavaggio da trascinare
+  '.lpq .lp-day{position:relative;height:64px;margin:2px 0 4px;user-select:none;-webkit-user-select:none;}' +
+  '.lpq .lp-dtr{position:absolute;left:0;right:0;top:6px;height:38px;border-radius:10px;background:var(--lp-n);overflow:hidden;}' +
+  '.lpq .lp-dn{position:absolute;top:0;bottom:0;background:rgba(70,80,170,.13);}.lpq.lp-dark .lp-dn{background:rgba(90,100,210,.2);}' +
+  '.lpq .lp-dtk{position:absolute;top:6px;height:38px;width:1px;background:var(--lp-div);}' +
+  '.lpq .lp-dtl{position:absolute;top:48px;font-size:10.5px;color:var(--lp-t3);transform:translateX(-50%);}' +
+  '.lpq .lp-dnow{position:absolute;left:0;top:0;height:50px;width:2px;border-radius:1px;background:var(--lp-g);}' +
+  '.lpq .lp-dw{position:absolute;left:0;top:23px;height:4px;background:repeating-linear-gradient(90deg,var(--lp-pbd) 0 5px,transparent 5px 9px);transition:width .45s cubic-bezier(.34,1.4,.64,1);}' +
+  '.lpq .lp-blk{position:absolute;top:6px;height:38px;min-width:18px;border-radius:10px;background:linear-gradient(90deg,var(--lp-p),var(--lp-g));box-shadow:0 4px 14px rgba(109,90,230,.4);cursor:grab;touch-action:none;' +
+  'transition:left .45s cubic-bezier(.34,1.4,.64,1),width .3s,transform .15s;}' +
+  '.lpq .lp-blk::before,.lpq .lp-blk::after{content:"";position:absolute;top:11px;bottom:11px;width:3px;border-radius:2px;background:rgba(255,255,255,.6);}' +
+  '.lpq .lp-blk::before{left:6px;}.lpq .lp-blk::after{right:6px;}' +
+  '.lpq .lp-blk.lp-grab{transition:transform .15s;transform:scaleY(1.12);cursor:grabbing;}' +
+  '.lpq .lp-blk-x{background:repeating-linear-gradient(90deg,var(--lp-p) 0 6px,var(--lp-pbd) 6px 10px);opacity:.7;}' +
+  '.lpq .lp-big2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:6px;}' +
+  '.lpq .lp-big2 div{background:var(--lp-n);border-radius:12px;padding:8px 10px;min-width:0;}' +
+  '.lpq .lp-big2 span{display:block;font-size:11px;color:var(--lp-t2);font-weight:600;}' +
+  '.lpq .lp-big2 b{display:block;font-size:20px;font-weight:750;letter-spacing:-.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.lpq .lp-nudge{display:flex;gap:6px;margin-top:10px;}' +
+  '.lpq .lp-nudge button{flex:1;height:38px;border-radius:11px;border:1px solid var(--lp-div);background:var(--lp-n);font-weight:650;font-size:13px;display:flex;align-items:center;justify-content:center;gap:3px;cursor:pointer;}' +
+  '.lpq .lp-nudge button:disabled{opacity:.4;cursor:default;}.lpq .lp-nudge ha-icon{--mdc-icon-size:16px;width:16px;height:16px;}' +
   // scorri per confermare
   '.lpq .lp-sl{position:relative;height:56px;border-radius:18px;background:var(--lp-n);border:1px solid var(--lp-div);overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;}' +
   '.lpq .lp-slf{position:absolute;left:0;top:0;bottom:0;width:56px;border-radius:18px;background:linear-gradient(90deg,var(--lp-pbg),var(--lp-p));}' +
@@ -16782,7 +16851,7 @@ const LP_STYLES = '<style>' +
   '.lpq .lp-msg-ok{background:var(--lp-gbg);color:var(--lp-g2);}.lpq .lp-msg-err{background:var(--lp-rbg);color:var(--lp-r2);}' +
   '.lpq .lp-msg span{color:var(--lp-t1);}' +
   '.lpq button:focus-visible,.lpq .lp-knob:focus-visible{outline:2px solid var(--lp-p);outline-offset:2px;}' +
-  '@media (prefers-reduced-motion: reduce){.lpq .lp-sw::after,.lpq .lp-ind,.lpq .lp-pt ha-icon{transition:none;}.lpq .lp-slt span{animation:none;color:var(--lp-t1);background:none;}}' +
+  '@media (prefers-reduced-motion: reduce){.lpq .lp-blk,.lpq .lp-dw,.lpq .lp-swi::after,.lpq .lp-sw::after,.lpq .lp-ind,.lpq .lp-pt ha-icon{transition:none;}.lpq .lp-slt span{animation:none;color:var(--lp-t1);background:none;}}' +
   '@container (max-width:420px){.lpq .lp{padding:8px;}.lpq .lp-bigv{font-size:34px;}.lpq .lp-c{padding:12px;}.lpq .lp-pt b{font-size:12px;}}' +
   '</style>';
 
