@@ -256,7 +256,8 @@ class MgddSeq {
         const step = (now) => {
           // se nel frattempo un aggiornamento ha riscritto il testo, si smette
           if (!e.isConnected || e.data !== last) return;
-          const k = Math.min(1, (now - t0) / dur);
+          // il timestamp di rAF puo' precedere performance.now(): mai k negativo
+          const k = Math.max(0, Math.min(1, (now - t0) / dur));
           put(k === 1 ? to : to * (1 - Math.pow(2, -10 * k)));
           last = e.data;
           if (k < 1) requestAnimationFrame(step);
@@ -320,7 +321,7 @@ function mgddTween(node, testo) {
   const t0 = performance.now();
   const step = (now) => {
     if (tw.stop || !node.isConnected) return;
-    const k = Math.min(1, (now - t0) / 400);
+    const k = Math.max(0, Math.min(1, (now - t0) / 400));
     const e = 1 - Math.pow(1 - k, 3);
     node.data = k === 1 ? testo : pre + (from + (to - from) * e).toFixed(dec).replace('.', sep) + post;
     if (k < 1) requestAnimationFrame(step);
@@ -4663,7 +4664,8 @@ class EnergyControlsCard extends HTMLElement {
     const u = c.ups || {};
     const ids = (c.switches || []).map((s) => s.entity).concat(
       [u.battery_entity, u.load_entity, u.status_entity, u.time_left_entity, u.power_entity, u.energy_entity,
-        u.voltage_entity, u.time_on_battery_entity, u.last_transfer_entity]
+        u.voltage_entity, u.time_on_battery_entity, u.last_transfer_entity,
+        u.output_voltage_entity, u.current_entity, u.power_factor_entity, u.uptime_entity]
     ).filter(Boolean);
     const sig = mgddStatesSig(hass, ids);
     if (sig === this._lastSig) return;
@@ -4801,15 +4803,18 @@ class EnergyControlsCard extends HTMLElement {
     const colore = batteria === null ? '#8a8d93' : batteria <= critica ? '#e5484d' : batteria <= soglia ? '#e08a00' : '#0fb57e';
     const larghezza = batteria === null ? 0 : Math.max(0, Math.min(100, batteria));
 
+    const MESI = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
+    // v1.110 (proposta A "cruscotto"): livello a sinistra, quattro numeri a destra,
+    // sotto il carico delle ultime 24 ore. Le celle senza entita' configurata spariscono.
     const cella = (label, valore, unita, entity, sotto) =>
-      '<div' + (entity ? ' data-entity="' + entity + '"' : '') + '>' +
+      '<div class="ups-k"' + (entity ? ' data-entity="' + entity + '"' : '') + '>' +
       '<div class="ups-l">' + label + '</div>' +
       '<div class="ups-v" data-tw>' + valore + (unita ? '<span class="ups-u">' + unita + '</span>' : '') + '</div>' +
-      (sotto || '') + '</div>';
+      (sotto ? '<div class="ups-s">' + sotto + '</div>' : '') + '</div>';
 
-    // v1.108: la batteria come livello "liquido" con un'onda leggera (stile Kokonut
-    // Liquid Gauge), colore secondo le soglie di sempre. Sostituisce il filo in basso.
     if (!this._uid) { EnergyControlsCard._seq = (EnergyControlsCard._seq || 0) + 1; this._uid = EnergyControlsCard._seq; }
+    // su batteria il livello vira all'arancio anche se e' ancora alto
+    const tinta = suBatteria && colore === '#0fb57e' ? '#e08a00' : colore;
     const cid = 'upslq' + this._uid;
     const top = 6 + (1 - larghezza / 100) * 52;
     const onda = (y, a) => {
@@ -4819,38 +4824,69 @@ class EnergyControlsCard extends HTMLElement {
     };
     const liquido =
       '<div class="ups-lq"' + (c.battery_entity ? ' data-entity="' + c.battery_entity + '"' : '') + '>' +
-      '<svg viewBox="0 0 64 64" width="64" height="64" aria-hidden="true">' +
+      '<svg viewBox="0 0 64 64" width="84" height="84" aria-hidden="true">' +
       '<defs><clipPath id="' + cid + '"><circle cx="32" cy="32" r="27"/></clipPath></defs>' +
-      '<circle cx="32" cy="32" r="30" fill="none" stroke="' + colore + '" stroke-opacity=".4" stroke-width="2"/>' +
+      '<circle cx="32" cy="32" r="30" fill="none" stroke="' + tinta + '" stroke-opacity=".45" stroke-width="2"/>' +
       '<g clip-path="url(#' + cid + ')">' +
-      '<rect width="64" height="64" fill="' + colore + '" fill-opacity=".1"/>' +
+      '<rect width="64" height="64" fill="' + tinta + '" fill-opacity=".1"/>' +
       (batteria === null ? '' :
-        '<path class="ups-w2" d="' + onda(top + 2, 3) + '" fill="' + colore + '" fill-opacity=".45"/>' +
-        '<path class="ups-w1" d="' + onda(top + 4, 2.5) + '" fill="' + colore + '"/>') +
+        '<path class="ups-w2" d="' + onda(top + 2, 3) + '" fill="' + tinta + '" fill-opacity=".45"/>' +
+        '<path class="ups-w1" d="' + onda(top + 4, 2.5) + '" fill="' + tinta + '"/>') +
       '</g></svg>' +
       '<span class="ups-lqv" data-tw>' + (batteria === null ? '--' : this._fmt(batteria, '', 0)) + '<small>%</small></span></div>';
 
-    // v1.109 (come il mockup): a rete lo stato e' una riga discreta in testa, col
-    // titolo a sinistra e un pallino verde che pulsa. Su batteria resta la fascia
-    // rossa a tutta larghezza: e' l'avviso che conta, non va ridotto a una scritta.
+    // uscita: tensione (output_voltage_entity, altrimenti voltage_entity), sotto corrente e PF
+    const vOut = c.output_voltage_entity ? this._num(c.output_voltage_entity) : tensione;
+    const amp = this._num(c.current_entity);
+    const pf = this._num(c.power_factor_entity);
+    const sottoV = [amp !== null ? amp.toFixed(2) + ' A' : '', pf !== null ? 'PF ' + pf.toFixed(2) : ''].filter(Boolean).join(' · ');
+    // acceso da: sensore timestamp dell'avvio (uptime_entity)
+    let acceso = '';
+    const ust = this._state(c.uptime_entity);
+    const t0 = ust ? Date.parse(ust.state) : NaN;
+    if (isFinite(t0)) {
+      const ore = (Date.now() - t0) / 3600000;
+      const g = Math.floor(ore / 24);
+      const dd = new Date(t0);
+      acceso = g >= 1
+        ? cella('Acceso da', String(g), g === 1 ? 'giorno' : 'giorni', c.uptime_entity, 'dal ' + dd.getDate() + ' ' + MESI[dd.getMonth()])
+        : cella('Acceso da', String(Math.max(0, Math.floor(ore))), 'ore', c.uptime_entity, 'dalle ' + mgddPad2(dd.getHours()) + ':' + mgddPad2(dd.getMinutes()));
+    }
+    const celle =
+      cella('Autonomia', autonomia === null ? '--' : this._fmt(autonomia, '', 0), 'min', c.time_left_entity) +
+      cella('Carico', potenza === null ? '--' : this._fmt(potenza, '', 0), 'W', c.power_entity) +
+      (vOut !== null ? cella('Uscita', this._fmt(vOut, '', 0), 'V', c.output_voltage_entity || c.voltage_entity, sottoV) : '') +
+      acceso;
+
+    // a rete la tensione sta gia' nella cella "Uscita": in testa basta lo stato
+    const codaTesta = !suBatteria && vOut !== null ? '' : coda;
     const titolo = this.config.title ? '<span class="ups-t">' + this.config.title + '</span>' : '';
     const testa = suBatteria
       ? '<div class="ups-band b"' + (c.status_entity ? ' data-entity="' + c.status_entity + '"' : '') + '>' +
         '<i class="ups-dot"></i><span class="ups-txt">' + testo + '</span>' +
-        '<span class="ups-when">' + coda + '</span></div>'
+        '<span class="ups-when">' + coda + '</span></div>' +
+        (titolo ? '<div class="ups-hd">' + titolo + '</div>' : '')
       : '<div class="ups-hd">' + titolo +
         '<span class="ups-st' + (noto ? '' : ' na') + '"' + (c.status_entity ? ' data-entity="' + c.status_entity + '"' : '') + '>' +
-        '<i class="ups-pg"></i>' + testo + (coda ? ' · ' + coda : '') + '</span></div>';
-    // anello sull'ultimo punto della curva del carico
-    const fine = this._upsEnd !== undefined && this._upsEnd !== null
-      ? '<i class="ups-mk" style="top:' + this._upsEnd.toFixed(1) + 'px"></i>' : '';
+        '<i class="ups-pg"></i>' + testo + (codaTesta ? ' · ' + codaTesta : '') + '</span></div>';
+
+    // carico delle ultime 24 ore (riempito da _upsFetch)
+    let grafico = '';
+    if (this._upsChart && c.chart !== false) {
+      const now = Date.now();
+      const hh = (ms) => mgddPad2(new Date(ms).getHours());
+      const ax = [24, 18, 12, 6].map((h, i) => '<span>' + (i === 0 ? 'ieri ' : '') + hh(now - h * 3600000) + '</span>').join('') + '<span>ora</span>';
+      grafico =
+        '<div class="ups-ch"' + (c.power_entity ? ' data-entity="' + c.power_entity + '"' : '') + '>' +
+        '<div class="ups-chh"><span class="ups-l">Carico ultime 24 h</span>' +
+        '<span class="ups-chs">media ' + Math.round(this._upsStat.avg) + ' W · max ' + Math.round(this._upsStat.max) + ' W</span></div>' +
+        this._upsChart.replace(/#0fb57e/g, tinta) +
+        '<div class="ups-ax">' + ax + '</div></div>';
+    }
     const html =
-      '<div class="ups-c ups-m">' + testa +
-      '<div class="ups-vals ups-vals2">' + liquido +
-      cella('Autonomia', autonomia === null ? '--' : this._fmt(autonomia, '', 0), 'min', c.time_left_entity) +
-      cella('Carico', potenza === null ? '--' : this._fmt(potenza, '', 0), 'W', c.power_entity,
-        '<div class="ups-sp">' + (this._upsSpark || '') + fine + '</div>') +
-      '</div>' +
+      '<div class="ups-c ups-m ups-a">' + testa +
+      '<div class="ups-top">' + liquido + '<div class="ups-grid">' + celle + '</div></div>' +
+      grafico +
       '</div>';
 
     mgddPaint(this, this._styles(), html);
@@ -4866,53 +4902,72 @@ class EnergyControlsCard extends HTMLElement {
     this._upsFetch();
     mgddIntro(this, (tl) => {
       tl.add(this.querySelectorAll('.ups-w1,.ups-w2'), [{ transform: 'translateY(40px)' }, { transform: 'none' }], { duration: 1000, easing: 'cubic-bezier(.34,1.3,.64,1)' }, 0)
-        .count(this.querySelectorAll('.ups-v,.ups-lqv'), { duration: 900 }, 0);
+        .count(this.querySelectorAll('.ups-v,.ups-lqv'), { duration: 900 }, 0)
+        .add(this.querySelector('.ups-ch svg'), [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)' }], { duration: 900, easing: 'cubic-bezier(.65,0,.35,1)' }, 150);
     });
   }
 
-  // Curva del carico dell'ultima ora, dalla history (una lettura ogni 5 minuti).
+  // Carico delle ultime 24 ore. Prima le statistiche a 5 minuti del recorder (288
+  // punti, leggere); se il sensore non ha statistiche, la history. Ogni 10 minuti.
   async _upsFetch() {
-    const id = (this.config.ups || {}).power_entity;
-    if (!id || !this._hass || !this._hass.callWS) return;
+    const u = this.config.ups || {};
+    const id = u.power_entity;
+    if (!id || !this._hass || !this._hass.callWS || u.chart === false) return;
     const now = Date.now();
-    if (this._upsAt && now - this._upsAt < 5 * 60 * 1000) return;
+    if (this._upsAt && now - this._upsAt < 10 * 60 * 1000) return;
     this._upsAt = now;
+    const t0 = now - 24 * 3600 * 1000;
+    let pts = [];
     try {
-      const resp = await this._hass.callWS({
-        type: 'history/history_during_period',
-        start_time: new Date(now - 3600 * 1000).toISOString(),
+      const st = await this._hass.callWS({
+        type: 'recorder/statistics_during_period',
+        start_time: new Date(t0).toISOString(),
         end_time: new Date(now).toISOString(),
-        entity_ids: [id],
-        minimal_response: true,
-        no_attributes: true,
-        significant_changes_only: false,
+        statistic_ids: [id],
+        period: '5minute',
+        types: ['mean'],
       });
-      const pts = ((resp && resp[id]) || [])
-        .map((r) => [((r.lu || r.lc || 0) * 1000), parseFloat(r.s)])
-        .filter((p) => p[0] > 0 && isFinite(p[1]));
-      if (pts.length < 2) return;
-      const t0 = now - 3600 * 1000;
-      const mx = Math.max.apply(null, pts.map((p) => p[1])) * 1.15 || 1;
-      const W = 120;
-      const H = 24;
-      const P = pts.map((p) => [Math.max(0, (p[0] - t0) / 3600000) * W, H - 1 - (p[1] / mx) * (H - 4)]);
-      P.push([W, P[P.length - 1][1]]);
-      // y dell'ultimo punto in px del riquadro (alto 22 px, viewBox 24)
-      this._upsEnd = (P[P.length - 1][1] / H) * 22;
-      // a gradini: la potenza resta quella finche' non cambia
-      let d = 'M' + P[0][0].toFixed(1) + ',' + P[0][1].toFixed(1);
-      for (let i = 1; i < P.length; i++) d += ' H' + P[i][0].toFixed(1) + ' V' + P[i][1].toFixed(1);
-      const gid = 'upsg' + (this._uid || 0);
-      this._upsSpark =
-        '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
-        '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
-        '<stop offset="0" stop-color="#0fb57e" stop-opacity=".35"/><stop offset="1" stop-color="#0fb57e" stop-opacity="0"/></linearGradient></defs>' +
-        '<path d="' + d + ' V' + H + ' H' + P[0][0].toFixed(1) + ' Z" fill="url(#' + gid + ')"/>' +
-        '<path d="' + d + '" fill="none" stroke="#0fb57e" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>';
-      this._render();
-    } catch (e) {
-      // niente curva: la cella resta col solo numero
+      pts = ((st && st[id]) || [])
+        .map((r) => [typeof r.start === 'number' ? r.start : Date.parse(r.start), r.mean])
+        .filter((p) => isFinite(p[0]) && p[1] !== null && isFinite(p[1]));
+    } catch (e) { pts = []; }
+    if (pts.length < 6) {
+      try {
+        const resp = await this._hass.callWS({
+          type: 'history/history_during_period',
+          start_time: new Date(t0).toISOString(),
+          end_time: new Date(now).toISOString(),
+          entity_ids: [id],
+          minimal_response: true,
+          no_attributes: true,
+        });
+        pts = ((resp && resp[id]) || [])
+          .map((r) => [((r.lu || r.lc || 0) * 1000), parseFloat(r.s)])
+          .filter((p) => p[0] > 0 && isFinite(p[1]));
+      } catch (e) { /* niente grafico */ }
     }
+    if (pts.length < 2) return;
+    const vals = pts.map((p) => p[1]);
+    const max = Math.max.apply(null, vals);
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const mx = max * 1.15 || 1;
+    const W = 360;
+    const H = 60;
+    const P = pts.map((p) => [Math.max(0, Math.min(W, ((p[0] - t0) / (now - t0)) * W)), H - 2 - (p[1] / mx) * (H - 6)]);
+    if (P[P.length - 1][0] < W) P.push([W, P[P.length - 1][1]]);
+    let d = 'M' + P[0][0].toFixed(1) + ',' + P[0][1].toFixed(1);
+    for (let i = 1; i < P.length; i++) d += ' L' + P[i][0].toFixed(1) + ',' + P[i][1].toFixed(1);
+    const ya = (H - 2 - (avg / mx) * (H - 6)).toFixed(1);
+    const gid = 'upsg' + (this._uid || 0);
+    this._upsStat = { avg: avg, max: max };
+    this._upsChart =
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
+      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="#0fb57e" stop-opacity=".38"/><stop offset="1" stop-color="#0fb57e" stop-opacity="0"/></linearGradient></defs>' +
+      '<path d="' + d + ' L' + W + ',' + H + ' L' + P[0][0].toFixed(1) + ',' + H + ' Z" fill="url(#' + gid + ')"/>' +
+      '<path d="' + d + '" fill="none" stroke="#0fb57e" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>' +
+      '<line x1="0" x2="' + W + '" y1="' + ya + '" y2="' + ya + '" stroke="currentColor" stroke-opacity=".35" stroke-dasharray="2 4" vector-effect="non-scaling-stroke"/></svg>';
+    this._render();
   }
 
   _renderUps() {
@@ -4991,6 +5046,21 @@ class EnergyControlsCard extends HTMLElement {
       '@keyframes upsWave{from{translate:0 0;}to{translate:-40px 0;}}' +
       '@media (prefers-reduced-motion:reduce){.ups-w1,.ups-w2{animation:none;}}' +
       '.ups-sp{height:22px;margin-top:3px;position:relative;}' +
+      // v1.110 cruscotto (proposta A)
+      '.ups-top{display:flex;align-items:center;gap:16px;padding:12px 14px 4px;}' +
+      '.ups-a .ups-lq{position:relative;flex:0 0 auto;width:84px;height:84px;cursor:pointer;}' +
+      '.ups-a .ups-lqv{font-size:20px;}' +
+      '.ups-a .ups-lqv small{font-size:11px;}' +
+      '.ups-grid{flex:1;min-width:0;display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;}' +
+      '.ups-k{cursor:pointer;min-width:0;}' +
+      '.ups-a .ups-v{font-size:20px;}' +
+      '.ups-s{font-size:10.5px;color:var(--secondary-text-color,#6b6f76);opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.ups-ch{padding:8px 14px 11px;cursor:pointer;color:var(--secondary-text-color,#8a8d93);}' +
+      '.ups-chh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;}' +
+      '.ups-chs{font-size:10.5px;font-weight:600;color:var(--secondary-text-color,#6b6f76);font-variant-numeric:tabular-nums;}' +
+      '.ups-ch svg{display:block;width:100%;height:60px;margin-top:6px;}' +
+      '.ups-ax{display:flex;justify-content:space-between;font-size:10px;color:var(--secondary-text-color,#6b6f76);opacity:.75;margin-top:4px;}' +
+      '.ups-a .ups-band+.ups-hd{padding-top:8px;}' +
       // v1.109: testa discreta a rete, livello piu' grande, anello in fondo alla curva
       '.ups-m{padding-top:2px;}' +
       '.ups-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px 0;}' +

@@ -20,7 +20,7 @@
 <body class="dark">
 <div class="bar">
   <button id="dark">Chiaro / scuro</button>
-  <button data-sim="sera">Sera</button><button data-sim="sole">Mezzogiorno</button><button data-sim="carica">Rete → batteria</button><button id="vari">Cambia consumi</button><button id="stile">Particelle / scia</button>
+  <button data-sim="sera">Sera</button><button data-sim="sole">Mezzogiorno</button><button data-sim="carica">Rete → batteria</button><button id="vari">Cambia consumi</button><button id="stile">Particelle / scia</button><button id="upsb">UPS rete / batteria</button>
   <span>Dati finti: stati fissi, statistiche generate. Tocco su una presa: commuta dopo 400 ms.</span>
 </div>
 <div class="page">
@@ -62,7 +62,9 @@ const SW = ['switch.shelly_presa_stireria', 'switch.shelly_lavanderia_dx_switch_
 ['switch.shelly_presa_divano_switch_0', 'switch.shelly_presa_bagno_mattia'].forEach((id) => put(id, 'off'));
 SW.forEach((id) => put(id, 'on'));
 put('binary_sensor.ups_tower_rete', 'on'); put('sensor.ups_tower_livello_della_batteria', 100, { unit_of_measurement: '%' });
-put('sensor.ups_tower_durata_della_batteria', 61, { unit_of_measurement: 'min' }); put('sensor.ups_tower_tensione_di_bypass', 232, { unit_of_measurement: 'V' });
+put('sensor.ups_tower_durata_della_batteria', 61, { unit_of_measurement: 'min' });
+put('sensor.ups_tower_tensione_di_uscita', 227.7, { unit_of_measurement: 'V' }); put('sensor.ups_tower_corrente_di_uscita', 0.4, { unit_of_measurement: 'A' });
+put('sensor.ups_tower_fattore_di_potenza_di_uscita', 0.527, {}); put('sensor.ups_tower_tempo_di_attivita', '2026-11-09T21:07:47+00:00', { device_class: 'timestamp' }); put('sensor.ups_tower_tensione_di_bypass', 232, { unit_of_measurement: 'V' });
 
 // ---------- statistiche generate ----------
 function rnd(seed) { const x = Math.sin(seed * 9301 + 49297) * 233280; return x - Math.floor(x); }
@@ -76,6 +78,7 @@ function hourVal(id, t) {
   if (id.includes('site_export')) return sun > 0.6 ? 0.05 : 0;
   if (id.includes('battery_import')) return sun > 0.4 ? 0.2 : 0;
   if (id.includes('battery_export')) return h >= 16 && h <= 18 ? 0.25 : 0;
+  if (id === 'sensor.ups_potenza') return 50 + 6 * Math.sin(t / 3.6e6) + rnd(Math.floor(t / 3e5)) * 8;
   return 0.02 + rnd(s + id.length) * 0.08; // circuiti
 }
 function stats(msg) {
@@ -154,7 +157,9 @@ add('c1', 'energy-power-card', { layout: 'balance', title: 'Casa · energia', cu
   grid_import: 'sensor.powerwall3_site_import', grid_export: 'sensor.powerwall3_site_export', battery_charge: 'sensor.powerwall3_battery_import',
   battery_discharge: 'sensor.powerwall3_battery_export', power_entity: 'sensor.powerwall3_load_power' });
 add('c1', 'energy-controls-card', { layout: 'ups-status', title: 'UPS', ups: { status_entity: 'binary_sensor.ups_tower_rete', battery_entity: 'sensor.ups_tower_livello_della_batteria',
-  time_left_entity: 'sensor.ups_tower_durata_della_batteria', power_entity: 'sensor.ups_potenza', voltage_entity: 'sensor.ups_tower_tensione_di_bypass' } });
+  time_left_entity: 'sensor.ups_tower_durata_della_batteria', power_entity: 'sensor.ups_potenza', voltage_entity: 'sensor.ups_tower_tensione_di_bypass',
+  output_voltage_entity: 'sensor.ups_tower_tensione_di_uscita', current_entity: 'sensor.ups_tower_corrente_di_uscita',
+  power_factor_entity: 'sensor.ups_tower_fattore_di_potenza_di_uscita', uptime_entity: 'sensor.ups_tower_tempo_di_attivita' } });
 add('c2', 'energy-flow-card', { solar_power: 'sensor.powerwall3_solar_power', battery_power: 'sensor.powerwall3_battery_power', battery_soc: 'sensor.powerwall3_charge',
   grid_power: 'sensor.powerwall3_site_power', house_power: 'sensor.powerwall3_load_power', battery_min_flow: 150, arrival: 'ripple', grid_to_battery: false, style: 'particles' });
 const two = document.createElement('div'); two.className = 'two'; two.innerHTML = '<div id="c2a"></div><div id="c2b"></div>'; document.getElementById('c2').appendChild(two);
@@ -179,6 +184,11 @@ document.getElementById('vari').onclick = () => {
   Object.keys(LOADS).forEach((id) => { if (LOADS[id]) put(id, (LOADS[id] * (0.6 + Math.random() * 0.8)).toFixed(1), W); });
   put('sensor.ups_potenza', Math.round(54 * k), W);
   push();
+};
+document.getElementById('upsb').onclick = () => {
+  const on = S['binary_sensor.ups_tower_rete'].state === 'on';
+  put('binary_sensor.ups_tower_rete', on ? 'off' : 'on'); put('sensor.ups_tower_livello_della_batteria', on ? 86 : 100, { unit_of_measurement: '%' });
+  put('sensor.ups_tower_durata_della_batteria', on ? 52 : 61, { unit_of_measurement: 'min' }); push();
 };
 document.getElementById('stile').onclick = () => {
   const f = document.querySelector('energy-flow-card');
