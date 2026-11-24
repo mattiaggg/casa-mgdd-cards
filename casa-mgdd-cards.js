@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.105.4
+ * Version: 1.106.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -15731,6 +15731,14 @@ const LP_PROGS = [
   { o: 'Softener Pr Rinse', n: 'Risciacquo/Ammorbidente', T: [], Td: null, S: [400, 600, 800, 1000, 1200, 1400, 1600], Sd: 1600, f: 'R AC RH' },
 ];
 LP_PROGS.forEach((p) => { p.F = new Set(p.f.split(' ').filter(Boolean)); });
+// Gli 8 della griglia (icona e nome corto); gli altri stanno in "Tutti i programmi".
+const LP_GRIGLIA = {
+  'Express Pr Mywash49Min': ['timer-outline', 'Express'], 'Cotton Pr Cottons': ['tshirt-crew-outline', 'Cotone'],
+  'Cotton Pr Eco40-60': ['leaf', 'Eco 40-60'], 'Synthetic Pr Synthetics': ['hanger', 'Sintetici'],
+  'Delicate Pr Delicates': ['flower-outline', 'Delicati'], 'Wool Pr Wool': ['sheep', 'Lana'],
+  'Sport Jackets Pr Down Jacket': ['coat-rack', 'Piumino'], 'Quick 20 Min Pr 20Min3Kg': ['lightning-bolt-outline', 'Rapido'],
+};
+LP_PROGS.forEach((p) => { const g = LP_GRIGLIA[p.o]; if (g) { p.ic = g[0]; p.b = g[1]; } });
 
 // Preferiti (chiesti dall'utente il 22/11/2026): programma, temperatura, centrifuga.
 const LP_FAVS = [
@@ -15740,7 +15748,8 @@ const LP_FAVS = [
 ];
 
 const LP_OPZ = { R: 'risciacquo aggiuntivo', TM: 'risparmio tempo', AC: 'antipiega', PW: 'prelavaggio', SM: 'smacchiatore', N: 'ciclo notte', RH: 'stop con acqua' };
-const LP_TM = { Normal: 'Normale', Daily: 'Daily', 'Super Quick': 'Super Quick' };
+// Daily e' il livello che sul pannello della lavatrice si chiama Quick
+const LP_TM = { Normal: 'Normale', Daily: 'Quick', 'Super Quick': 'Super Quick' };
 const LP_STATI = {
   'Ready To Start': 'Pronta', Idle: 'Accesa', Off: 'Spenta', Running: 'In corso', 'Delayed Start': 'Programmata',
   Paused: 'In pausa', 'End Of Cycle': 'Fine ciclo', Alarm: 'Allarme',
@@ -15939,10 +15948,16 @@ class LaundryProgramCard extends HTMLElement {
     this._s = null;
     this._sig = null;
     this._extra = false;
+    this._altri = null;
+    this._entra = true;
     if (!this._wired) {
       this._wired = true;
       this.addEventListener('click', (e) => this._click(e));
       this.addEventListener('change', (e) => this._change(e));
+      this.addEventListener('pointerdown', (e) => this._slDown(e));
+      this.addEventListener('pointermove', (e) => this._slMove(e));
+      this.addEventListener('pointerup', (e) => this._slUp(e, false));
+      this.addEventListener('pointercancel', (e) => this._slUp(e, true));
     }
   }
 
@@ -15961,6 +15976,9 @@ class LaundryProgramCard extends HTMLElement {
   connectedCallback() {
     // gli orari (partenza, fine, conto alla rovescia) avanzano anche senza cambi di stato
     if (!this._tick) this._tick = setInterval(() => this._render(), 20000);
+    // a ogni apertura della vista i riquadri rientrano con l'animazione
+    this._entra = true;
+    if (this._hass && this._s) this._render();
   }
 
   disconnectedCallback() {
@@ -15977,6 +15995,8 @@ class LaundryProgramCard extends HTMLElement {
       this._visto = salv;
       if (salv !== this._scritto) {
         const s = lpParse(salv);
+        // il risciacquo aggiuntivo non si ricorda: all'apertura parte sempre da "No"
+        if (s && !this._s) s.r = 0;
         if (s || !this._s) this._s = s || lpSanitize(lpDefault());
       }
     }
@@ -16116,7 +16136,7 @@ class LaundryProgramCard extends HTMLElement {
   }
 
   _click(e) {
-    const t = e.target && e.target.closest ? e.target.closest('[data-fav],[data-set],[data-ac],[data-sw],[data-when],[data-act]') : null;
+    const t = e.target && e.target.closest ? e.target.closest('[data-fav],[data-set],[data-ac],[data-sw],[data-when],[data-act],[data-stp],[data-slot]') : null;
     if (!t || !this.contains(t) || !this._s) return;
     if (t.disabled) return;
     const d = t.dataset;
@@ -16124,6 +16144,32 @@ class LaundryProgramCard extends HTMLElement {
       e.preventDefault();
       this._extra = !this._extra;
       this._render();
+    } else if (d.act === 'altri') {
+      e.preventDefault();
+      this._altri = !this._altriAperti();
+      this._altriAnim = this._altri;
+      this._render();
+    } else if (d.stp) {
+      const k = d.stp;
+      const p = lpProg(this._s.p);
+      const list = k === 't' ? p.T : p.S;
+      const dir = Number(d.d);
+      // centrifuga spenta da ciclo notte / stop con acqua: − / + la riaccende sul valore di prima
+      const noSpin = k === 'sp' && (this._s.n || this._s.rh);
+      const i = list.indexOf(this._s[k]);
+      const ni = noSpin ? Math.max(0, i) : Math.max(0, Math.min(list.length - 1, i + dir));
+      if (!noSpin && ni === i) return;
+      this._stepAnim = { k, d: dir };
+      this._modifica((s) => {
+        s[k] = list[ni];
+        if (k === 'sp') { s.n = false; s.rh = false; }
+      });
+    } else if (d.slot != null) {
+      const k = Number(d.slot);
+      this._modifica((s) => {
+        if (!k) s.w = 'subito';
+        else { s.w = 'avvio'; s.h = lpHM(new Date(this._now().getTime() + k * 1800000)); }
+      });
     } else if (d.act === 'back') {
       this._vai(this.config.back);
     } else if (d.act === 'invia') {
@@ -16183,31 +16229,162 @@ class LaundryProgramCard extends HTMLElement {
 
   _render() {
     if (!this._hass || !this._s) return;
+    // durante il trascinamento dello slide non si ridisegna: si riprende al rilascio
+    if (this._drag) { this._dopoDrag = true; return; }
     const dark = !!(this._hass.themes && this._hass.themes.darkMode);
     const m = lpStato(this._hass);
+    const now = this._now();
+    const prog = m.conn && m.stato === 'Delayed Start';
+    const corso = m.conn && (m.stato === 'Running' || m.stato === 'Paused');
+    const hero = prog ? this._heroProgrammata(m, now) : corso ? this._inCorso(m, now) : this._hero(m, now);
+    const act = (prog ? this._programmata(m, now) : this._quando(m, now)) + this._messaggio();
     const html = '<div class="lpq' + (dark ? ' lp-dark' : '') + '"><div class="lp">' +
       '<div class="lp-bar"><button class="lp-back" data-act="back" aria-label="Torna a Lavatrici">' + ldIco('chevron-left') + '</button><h1>Programma lavaggio</h1></div>' +
       this._avviso(m) + this._pillole(m) +
-      '<div class="lp-grid"><div class="lp-col">' + this._preferiti() + this._programma() + this._opzioni() + '</div>' +
-      '<div class="lp-col lp-side">' + this._lato(m) + '</div></div></div></div>';
+      '<div class="lp-grid"><div class="lp-col lp-heroa">' + hero + '</div>' +
+      '<div class="lp-col lp-main">' + this._preferiti() + this._programma() + this._opzioni() + '</div>' +
+      '<div class="lp-col lp-act">' + act + '</div></div></div></div>';
     mgddPaint(this, LP_STYLES, html);
-    // il menu dei programmi: il valore si fissa dopo il disegno (la proprieta' non segue l'attributo)
-    const sel = this.querySelector('#lp-prog');
-    if (sel && sel.value !== this._s.p) sel.value = this._s.p;
-    const ora = this.querySelector('#lp-ora');
-    if (ora && document.activeElement !== ora && ora.value !== this._s.h) ora.value = this._s.h;
+    this._dopo();
+    // mgddPaint rimanda il ridisegno mentre qualcosa scorre (anche la fila degli orari):
+    // allora le animazioni e la posizione della fila si riprendono quando ha finito
+    if (this._mgddTimer) this._dopoPoi();
+  }
+
+  _dopoPoi() {
+    clearTimeout(this._dopoT);
+    this._dopoT = setTimeout(() => (this._mgddTimer ? this._dopoPoi() : this._dopo()), 150);
+  }
+
+  // Animazioni dopo il disegno (Web Animations del browser, niente librerie).
+  // Con "riduci movimento" attivo si salta tutto.
+  _dopo() {
+    const s = this._s;
+    const q = (sel) => this.querySelector(sel);
+    const anim = typeof this.animate === 'function' && !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const ease = 'cubic-bezier(.2,.8,.2,1)';
+    // fila degli orari: l'orario scelto resta in vista
+    const strip = q('.lp-slots');
+    const on = strip && strip.querySelector('.lp-on');
+    if (on) {
+      const key = on.dataset.slot;
+      if (strip !== this._strip || key !== this._slotKey) {
+        const left = Math.max(0, on.offsetLeft - (strip.clientWidth - on.offsetWidth) / 2);
+        if (anim && strip === this._strip && strip.scrollTo) strip.scrollTo({ left, behavior: 'smooth' });
+        else strip.scrollLeft = left;
+        this._strip = strip;
+        this._slotKey = key;
+      }
+    }
+    // ingresso: i riquadri salgono in fila, la barra del lavaggio si disegna
+    if (this._entra && anim && this.offsetParent !== null) {
+      this._entra = false;
+      this.querySelectorAll('.lp-heroa > *, .lp-main > *, .lp-act > *').forEach((el, i) => {
+        el.animate([{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'none' }], { duration: 460, delay: Math.min(i, 10) * 45, easing: ease, fill: 'backwards' });
+      });
+      const tx = q('.lp-tx');
+      if (tx) tx.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], { duration: 800, delay: 250, easing: ease, fill: 'backwards' });
+    }
+    // ora di fine: girano solo le cifre cambiate
+    const fl = q('[data-anim=fine]');
+    const ft = fl ? fl.textContent : null;
+    if (anim && fl && this._fineTxt && ft !== this._fineTxt && ft.length === this._fineTxt.length) {
+      Array.prototype.forEach.call(fl.children, (c, i) => {
+        if (c.textContent !== this._fineTxt[i]) {
+          c.animate([{ transform: 'rotateX(-90deg)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 420, delay: i * 45, easing: ease, fill: 'backwards' });
+        }
+      });
+    }
+    this._fineTxt = ft;
+    // durata: conta fino al nuovo valore
+    const du = q('[data-anim=dur]');
+    const dv = du ? Number(du.dataset.v) : NaN;
+    if (anim && du && dv > 0 && this._durV > 0 && dv !== this._durV) {
+      const a = this._durV;
+      const pre = du.dataset.p || '';
+      const t0 = performance.now();
+      cancelAnimationFrame(this._durRaf);
+      const step = (t) => {
+        const f = Math.min(1, (t - t0) / 550);
+        du.textContent = pre + lpDur(a + (dv - a) * (1 - Math.pow(1 - f, 3)));
+        if (f < 1) this._durRaf = requestAnimationFrame(step);
+      };
+      this._durRaf = requestAnimationFrame(step);
+    }
+    this._durV = dv;
+    // programma scelto: l'icona fa uno scatto
+    if (anim && this._pPrev && this._pPrev !== s.p) {
+      const ic = q('.lp-pt.lp-on ha-icon');
+      if (ic) ic.animate([{ transform: 'rotate(-25deg) scale(.6)' }, { transform: 'none' }], { duration: 600, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+    }
+    this._pPrev = s.p;
+    // − / +: la cifra entra dal verso giusto
+    if (this._stepAnim) {
+      const b = q('[data-sv=' + this._stepAnim.k + ']');
+      if (anim && b) b.animate([{ transform: 'translateY(' + this._stepAnim.d * 16 + 'px)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 360, easing: ease });
+      this._stepAnim = null;
+    }
+    // "Tutti i programmi": l'elenco si apre a tendina
+    if (this._altriAnim) {
+      const mo = q('.lp-more');
+      if (anim && mo) {
+        mo.animate([{ height: '0px', opacity: 0 }, { height: mo.offsetHeight + 'px', opacity: 1 }], { duration: 420, easing: ease });
+        mo.querySelectorAll('.lp-px').forEach((b, i) => b.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }], { duration: 300, delay: 80 + i * 20, easing: ease, fill: 'backwards' }));
+      }
+      this._altriAnim = false;
+    }
+  }
+
+  // ---------- scorri per confermare ----------
+
+  _slDown(e) {
+    const k = e.target && e.target.closest ? e.target.closest('[data-knob]') : null;
+    if (!k || !this.contains(k)) return;
+    const sl = k.parentElement;
+    if (sl.classList.contains('lp-sl-off') || this._busy) return;
+    e.preventDefault();
+    try { k.setPointerCapture(e.pointerId); } catch (err) { /* niente */ }
+    this._drag = { k, f: sl.querySelector('.lp-slf'), x0: e.clientX, x: 0, max: sl.clientWidth - k.offsetWidth - 8 };
+  }
+
+  _slMove(e) {
+    const d = this._drag;
+    if (!d) return;
+    d.x = Math.max(0, Math.min(d.max, e.clientX - d.x0));
+    d.k.style.transform = 'translateX(' + d.x + 'px)';
+    d.f.style.width = (d.x + d.k.offsetWidth + 4) + 'px';
+  }
+
+  _slUp(e, annullato) {
+    const d = this._drag;
+    if (!d) return;
+    this._drag = null;
+    if (!annullato && d.x >= d.max * 0.85) {
+      this._toccato = true;
+      this._invia();
+    } else if (d.x > 0) {
+      const anim = typeof d.k.animate === 'function';
+      const back = 'cubic-bezier(.34,1.56,.64,1)';
+      if (anim) {
+        d.k.animate([{ transform: 'translateX(' + d.x + 'px)' }, { transform: 'none' }], { duration: 450, easing: back });
+        d.f.animate([{ width: d.f.style.width }, { width: (d.k.offsetWidth + 4) + 'px' }], { duration: 450, easing: back });
+      }
+      d.k.style.transform = '';
+      d.f.style.width = '';
+    }
+    if (this._dopoDrag) { this._dopoDrag = false; this._render(); }
   }
 
   _avviso(m) {
     const ban = (cls, ico, tit, testo) => '<div class="lp-ban lp-ban-' + cls + '">' + ldIco(ico) + '<div><b>' + tit + '</b><p>' + testo + '</p></div></div>';
     if (!m.conn) {
-      return ban('r', 'wifi-off', 'Lavatrice non raggiungibile', 'Accendila e premi il tasto <b>Remote Start</b> (icona Wi\u2011Fi). Quando si collega la pagina si aggiorna da sola; le impostazioni restano salvate qui.');
+      return ban('r', 'wifi-off', 'Lavatrice non raggiungibile', 'Accendila e premi il tasto <b>Remote Start</b> (icona Wi‑Fi). Quando si collega la pagina si aggiorna da sola; le impostazioni restano salvate qui.');
     }
     if (m.rc === 'Temporary Locked') {
-      return ban('n', 'timer-sand', 'La lavatrice \u00e8 occupata', 'Sta eseguendo un comando: tra qualche secondo torna disponibile.');
+      return ban('n', 'timer-sand', 'La lavatrice è occupata', 'Sta eseguendo un comando: tra qualche secondo torna disponibile.');
     }
     if (m.rc !== 'Enabled' && !['Running', 'Delayed Start'].includes(m.stato)) {
-      return ban('a', 'alert', 'Attiva il controllo remoto', 'La lavatrice si programma da qui solo con il controllo remoto acceso: sulla lavatrice premi il tasto <b>Remote Start</b> (icona Wi\u2011Fi) finch\u00e9 si accende la spia.' +
+      return ban('a', 'alert', 'Attiva il controllo remoto', 'La lavatrice si programma da qui solo con il controllo remoto acceso: sulla lavatrice premi il tasto <b>Remote Start</b> (icona Wi‑Fi) finché si accende la spia.' +
         (m.rc === 'Not Safety Relevant Enabled' ? ' Adesso accetta solo le impostazioni (si legge la durata), ma non parte.' : ''));
     }
     return '';
@@ -16224,13 +16401,84 @@ class LaundryProgramCard extends HTMLElement {
     return '<div class="lp-pills">' + pill('g', 'Collegata') + rc + pill(m.stato === 'Delayed Start' ? 'p' : 'n', mgddEsc(LP_STATI[m.stato] || m.stato)) + '</div>';
   }
 
+  // ---------- riepilogo in alto: quando finisce e quanto dura ----------
+
+  _heroHtml(o) {
+    const now = o.now;
+    const g = o.fine ? lpGiorno(o.fine, now) : '';
+    const ft = o.fine ? lpHM(o.fine) : '--:--';
+    const flap = '<span class="lp-flap" data-anim="fine">' + Array.prototype.map.call(ft, (c) => '<span' + (c === ':' ? ' class="lp-fc"' : '') + '>' + c + '</span>').join('') + '</span>';
+    const pre = o.dur != null && o.approx ? '≈' : '';
+    const dur = o.dur != null ? '<span data-anim="dur" data-v="' + Math.round(o.dur) + '" data-p="' + pre + '">' + pre + lpDur(o.dur) + '</span>' : '—';
+    const parte = o.start && o.k ? lpQuando(o.start, now) : 'subito';
+    let tl = '';
+    if (o.fine && o.start) {
+      const tot = Math.max(1, o.fine - now);
+      const a = Math.min(96, Math.max(0, ((o.start - now) / tot) * 100));
+      tl = '<div class="lp-tl" aria-hidden="true"><div class="lp-tr"></div><div class="lp-tw" style="width:' + a.toFixed(1) + '%"></div>' +
+        '<div class="lp-tx" style="left:' + a.toFixed(1) + '%;width:' + (100 - a).toFixed(1) + '%"></div></div>' +
+        '<div class="lp-tls"><span>adesso ' + lpHM(now) + '</span><span>fine <b>' + (g ? g + ' ' : '') + ft + '</b></span></div>';
+    }
+    return '<div class="lp-hero"><div class="lp-two">' +
+      '<div><div class="lp-k">Finisce' + (g ? ' ' + g : '') + ' alle</div><div class="lp-bigv">' + flap + '</div></div>' +
+      '<div><div class="lp-k">Dura</div><div class="lp-bigv">' + dur + '</div></div></div>' +
+      '<div class="lp-meta">' + ldIco('clock-start') + '<span>Parte <b>' + parte + '</b>' + (o.k ? '<span class="lp-dim2"> · tra ' + lpDur(o.tra != null ? o.tra : o.k * 30) + '</span>' : '') + '</span>' +
+      '<span class="lp-sp"></span><span class="lp-rias">' + mgddEsc(o.rias) + '</span></div>' + tl + (o.extra || '') + '</div>';
+  }
+
+  _hero(m, now) {
+    const s = this._s;
+    const d = this._durata();
+    const pt = lpPartenza(s, d.min, now);
+    const fine = pt.start && d.min != null ? new Date(pt.start.getTime() + d.min * 60000) : null;
+    const src = {
+      lavatrice: '<span class="lp-pill lp-pp">dalla lavatrice</span><span>calcolata dall’AEG con queste impostazioni</span>',
+      stima: '<span class="lp-pill lp-pn">stima</span><span>ultima durata letta dalla lavatrice per questa combinazione</span>',
+      attesa: '<span class="lp-pill lp-pn">in arrivo</span><span>' + (this._sync && this._sync.stato === 'invio' ? 'sto mandando le impostazioni alla lavatrice…' : 'la lavatrice sta calcolando la durata…') + '</span>',
+      ignota: '<span>Durata non ancora nota: si legge quando la lavatrice è accesa con questo programma.</span>',
+      leggibile: '<span>La lavatrice ha altre impostazioni.</span>',
+    }[d.src];
+    // durata esatta senza cambiare opzioni: manda le scelte (senza avviare) solo su richiesta
+    const leggi = m.impostabile && !this._syncP && !lpCorrisponde(s, this._hass) && !this._busy ?
+      '<button class="lp-mini" data-act="leggi">' + ldIco('timer-sync-outline') + 'Leggi la durata dalla lavatrice</button>' : '';
+    const sync = this._sync && this._sync.stato === 'err' ? '<div class="lp-note lp-warn">Impostazioni non accettate: ' + mgddEsc(this._sync.testo) + '</div>' : '';
+    return this._heroHtml({ now, fine, start: pt.start, k: s.w === 'subito' ? 0 : pt.k, dur: d.min, approx: d.src === 'stima', rias: lpRiassunto(s),
+      extra: '<div class="lp-src">' + src + '</div>' + leggi + sync });
+  }
+
+  _heroProgrammata(m, now) {
+    const h = this._hass;
+    const parte = new Date(now.getTime() + m.rit * 60000);
+    const fine = m.tte ? new Date(parte.getTime() + m.tte * 60000) : null;
+    const p = lpProg(h.states[LP_E.prog] ? h.states[LP_E.prog].state : '');
+    return this._heroHtml({ now, fine, start: parte, k: m.rit > 0 ? 1 : 0, tra: m.rit, dur: m.tte || null, approx: false, rias: p ? p.n : 'Programmata' });
+  }
+
+  // ---------- scelte ----------
+
   _preferiti() {
     const s = this._s;
     const favs = this.config.favorites.map((f, i) => {
       const on = f.p === s.p && f.t === s.t && f.sp === s.sp && !s.n && !s.rh;
-      return '<button class="lp-chip lp-fav' + (on ? ' lp-on' : '') + '" data-fav="' + i + '">' + mgddEsc(f.n) + '<small>' + mgddEsc(f.s) + '</small></button>';
+      return '<button class="lp-fv' + (on ? ' lp-on' : '') + '" data-fav="' + i + '">' + ldIco('star') + '<b>' + mgddEsc(f.n) + '</b><span>' + mgddEsc(f.s) + '</span></button>';
     }).join('');
-    return '<div class="lp-c"><div class="lp-lbl">Preferiti</div><div class="lp-chips">' + favs + '</div></div>';
+    return '<div class="lp-c"><div class="lp-lbl">Preferiti<small>programma, gradi e giri in un tocco</small></div><div class="lp-favs">' + favs + '</div></div>';
+  }
+
+  _altriAperti() {
+    if (this._altri != null) return this._altri;
+    const p = lpProg(this._s.p);
+    return !!(p && !p.ic);
+  }
+
+  // Sotto il nome: durata gia' letta per quel programma, altrimenti la temperatura massima.
+  _progSub(x) {
+    const c = lpSanitize(Object.assign({}, this._s, { p: x.o }));
+    const st = lpStima(c, this._hass);
+    if (st) return '≈' + lpDur(st);
+    if (x.ST) return 'vapore';
+    if (!x.T.length) return 'senza acqua calda';
+    return x.T.length === 1 ? lpTL(x.T[0]) : 'max ' + lpTL(x.T[x.T.length - 1]);
   }
 
   _programma() {
@@ -16247,15 +16495,37 @@ class LaundryProgramCard extends HTMLElement {
     else if (!p.T.length && !p.f) nota = 'Solo scarico e centrifuga: nessuna opzione.';
     else if (!p.f) nota = 'Con ' + mgddEsc(p.n) + ' non si possono aggiungere opzioni.';
     else if (manca.length) nota = 'Con ' + mgddEsc(p.n) + ' non si possono usare: ' + manca.join(', ') + '.';
-    if (p.PWfix) nota += (nota ? ' ' : '') + 'Il prelavaggio \u00e8 sempre attivo.';
-    const opts = LP_PROGS.map((x) => '<option value="' + mgddEsc(x.o) + '"' + (x.o === s.p ? ' selected' : '') + '>' + mgddEsc(x.n) + '</option>').join('');
-    return '<div class="lp-c"><div class="lp-lbl"><label for="lp-prog">Programma</label><small>' + lim.join(' · ') + '</small></div>' +
-      '<select id="lp-prog" class="lp-sel">' + opts + '</select>' + (nota ? '<div class="lp-note">' + nota + '</div>' : '') + '</div>';
+    if (p.PWfix) nota += (nota ? ' ' : '') + 'Il prelavaggio è sempre attivo.';
+    const main = LP_PROGS.filter((x) => x.ic);
+    const altri = LP_PROGS.filter((x) => !x.ic);
+    const aperti = this._altriAperti();
+    const val = (x) => ' data-set="p" data-v="' + mgddEsc(x.o) + '"';
+    const tiles = main.map((x) => '<button class="lp-pt' + (x.o === s.p ? ' lp-on' : '') + '"' + val(x) + ' aria-label="' + mgddEsc(x.n) + '">' + ldIco(x.ic) +
+      '<b>' + mgddEsc(x.b) + '</b><span>' + this._progSub(x) + '</span></button>').join('');
+    const lista = aperti ? '<div class="lp-more"><div class="lp-pl">' + altri.map((x) => '<button class="lp-px' + (x.o === s.p ? ' lp-on' : '') + '"' + val(x) + '><b>' + mgddEsc(x.n) +
+      '</b><span>' + this._progSub(x) + '</span></button>').join('') + '</div></div>' : '';
+    return '<div class="lp-c"><div class="lp-lbl">Programma<small>' + mgddEsc(lpRiassunto(s)) + '</small></div>' +
+      '<div class="lp-pgr">' + tiles + '</div>' + lista +
+      '<button class="lp-mbtn" data-act="altri" aria-expanded="' + (aperti ? 'true' : 'false') + '">' + (aperti ? 'Meno programmi' : 'Tutti i programmi · altri ' + altri.length) + ldIco(aperti ? 'chevron-up' : 'chevron-down') + '</button>' +
+      '<div class="lp-note">' + mgddEsc(p.n) + ': ' + lim.join(' · ') + (nota ? '. ' + nota : '') + '</div></div>';
   }
 
-  _seg(attr, opts, cur) {
-    return '<div class="lp-seg">' + opts.map((o) => '<button data-' + attr + '="' + mgddEsc(String(o.v)) + '"' + (attr === 'set' ? ' data-v="' + mgddEsc(String(o.val)) + '"' : '') +
+  // Segmenti tutti alti uguali; la pillola sotto la scelta scivola (transizione CSS su --i).
+  _seg(attr, opts) {
+    const i = opts.findIndex((o) => o.on);
+    return '<div class="lp-seg" style="--n:' + opts.length + ';--i:' + Math.max(0, i) + '"><i class="lp-ind' + (i < 0 ? ' lp-ind-off' : '') + '"></i>' +
+      opts.map((o) => '<button data-' + attr + '="' + mgddEsc(String(o.v)) + '"' + (attr === 'set' ? ' data-v="' + mgddEsc(String(o.val)) + '"' : '') +
       (o.dis ? ' disabled' : '') + ' class="' + (o.on ? 'lp-on' : '') + '">' + o.l + '</button>').join('') + '</div>';
+  }
+
+  _stepper(k, tit, list, cur, lab, unit, small, dim, note) {
+    const i = list.indexOf(cur);
+    const sblocca = dim;
+    return '<div class="lp-c lp-stc"><div class="lp-lbl">' + tit + (small ? '<small>' + small + '</small>' : '') + '</div>' +
+      '<div class="lp-stp' + (dim ? ' lp-dim' : '') + '"><button data-stp="' + k + '" data-d="-1" aria-label="' + tit + ' meno"' + (!sblocca && i <= 0 ? ' disabled' : '') + '>' + ldIco('minus') + '</button>' +
+      '<div class="lp-stv"><b data-sv="' + k + '">' + lab + '</b>' + (unit ? '<small>' + unit + '</small>' : '') + '</div>' +
+      '<button data-stp="' + k + '" data-d="1" aria-label="' + tit + ' più"' + (!sblocca && (i < 0 || i >= list.length - 1) ? ' disabled' : '') + '>' + ldIco('plus') + '</button></div>' +
+      (note ? '<div class="lp-note">' + note + '</div>' : '') + '</div>';
   }
 
   _opzioni() {
@@ -16264,36 +16534,34 @@ class LaundryProgramCard extends HTMLElement {
     const F = p.F;
     const noSpin = s.n || s.rh;
     let out = '';
-    if (p.T.length) {
-      const fissa = p.T.length === 1;
-      out += '<div class="lp-c"><div class="lp-lbl">Temperatura' + (fissa ? '<small>unica possibile</small>' : '') + '</div><div class="lp-chips">' +
-        p.T.map((t) => '<button class="lp-chip' + (t === s.t ? ' lp-on' : '') + '" data-set="t" data-v="' + t + '">' + lpTL(t) + '</button>').join('') + '</div></div>';
-    }
+    const st = [];
+    if (p.T.length && !p.ST) st.push(this._stepper('t', 'Temperatura', p.T, s.t, lpTL(s.t), '', p.T.length === 1 ? 'unica possibile' : '', false, ''));
     if (p.S.length) {
-      out += '<div class="lp-c"><div class="lp-lbl">Centrifuga<small>giri/min</small></div><div class="lp-chips' + (noSpin ? ' lp-dim' : '') + '">' +
-        p.S.map((v) => '<button class="lp-chip' + (!noSpin && v === s.sp ? ' lp-on' : '') + '" data-set="sp" data-v="' + v + '">' + (v === 0 ? 'Nessuna' : v) + '</button>').join('') + '</div>' +
-        (noSpin ? '<div class="lp-note">' + (s.n ? 'Ciclo notte: niente centrifuga finale. Scegliendo una centrifuga il ciclo notte si spegne.' : 'Stop con acqua: il bucato resta in acqua, niente centrifuga finale. Scegliendo una centrifuga si spegne.') + '</div>' : '') + '</div>';
+      st.push(this._stepper('sp', 'Centrifuga', p.S, s.sp, noSpin ? 'No' : s.sp === 0 ? 'Nessuna' : String(s.sp), noSpin || s.sp === 0 ? '' : 'giri', '', noSpin,
+        noSpin ? (s.n ? 'Ciclo notte: niente centrifuga finale. Con − / + il ciclo notte si spegne.' : 'Stop con acqua: niente centrifuga finale. Con − / + si spegne.') : ''));
     }
+    if (st.length) out += '<div class="lp-two2' + (st.length === 1 ? ' lp-one' : '') + '">' + st.join('') + '</div>';
+    const o = [];
     if (p.ST) {
-      out += '<div class="lp-c"><div class="lp-lbl">Intensit\u00e0 vapore</div>' + this._seg('set', p.ST.map((v) => ({ v: 'st', val: v, l: v, on: v === s.st })), null) + '</div>';
+      o.push('<div class="lp-o"><div class="lp-lbl">Intensità vapore<small>temperatura fissa 40°</small></div>' + this._seg('set', p.ST.map((v) => ({ v: 'st', val: v, l: v, on: v === s.st }))) + '</div>');
+    }
+    if (F.has('R')) {
+      o.push('<div class="lp-o"><div class="lp-lbl">Risciacquo aggiuntivo</div>' + this._seg('set', [0, 1, 2, 3].map((r) => ({ v: 'r', val: r, l: r ? '+' + r : 'No', on: r === s.r }))) + '</div>');
     }
     if (F.has('AC')) {
       const vap = F.has('ACst') && s.t >= 40;
-      const o = [{ v: 'no', l: 'No', on: s.ac === 'no' }, { v: 'si', l: 'S\u00ec', on: s.ac === 'si' }];
-      if (vap) o.push({ v: 'vapore', l: 'S\u00ec, con vapore', on: s.ac === 'vapore' });
-      out += '<div class="lp-c"><div class="lp-lbl">Antipiega</div>' + this._seg('ac', o) +
-        (F.has('ACst') && !vap ? '<div class="lp-note">Con vapore solo da 40\u00b0 in su.</div>' : '') +
-        (noSpin ? '<div class="lp-note">Scegliendo l\u2019antipiega si spegne ' + (s.n ? 'il ciclo notte' : 'lo stop con acqua') + '.</div>' : '') + '</div>';
-    }
-    if (F.has('R')) {
-      out += '<div class="lp-c"><div class="lp-lbl">Risciacquo aggiuntivo</div>' + this._seg('set', [0, 1, 2, 3].map((r) => ({ v: 'r', val: r, l: r ? '+' + r : 'No', on: r === s.r }))) + '</div>';
+      const a = [{ v: 'no', l: 'No', on: s.ac === 'no' }, { v: 'si', l: 'Sì', on: s.ac === 'si' }];
+      if (vap) a.push({ v: 'vapore', l: 'Con vapore', on: s.ac === 'vapore' });
+      o.push('<div class="lp-o"><div class="lp-lbl">Antipiega' + (F.has('ACst') && !vap ? '<small>con vapore da 40° in su</small>' : '') + '</div>' + this._seg('ac', a) +
+        (noSpin ? '<div class="lp-note">Scegliendo l’antipiega si spegne ' + (s.n ? 'il ciclo notte' : 'lo stop con acqua') + '.</div>' : '') + '</div>');
     }
     if (F.has('TM')) {
-      out += '<div class="lp-c"><div class="lp-lbl">Risparmio tempo</div>' + this._seg('set', Object.keys(LP_TM).map((k) => ({ v: 'tm', val: k, l: LP_TM[k], on: k === s.tm }))) + '</div>';
+      o.push('<div class="lp-o"><div class="lp-lbl">Risparmio tempo<small>accorcia il lavaggio</small></div>' + this._seg('set', Object.keys(LP_TM).map((k) => ({ v: 'tm', val: k, l: LP_TM[k], on: k === s.tm }))) + '</div>');
     }
+    if (o.length) out += '<div class="lp-c lp-opz">' + o.join('') + '</div>';
     const ex = [];
     if (F.has('PW') || p.PWfix) ex.push({ k: 'pw', n: 'Prelavaggio', d: p.PWfix ? 'Sempre attivo in questo programma' : 'Per lo sporco ostinato', fix: !!p.PWfix });
-    if (F.has('SM')) ex.push({ k: 'sm', n: 'Smacchiatore', d: s.t >= 40 ? 'Per le macchie, da 40\u00b0 in su' : 'Solo da 40\u00b0 in su', off: s.t < 40 });
+    if (F.has('SM')) ex.push({ k: 'sm', n: 'Smacchiatore', d: s.t >= 40 ? 'Per le macchie, da 40° in su' : 'Solo da 40° in su', off: s.t < 40 });
     if (F.has('N')) ex.push({ k: 'n', n: 'Ciclo notte', d: 'Silenzioso, senza centrifuga finale' });
     if (F.has('RH')) ex.push({ k: 'rh', n: 'Stop con acqua', d: 'Il bucato resta in acqua a fine ciclo' });
     if (ex.length) {
@@ -16311,52 +16579,38 @@ class LaundryProgramCard extends HTMLElement {
     return out;
   }
 
-  _lato(m) {
-    const now = this._now();
-    if (m.conn && m.stato === 'Delayed Start') return this._programmata(m, now) + this._messaggio();
-    if (m.conn && (m.stato === 'Running' || m.stato === 'Paused')) return this._inCorso(m, now) + this._quando(m, now) + this._messaggio();
-    return this._quando(m, now) + this._messaggio();
-  }
+  // ---------- quando + scorri per confermare ----------
 
   _quando(m, now) {
     const s = this._s;
     const d = this._durata();
     const pt = lpPartenza(s, d.min, now);
-    let ora = '';
-    if (s.w !== 'subito') {
-      ora = '<div class="lp-ora"><label for="lp-ora">' + (s.w === 'avvio' ? 'Parti alle' : 'Finisci alle') + '</label><input id="lp-ora" type="time" step="1800" value="' + mgddEsc(s.h) + '"></div>';
+    const sel = s.w === 'subito' ? 0 : pt.k;
+    let slots = '';
+    for (let k = 0; k <= 40; k++) {
+      const st = new Date(now.getTime() + k * 1800000);
+      const f = d.min != null ? new Date(st.getTime() + d.min * 60000) : null;
+      const gs = lpGiorno(st, now);
+      const gf = f ? lpGiorno(f, now) : '';
+      slots += '<button class="lp-slot' + (k === sel ? ' lp-on' : '') + '" data-slot="' + k + '"><b>' + (k ? (gs ? '<i>' + gs.slice(0, 3) + '</i>' : '') + lpHM(st) : 'Subito') + '</b>' +
+        '<span>' + (f ? 'fine ' + (gf ? gf.slice(0, 3) + ' ' : '') + lpHM(f) : k ? 'tra ' + lpDur(k * 30) : 'adesso') + '</span></button>';
     }
-    const fine = pt.start && d.min != null ? new Date(pt.start.getTime() + d.min * 60000) : null;
-    const src = {
-      lavatrice: '<span class="lp-pill lp-pp">dalla lavatrice</span><span>calcolata dall\u2019AEG con queste impostazioni</span>',
-      stima: '<span class="lp-pill lp-pn">stima</span><span>ultima durata letta dalla lavatrice per questa combinazione</span>',
-      attesa: '<span class="lp-pill lp-pn">in arrivo</span><span>' + (this._sync && this._sync.stato === 'invio' ? 'sto mandando le impostazioni alla lavatrice\u2026' : 'la lavatrice sta calcolando la durata\u2026') + '</span>',
-      ignota: '<span>Durata non ancora nota: si legge quando la lavatrice \u00e8 accesa con questo programma.</span>',
-      leggibile: '<span>La lavatrice ha altre impostazioni.</span>',
-    }[d.src];
-    // durata esatta senza cambiare opzioni: manda le scelte (senza avviare) solo su richiesta
-    const leggi = m.impostabile && !this._syncP && !lpCorrisponde(s, this._hass) && !this._busy ?
-      '<button class="lp-mini" data-act="leggi">' + ldIco('timer-sync-outline') + 'Leggi la durata dalla lavatrice</button>' : '';
-    const sync = this._sync && this._sync.stato === 'err' ? '<div class="lp-note lp-warn">Impostazioni non accettate: ' + mgddEsc(this._sync.testo) + '</div>' : '';
-    // pulsante
+    // "Finisci alle" (scelta salvata da una versione precedente) e casi limite: si spiega
+    const nota = s.w === 'fine' || (pt.k != null && /tempo|massimo/.test(pt.nota)) ? '<div class="lp-note">' + pt.nota + '</div>' : '';
     let lab;
     let dis = true;
-    if (this._busy === 'invio') lab = 'Invio in corso\u2026';
+    if (this._busy === 'invio') lab = 'Invio in corso…';
     else if (!m.conn) lab = 'Lavatrice non raggiungibile';
-    else if (m.stato === 'Running' || m.stato === 'Paused') lab = 'Sta gi\u00e0 lavando';
-    else if (m.rc === 'Temporary Locked') lab = 'Lavatrice occupata, un attimo\u2026';
+    else if (m.stato === 'Running' || m.stato === 'Paused') lab = 'Sta già lavando';
+    else if (m.rc === 'Temporary Locked') lab = 'Lavatrice occupata, un attimo…';
     else if (m.rc !== 'Enabled') lab = 'Attiva prima il controllo remoto';
     else if (!m.pronta) lab = 'Lavatrice non pronta (' + mgddEsc(LP_STATI[m.stato] || m.stato) + ')';
-    else if (pt.k == null) lab = 'Aspetto la durata\u2026';
-    else { dis = false; lab = s.w === 'subito' ? 'Avvia adesso' : 'Programma: parte ' + lpAlle(pt.start, now); }
-    return '<div class="lp-c"><div class="lp-lbl">Quando</div>' +
-      this._seg('when', [{ v: 'subito', l: 'Subito', on: s.w === 'subito' }, { v: 'avvio', l: 'Parti alle', on: s.w === 'avvio' }, { v: 'fine', l: 'Finisci alle', on: s.w === 'fine' }]) +
-      ora + '<div class="lp-note">' + pt.nota + '</div></div>' +
-      '<div class="lp-c"><div class="lp-sum3"><div><span>Durata</span><b>' + (d.min != null ? (d.src === 'stima' ? '\u2248' : '') + lpDur(d.min) : '\u2014') + '</b></div>' +
-      '<div><span>Partenza' + (pt.start && lpGiorno(pt.start, now) ? ' \u00b7 ' + lpGiorno(pt.start, now) : '') + '</span><b>' + (pt.start ? lpHM(pt.start) : '\u2014') + '</b></div>' +
-      '<div><span>Fine' + (fine && lpGiorno(fine, now) ? ' \u00b7 ' + lpGiorno(fine, now) : '') + '</span><b>' + (fine ? lpHM(fine) : '\u2014') + '</b></div></div>' +
-      '<div class="lp-src">' + src + '</div>' + leggi + sync + '</div>' +
-      '<button class="lp-btn" data-act="invia"' + (dis ? ' disabled' : '') + '>' + lab + '</button>';
+    else if (pt.k == null) lab = 'Aspetto la durata…';
+    else { dis = false; lab = s.w === 'subito' || !pt.k ? 'Scorri per avviare' : 'Scorri per programmare'; }
+    const busy = this._busy === 'invio';
+    return '<div class="lp-c"><div class="lp-lbl">Quando<small>passi di 30 min, al massimo 20 h</small></div><div class="lp-slots">' + slots + '</div>' + nota + '</div>' +
+      '<div class="lp-sl' + (dis && !busy ? ' lp-sl-off' : '') + (busy ? ' lp-sl-busy' : '') + '"><span class="lp-slf"></span><div class="lp-slt"><span>' + lab + '</span></div>' +
+      '<div class="lp-knob" data-knob="1" role="button" aria-label="' + lab + '">' + ldIco(busy ? 'timer-sand' : dis ? 'lock-outline' : 'chevron-double-right') + '</div></div>';
   }
 
   _impostazioniMacchina() {
@@ -16365,38 +16619,27 @@ class LaundryProgramCard extends HTMLElement {
     const p = lpProg(v(LP_E.prog));
     const t = v(LP_E.temp);
     const sp = v(LP_E.spin);
-    const ac = v(LP_E.acst) === 'on' ? 'S\u00ec, con vapore' : v(LP_E.ac) === 'on' ? 'S\u00ec' : 'No';
+    const ac = v(LP_E.acst) === 'on' ? 'Sì, con vapore' : v(LP_E.ac) === 'on' ? 'Sì' : 'No';
     const r = v(LP_E.rinse).match(/\d/);
     const righe = [['Programma', p ? p.n : v(LP_E.prog)]];
-    if (!p || p.T.length) righe.push(['Temperatura \u00b7 centrifuga', (t === 'Cold' ? 'Fredda' : t.replace(' Celsius', '\u00b0')) + ' \u00b7 ' + sp.replace(' Rpm', '')]);
+    if (!p || p.T.length) righe.push(['Temperatura · centrifuga', (t === 'Cold' ? 'Fredda' : t.replace(' Celsius', '°')) + ' · ' + sp.replace(' Rpm', '')]);
     if (!p || p.F.has('AC')) righe.push(['Antipiega', ac]);
-    if (!p || p.F.has('R') || p.F.has('TM')) righe.push(['Risciacquo \u00b7 risparmio', (r ? '+' + r[0] : 'No') + ' \u00b7 ' + (LP_TM[v(LP_E.tm)] || v(LP_E.tm))]);
+    if (!p || p.F.has('R') || p.F.has('TM')) righe.push(['Risciacquo · risparmio', (r ? '+' + r[0] : 'No') + ' · ' + (LP_TM[v(LP_E.tm)] || v(LP_E.tm))]);
     return righe.map((x) => '<div class="lp-row"><span>' + x[0] + '</span><b>' + mgddEsc(x[1]) + '</b></div>').join('');
   }
 
-  _programmata(m, now) {
-    const parte = new Date(now.getTime() + m.rit * 60000);
-    const fine = m.tte ? new Date(parte.getTime() + m.tte * 60000) : null;
-    let tl = '';
-    if (fine) {
-      const tot = fine - now;
-      const a = Math.min(96, Math.max(0, ((parte - now) / tot) * 100));
-      tl = '<div class="lp-tl" aria-hidden="true"><div class="lp-ln"></div><div class="lp-w" style="left:' + a.toFixed(1) + '%;width:' + (100 - a).toFixed(1) + '%"></div>' +
-        '<span class="lp-k" style="left:0;transform:none">adesso</span><span class="lp-k" style="left:' + a.toFixed(1) + '%">' + lpHM(parte) + '</span>' +
-        '<span class="lp-k" style="left:100%;transform:translateX(-100%)">' + lpHM(fine) + '</span></div>';
-    }
-    return '<div class="lp-c"><div class="lp-lbl">Parte tra</div><div class="lp-big">' + lpDur(m.rit) + '</div>' +
-      '<div class="lp-note">parte <b>' + lpAlle(parte, now) + '</b>' + (fine ? ' \u00b7 finisce <b>' + lpAlle(fine, now) + '</b> \u00b7 dura ' + lpDur(m.tte) : '') + '</div>' + tl + '</div>' +
-      '<div class="lp-c"><div class="lp-lbl">Impostato sulla lavatrice</div>' + this._impostazioniMacchina() + '</div>' +
-      '<button class="lp-btn lp-danger" data-act="annulla"' + (this._busy ? ' disabled' : '') + '>' + (this._busy === 'annulla' ? 'Annullo\u2026' : 'Annulla programmazione') + '</button>' +
-      '<div class="lp-note">La lavatrice tiene il conto da sola, anche se si scollega dal Wi\u2011Fi.</div>';
+  _programmata() {
+    return '<div class="lp-c"><div class="lp-lbl">Impostato sulla lavatrice</div>' + this._impostazioniMacchina() + '</div>' +
+      '<button class="lp-btn lp-danger" data-act="annulla"' + (this._busy ? ' disabled' : '') + '>' + (this._busy === 'annulla' ? 'Annullo…' : 'Annulla programmazione') + '</button>' +
+      '<div class="lp-note">La lavatrice tiene il conto da sola, anche se si scollega dal Wi‑Fi.</div>';
   }
 
   _inCorso(m, now) {
     const fine = m.tte ? new Date(now.getTime() + m.tte * 60000) : null;
     const fase = LP_FASI[m.fase];
-    return '<div class="lp-c"><div class="lp-lbl">' + (m.stato === 'Paused' ? 'In pausa' : 'Sta lavando') + (fase ? '<small>' + fase + '</small>' : '') + '</div>' +
-      '<div class="lp-big">' + (fine ? lpHM(fine) : '\u2014') + '</div><div class="lp-note">' + (fine ? 'ora di fine prevista \u00b7 mancano ' + lpDur(m.tte) : '') + '</div></div>';
+    return '<div class="lp-hero"><div class="lp-k">' + (m.stato === 'Paused' ? 'In pausa' : 'Sta lavando') + (fase ? ' · ' + fase : '') + '</div>' +
+      '<div class="lp-two"><div><div class="lp-k">Finisce alle</div><div class="lp-bigv">' + (fine ? lpHM(fine) : '—') + '</div></div>' +
+      '<div><div class="lp-k">Mancano</div><div class="lp-bigv">' + (m.tte ? lpDur(m.tte) : '—') + '</div></div></div></div>';
   }
 
   _messaggio() {
@@ -16408,43 +16651,98 @@ class LaundryProgramCard extends HTMLElement {
 }
 
 const LP_STYLES = '<style>' +
-  '.lpq{--lp-t1:var(--primary-text-color,#1c1c1e);--lp-t2:var(--secondary-text-color,#6b6f76);--lp-div:var(--divider-color,rgba(0,0,0,.08));' +
+  '.lpq{--lp-t1:var(--primary-text-color,#1c1c1e);--lp-t2:var(--secondary-text-color,#6b6f76);--lp-t3:#9a9ca2;--lp-div:var(--divider-color,rgba(0,0,0,.08));' +
   '--lp-bg:var(--ha-card-background,var(--card-background-color,#fff));' +
   '--lp-g:#1D9E75;--lp-g2:#0E9B6C;--lp-gbg:#1D9E751f;--lp-a:#EF9F27;--lp-a2:#BA7517;--lp-abg:#EF9F2729;--lp-r:#E24B4A;--lp-r2:#B93C3C;--lp-rbg:#E24B4A1c;' +
-  '--lp-p:#6D5AE6;--lp-pbg:#6D5AE61a;--lp-n:rgba(127,127,127,.1);' +
+  '--lp-p:#6D5AE6;--lp-p2:#6D5AE6;--lp-pbg:#6D5AE61c;--lp-pbd:#6D5AE680;--lp-n:rgba(127,127,127,.1);' +
+  '--lp-glass:linear-gradient(140deg,rgba(109,90,230,.14),rgba(29,158,117,.05) 70%);' +
   'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--lp-t1);font-variant-numeric:tabular-nums;}' +
-  '.lpq.lp-dark{--lp-g2:#3CC79A;--lp-a2:#F2B45A;--lp-r2:#F07572;--lp-n:rgba(255,255,255,.08);--lp-pbg:#6D5AE633;}' +
+  '.lpq.lp-dark{--lp-g2:#3CC79A;--lp-a2:#F2B45A;--lp-r2:#F07572;--lp-t3:#6d6d73;--lp-n:rgba(255,255,255,.07);--lp-p2:#B3A8FF;--lp-pbg:#6D5AE638;--lp-pbd:#8B7CF099;' +
+  '--lp-glass:linear-gradient(140deg,rgba(139,124,240,.26),rgba(60,199,154,.08) 70%);}' +
   '.lpq *{box-sizing:border-box;}' +
-  '.lpq button{font-family:inherit;}' +
+  '.lpq button{font-family:inherit;color:inherit;-webkit-tap-highlight-color:transparent;}' +
   '.lpq ha-icon{--mdc-icon-size:20px;width:20px;height:20px;display:inline-flex;flex:none;}' +
   '.lpq .lp{container-type:inline-size;max-width:1040px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:12px;}' +
   '.lpq .lp-bar{display:flex;align-items:center;gap:10px;}' +
   '.lpq .lp-back{width:36px;height:36px;border-radius:11px;border:0;background:var(--lp-n);color:var(--lp-t1);display:grid;place-items:center;cursor:pointer;padding:0;}' +
   '.lpq .lp-bar h1{font-size:22px;font-weight:700;letter-spacing:-.4px;margin:0;}' +
+  // telefono: riepilogo, scelte, quando. Schermo largo: scelte a sinistra, riepilogo e quando a destra.
   '.lpq .lp-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;}' +
-  '@container (min-width:860px){.lpq .lp-grid{grid-template-columns:minmax(0,7fr) minmax(0,5fr);}.lpq .lp-side{position:sticky;top:12px;}}' +
+  '@container (min-width:860px){.lpq .lp-grid{grid-template-columns:minmax(0,7fr) minmax(0,5fr);grid-template-rows:auto 1fr;}' +
+  '.lpq .lp-main{grid-column:1;grid-row:1 / span 2;}.lpq .lp-heroa{grid-column:2;grid-row:1;}.lpq .lp-act{grid-column:2;grid-row:2;}}' +
   '.lpq .lp-col{display:flex;flex-direction:column;gap:12px;min-width:0;}' +
   '.lpq .lp-c{background:var(--lp-bg);border:1px solid var(--lp-div);border-radius:18px;padding:14px 15px;}' +
   '.lpq .lp-lbl{font-size:11px;font-weight:650;color:var(--lp-t2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:9px;display:flex;justify-content:space-between;gap:8px;align-items:baseline;}' +
-  '.lpq .lp-lbl small{text-transform:none;letter-spacing:0;font-weight:500;font-size:12px;}' +
+  '.lpq .lp-lbl small{text-transform:none;letter-spacing:0;font-weight:500;font-size:12px;color:var(--lp-t3);text-align:right;}' +
   '.lpq .lp-pills{display:flex;gap:6px;flex-wrap:wrap;}' +
   '.lpq .lp-pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:650;border-radius:20px;padding:4px 10px;white-space:nowrap;}' +
   '.lpq .lp-pill i{width:7px;height:7px;border-radius:50%;background:currentColor;}' +
   '.lpq .lp-src .lp-pill i,.lpq .lp-sum .lp-pill i{display:none;}' +
   '.lpq .lp-pg{color:var(--lp-g2);background:var(--lp-gbg);}.lpq .lp-pa{color:var(--lp-a2);background:var(--lp-abg);}.lpq .lp-pr{color:var(--lp-r2);background:var(--lp-rbg);}' +
-  '.lpq .lp-pn{color:var(--lp-t2);background:var(--lp-n);}.lpq .lp-pp{color:var(--lp-p);background:var(--lp-pbg);}' +
-  '.lpq .lp-chips{display:flex;flex-wrap:wrap;gap:6px;}' +
-  '.lpq .lp-chip{border:1px solid var(--lp-div);background:var(--lp-bg);color:var(--lp-t1);border-radius:11px;padding:8px 11px;font-size:13.5px;font-weight:600;cursor:pointer;min-width:48px;text-align:center;}' +
-  '.lpq .lp-chip.lp-on{background:var(--lp-t1);color:var(--lp-bg);border-color:var(--lp-t1);}' +
-  '.lpq .lp-fav{display:flex;flex-direction:column;align-items:flex-start;gap:1px;text-align:left;}' +
-  '.lpq .lp-fav small{font-weight:500;font-size:11.5px;color:var(--lp-t2);}.lpq .lp-fav.lp-on small{color:inherit;opacity:.75;}' +
-  '.lpq .lp-dim{opacity:.45;}' +
-  '.lpq .lp-seg{display:flex;background:var(--lp-n);border-radius:12px;padding:3px;gap:3px;}' +
-  '.lpq .lp-seg button{flex:1;border:0;background:transparent;border-radius:9px;padding:8px 4px;font-size:13px;font-weight:600;color:var(--lp-t2);cursor:pointer;}' +
-  '.lpq .lp-seg button.lp-on{background:var(--lp-bg);color:var(--lp-t1);box-shadow:0 1px 2px rgba(0,0,0,.12);}' +
-  '.lpq .lp-sel{width:100%;font:600 15px Inter,-apple-system,"Segoe UI",sans-serif;padding:10px 12px;border-radius:13px;border:1px solid var(--lp-div);background:var(--lp-bg);color:var(--lp-t1);}' +
+  '.lpq .lp-pn{color:var(--lp-t2);background:var(--lp-n);}.lpq .lp-pp{color:var(--lp-p2);background:var(--lp-pbg);}' +
+  // un solo stile di selezione per tutto: fondo viola chiaro con bordo
+  '.lpq .lp-fv.lp-on,.lpq .lp-pt.lp-on,.lpq .lp-px.lp-on,.lpq .lp-slot.lp-on{background:var(--lp-pbg);border-color:var(--lp-pbd);box-shadow:inset 0 0 0 1px var(--lp-pbd);}' +
+  // riepilogo in alto
+  '.lpq .lp-hero{border-radius:20px;padding:15px 15px 13px;background:var(--lp-glass),var(--lp-bg);border:1px solid var(--lp-div);}' +
+  '.lpq .lp-two{display:grid;grid-template-columns:1.15fr 1fr;gap:10px;}' +
+  '.lpq .lp-two>div+div{border-left:1px solid var(--lp-div);padding-left:14px;}' +
+  '.lpq .lp-k{font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--lp-t2);}' +
+  '.lpq .lp-hero>.lp-k{margin-bottom:8px;}' +
+  '.lpq .lp-bigv{font-size:40px;font-weight:800;letter-spacing:-1.4px;line-height:1.12;margin-top:2px;white-space:nowrap;}' +
+  '.lpq .lp-flap{display:inline-flex;perspective:300px;}.lpq .lp-flap span{display:inline-block;transform-origin:50% 60%;}' +
+  '.lpq .lp-meta{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--lp-t2);margin-top:12px;padding:8px 10px;border-radius:11px;background:var(--lp-n);min-width:0;}' +
+  '.lpq .lp-meta ha-icon{--mdc-icon-size:16px;width:16px;height:16px;color:var(--lp-p2);}' +
+  '.lpq .lp-meta b{color:var(--lp-t1);}.lpq .lp-dim2{color:var(--lp-t3);}.lpq .lp-sp{flex:1;}' +
+  '.lpq .lp-rias{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}' +
+  '.lpq .lp-tl{position:relative;height:8px;margin:16px 2px 0;}' +
+  '.lpq .lp-tr{position:absolute;inset:0;border-radius:4px;background:var(--lp-n);}' +
+  '.lpq .lp-tw{position:absolute;left:0;top:0;bottom:0;border-radius:4px 0 0 4px;background:repeating-linear-gradient(90deg,var(--lp-pbd) 0 5px,transparent 5px 9px);}' +
+  '.lpq .lp-tx{position:absolute;top:0;bottom:0;border-radius:4px;background:linear-gradient(90deg,var(--lp-p),var(--lp-g));transform-origin:left;}' +
+  '.lpq .lp-tls{display:flex;justify-content:space-between;font-size:11px;color:var(--lp-t2);margin:7px 2px 0;}.lpq .lp-tls b{color:var(--lp-t1);}' +
+  '.lpq .lp-src{font-size:12px;color:var(--lp-t2);margin-top:11px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;line-height:1.4;}' +
+  '.lpq .lp-mini{display:inline-flex;align-items:center;gap:6px;margin-top:10px;border:1px solid var(--lp-div);background:var(--lp-bg);color:var(--lp-p2);border-radius:10px;padding:7px 11px;font-size:12.5px;font-weight:650;cursor:pointer;}' +
+  '.lpq .lp-mini ha-icon{--mdc-icon-size:16px;width:16px;height:16px;}' +
+  // preferiti e programmi
+  '.lpq .lp-favs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}' +
+  '.lpq .lp-fv{border:1px solid var(--lp-div);background:var(--lp-n);border-radius:14px;padding:10px 10px 9px;text-align:left;cursor:pointer;min-width:0;}' +
+  '.lpq .lp-fv ha-icon{--mdc-icon-size:15px;width:15px;height:15px;color:var(--lp-a);}' +
+  '.lpq .lp-fv b{display:block;font-size:13px;font-weight:650;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.lpq .lp-fv span{font-size:11.5px;color:var(--lp-t2);}' +
+  '.lpq .lp-pgr{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;}' +
+  '.lpq .lp-pt{border:1px solid var(--lp-div);background:var(--lp-n);border-radius:14px;padding:9px 3px 8px;text-align:center;cursor:pointer;min-width:0;}' +
+  '.lpq .lp-pt ha-icon{display:flex;align-items:center;justify-content:center;width:32px;height:32px;margin:0 auto 5px;border-radius:10px;background:rgba(127,127,127,.12);color:var(--lp-t2);transition:background .25s,color .25s;}' +
+  '.lpq .lp-pt.lp-on ha-icon{background:var(--lp-p);color:#fff;}' +
+  '.lpq .lp-pt b{display:block;font-size:12.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.lpq .lp-pt span{display:block;font-size:11px;color:var(--lp-t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.lpq .lp-more{overflow:hidden;}' +
+  '.lpq .lp-pl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding-top:8px;}' +
+  '.lpq .lp-px{display:flex;justify-content:space-between;align-items:baseline;gap:6px;border:1px solid var(--lp-div);background:var(--lp-n);border-radius:11px;padding:9px 10px;text-align:left;cursor:pointer;min-width:0;}' +
+  '.lpq .lp-px b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.lpq .lp-px span{font-size:11px;color:var(--lp-t2);flex:none;}' +
+  '.lpq .lp-mbtn{width:100%;margin-top:8px;height:38px;border:1px solid var(--lp-div);background:none;border-radius:11px;font-weight:600;font-size:13px;color:var(--lp-p2);display:flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;}' +
+  '.lpq .lp-mbtn ha-icon{--mdc-icon-size:18px;width:18px;height:18px;}' +
+  // temperatura e centrifuga
+  '.lpq .lp-two2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}.lpq .lp-two2.lp-one{grid-template-columns:minmax(0,1fr);}' +
+  '.lpq .lp-stc{padding:12px 12px 13px;}' +
+  '.lpq .lp-stp{display:flex;align-items:center;justify-content:space-between;gap:6px;}' +
+  '.lpq .lp-stp button{width:36px;height:36px;border-radius:50%;border:1px solid var(--lp-div);background:var(--lp-n);display:grid;place-items:center;cursor:pointer;padding:0;flex:none;}' +
+  '.lpq .lp-stp button:disabled{opacity:.35;cursor:default;}' +
+  '.lpq .lp-stv{overflow:hidden;height:32px;text-align:center;flex:1;white-space:nowrap;}' +
+  '.lpq .lp-stv b{display:inline-block;font-size:23px;font-weight:700;letter-spacing:-.4px;line-height:32px;}' +
+  '.lpq .lp-stv small{font-size:12px;color:var(--lp-t2);font-weight:500;margin-left:3px;}' +
+  '.lpq .lp-dim .lp-stv{opacity:.45;}' +
+  // opzioni: segmenti tutti alti uguali, la pillola scivola sotto la scelta
+  '.lpq .lp-opz{display:flex;flex-direction:column;gap:14px;}.lpq .lp-o .lp-lbl{margin-bottom:7px;}' +
+  '.lpq .lp-seg{position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:3px;padding:3px;border-radius:13px;background:var(--lp-n);}' +
+  '.lpq .lp-seg button{position:relative;z-index:1;height:40px;border:0;background:none;border-radius:10px;padding:0 4px;font-size:13.5px;font-weight:600;color:var(--lp-t2);cursor:pointer;transition:color .25s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.lpq .lp-seg button.lp-on{color:var(--lp-t1);}.lpq .lp-seg button:disabled{opacity:.4;cursor:default;}' +
+  '.lpq .lp-ind{position:absolute;top:3px;bottom:3px;border-radius:10px;background:var(--lp-pbg);box-shadow:inset 0 0 0 1px var(--lp-pbd);' +
+  '--w:calc((100% - 6px - (var(--n) - 1) * 3px) / var(--n));width:var(--w);left:calc(3px + var(--i) * (var(--w) + 3px));' +
+  'transition:left .42s cubic-bezier(.34,1.4,.64,1);}' +
+  '.lpq .lp-ind-off{opacity:0;}' +
   '.lpq .lp-note{font-size:12.5px;color:var(--lp-t2);line-height:1.45;margin-top:8px;}.lpq .lp-note b{color:var(--lp-t1);}' +
   '.lpq .lp-warn{color:var(--lp-a2);}' +
+  '.lpq .lp-dim{opacity:.45;}.lpq .lp-stp.lp-dim{opacity:1;}' +
   '.lpq .lp-sum{width:100%;display:flex;align-items:center;gap:8px;border:0;background:none;padding:0;color:var(--lp-t1);font-size:14px;font-weight:650;cursor:pointer;}' +
   '.lpq .lp-sum span:first-child{margin-right:auto;}.lpq .lp-sum ha-icon{color:var(--lp-t2);}' +
   '.lpq .lp-rows{margin-top:6px;}' +
@@ -16454,15 +16752,24 @@ const LP_STYLES = '<style>' +
   '.lpq .lp-sw{width:44px;height:26px;border-radius:13px;background:var(--lp-n);position:relative;flex:none;border:0;cursor:pointer;padding:0;}' +
   '.lpq .lp-sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:left .15s;}' +
   '.lpq .lp-sw.lp-on{background:var(--lp-g);}.lpq .lp-sw.lp-on::after{left:21px;}.lpq .lp-sw:disabled{opacity:.5;cursor:default;}' +
-  '.lpq .lp-ora{display:flex;align-items:center;gap:12px;margin-top:12px;font-size:13px;color:var(--lp-t2);}' +
-  '.lpq .lp-ora input{font:700 22px Inter,-apple-system,"Segoe UI",sans-serif;padding:6px 10px;border-radius:12px;border:1px solid var(--lp-div);background:var(--lp-bg);color:var(--lp-t1);width:130px;}' +
-  '.lpq .lp-sum3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}' +
-  '.lpq .lp-sum3 div{background:var(--lp-n);border-radius:12px;padding:9px 10px;min-width:0;}' +
-  '.lpq .lp-sum3 span{display:block;font-size:11px;color:var(--lp-t2);font-weight:600;}' +
-  '.lpq .lp-sum3 b{display:block;font-size:19px;font-weight:750;letter-spacing:-.4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-  '.lpq .lp-src{font-size:12px;color:var(--lp-t2);margin-top:9px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;line-height:1.4;}' +
-  '.lpq .lp-mini{display:inline-flex;align-items:center;gap:6px;margin-top:10px;border:1px solid var(--lp-div);background:var(--lp-bg);color:var(--lp-p);border-radius:10px;padding:7px 11px;font-size:12.5px;font-weight:650;cursor:pointer;}' +
-  '.lpq .lp-mini ha-icon{--mdc-icon-size:16px;width:16px;height:16px;}' +
+  // quando: fila di orari con l'ora di fine
+  '.lpq .lp-slots{position:relative;display:flex;gap:6px;overflow-x:auto;padding:1px 1px 4px;scrollbar-width:none;-webkit-overflow-scrolling:touch;}' +
+  '.lpq .lp-slots::-webkit-scrollbar{display:none;}' +
+  '.lpq .lp-slot{flex:none;border:1px solid var(--lp-div);background:var(--lp-n);border-radius:12px;padding:7px 10px;text-align:center;min-width:66px;cursor:pointer;}' +
+  '.lpq .lp-slot b{display:block;font-size:14px;font-weight:700;white-space:nowrap;}' +
+  '.lpq .lp-slot b i{font-style:normal;font-size:10.5px;font-weight:600;color:var(--lp-t2);margin-right:3px;}' +
+  '.lpq .lp-slot span{display:block;font-size:11px;font-weight:600;color:var(--lp-t1);white-space:nowrap;margin-top:1px;}' +
+  // scorri per confermare
+  '.lpq .lp-sl{position:relative;height:56px;border-radius:18px;background:var(--lp-n);border:1px solid var(--lp-div);overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;}' +
+  '.lpq .lp-slf{position:absolute;left:0;top:0;bottom:0;width:56px;border-radius:18px;background:linear-gradient(90deg,var(--lp-pbg),var(--lp-p));}' +
+  '.lpq .lp-slt{position:absolute;inset:0;display:grid;place-items:center;font-size:14px;font-weight:650;padding:0 12px 0 64px;text-align:center;}' +
+  '.lpq .lp-slt span{background:linear-gradient(90deg,var(--lp-t2) 0%,var(--lp-t1) 50%,var(--lp-t2) 100%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:lp-shim 2.6s linear infinite;}' +
+  '@keyframes lp-shim{from{background-position:200% 0;}to{background-position:-200% 0;}}' +
+  '.lpq .lp-knob{position:absolute;left:4px;top:3px;width:48px;height:48px;border-radius:14px;background:var(--lp-p);color:#fff;display:grid;place-items:center;box-shadow:0 4px 14px rgba(109,90,230,.4);cursor:grab;touch-action:none;}' +
+  '.lpq .lp-knob ha-icon{--mdc-icon-size:24px;width:24px;height:24px;}' +
+  '.lpq .lp-sl-off .lp-slf{opacity:0;}.lpq .lp-sl-off .lp-knob{background:var(--lp-n);color:var(--lp-t2);box-shadow:none;cursor:default;}' +
+  '.lpq .lp-sl-off .lp-slt span{animation:none;color:var(--lp-t2);background:none;}' +
+  '.lpq .lp-sl-busy .lp-slf{width:100%;}.lpq .lp-sl-busy .lp-knob{left:calc(100% - 52px);cursor:default;}.lpq .lp-sl-busy .lp-slt{padding:0 64px 0 12px;}.lpq .lp-sl-busy .lp-slt span{color:#fff;background:none;animation:none;}' +
   '.lpq .lp-btn{width:100%;border:0;border-radius:14px;padding:15px;font-size:15px;font-weight:700;background:var(--lp-g);color:#fff;cursor:pointer;}' +
   '.lpq .lp-btn:disabled{background:var(--lp-n);color:var(--lp-t2);cursor:default;}' +
   '.lpq .lp-btn.lp-danger{background:var(--lp-rbg);color:var(--lp-r2);}' +
@@ -16471,17 +16778,12 @@ const LP_STYLES = '<style>' +
   '.lpq .lp-ban b{display:block;font-size:15px;margin-bottom:3px;}.lpq .lp-ban p{margin:0;font-size:13.5px;line-height:1.45;color:var(--lp-t1);}' +
   '.lpq .lp-ban p b{display:inline;font-size:inherit;margin:0;}' +
   '.lpq .lp-ban-a{background:var(--lp-abg);color:var(--lp-a2);}.lpq .lp-ban-r{background:var(--lp-rbg);color:var(--lp-r2);}.lpq .lp-ban-n{background:var(--lp-n);color:var(--lp-t2);}' +
-  '.lpq .lp-big{font-size:40px;font-weight:800;letter-spacing:-1.5px;line-height:1;}' +
-  '.lpq .lp-tl{position:relative;height:32px;margin-top:12px;}' +
-  '.lpq .lp-ln{position:absolute;top:13px;left:0;right:0;height:4px;border-radius:2px;background:var(--lp-n);}' +
-  '.lpq .lp-w{position:absolute;top:9px;height:12px;border-radius:6px;background:var(--lp-g);}' +
-  '.lpq .lp-k{position:absolute;top:22px;font-size:10.5px;color:var(--lp-t2);transform:translateX(-50%);white-space:nowrap;}' +
   '.lpq .lp-msg{display:flex;gap:8px;align-items:flex-start;border-radius:14px;padding:11px 13px;font-size:13.5px;line-height:1.4;}' +
   '.lpq .lp-msg-ok{background:var(--lp-gbg);color:var(--lp-g2);}.lpq .lp-msg-err{background:var(--lp-rbg);color:var(--lp-r2);}' +
   '.lpq .lp-msg span{color:var(--lp-t1);}' +
-  '.lpq button:focus-visible,.lpq select:focus-visible,.lpq input:focus-visible{outline:2px solid var(--lp-p);outline-offset:2px;}' +
-  '@media (prefers-reduced-motion: reduce){.lpq .lp-sw::after{transition:none;}}' +
-  '@container (max-width:420px){.lpq .lp{padding:8px;}.lpq .lp-sum3 b{font-size:16px;}.lpq .lp-big{font-size:34px;}}' +
+  '.lpq button:focus-visible,.lpq .lp-knob:focus-visible{outline:2px solid var(--lp-p);outline-offset:2px;}' +
+  '@media (prefers-reduced-motion: reduce){.lpq .lp-sw::after,.lpq .lp-ind,.lpq .lp-pt ha-icon{transition:none;}.lpq .lp-slt span{animation:none;color:var(--lp-t1);background:none;}}' +
+  '@container (max-width:420px){.lpq .lp{padding:8px;}.lpq .lp-bigv{font-size:34px;}.lpq .lp-c{padding:12px;}.lpq .lp-pt b{font-size:12px;}}' +
   '</style>';
 
 customElements.define('casa-mgdd-laundry-program-card', LaundryProgramCard);
