@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.109.2
+ * Version: 1.110.0
  */
 
 // Inter, chiesto una volta sola per pagina.
