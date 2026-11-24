@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.105.3
+ * Version: 1.105.4
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -14961,9 +14961,11 @@ window.customCards.push({
 //     5 s -> riposo. Sotto il nome resta l'ultima attivita'.
 //   - serratura (Ingresso): con `lock:` la tessera mostra lo stato della
 //     serratura con icona e colore (bloccata verde, sbloccata/aperta ambra,
-//     inceppata rossa, in movimento pulsante). Bloccata o inceppata -> lo slide
-//     esegue `entity` (es. lo script che apre la porta); sbloccata -> lo slide
-//     la blocca con `lock.lock`; aperta (scrocco tirato) -> nessun comando.
+//     inceppata rossa, in movimento pulsante). Bloccata, sbloccata o inceppata
+//     -> lo slide esegue `entity` (es. lo script che apre la porta); aperta
+//     (scrocco tirato) -> nessun comando. Da sbloccata lo slide APRE e non
+//     blocca: con lo scrocco delle porte europee una porta sbloccata resta
+//     chiusa, e dalla tessera serve rientrare, non chiudersi fuori.
 //
 // Il pomello NON prende la posizione dall'HTML ridisegnato da mgddPaint: sta in
 // una variabile CSS sull'host (`--qa-x<i>`), che il ritocco del DOM non tocca.
@@ -15156,8 +15158,11 @@ class QuickActionsCard extends HTMLElement {
     const v = (tone, icon, extra) =>
       Object.assign({ tone: tone, icon: qaSvg(icon), on: true, pulse: false, alert: false }, extra);
     // comando appena inviato e serratura ancora ferma: appena si muove, comanda
-    // il suo stato
-    if (loc && loc.from === st) {
+    // il suo stato. Il segno `moved` serve all'apertura da sbloccata, che fa
+    // unlocked -> opening -> open -> unlocked: al ritorno su `unlocked` lo stato
+    // coincide di nuovo con quello di partenza, ma il comando e' gia' eseguito.
+    if (loc && loc.from !== st) loc.moved = true;
+    if (loc && !loc.moved && loc.from === st) {
       const ic = st === 'unlocked' ? 'open' : 'lock';
       if (loc.phase === 'busy') return v('go', ic, { pulse: true, meta: 'Invio…', label: 'Invio…', knob: 'sync', mode: 'busy' });
       if (loc.phase === 'done') return v('go', ic, { meta: 'Comando inviato', metaTone: true, label: 'Inviato', knob: 'check', mode: 'done' });
@@ -15167,9 +15172,9 @@ class QuickActionsCard extends HTMLElement {
       case 'locked':
         return v('go', 'lock', { meta: 'Bloccata · ' + ago, label: it.label || 'Apri', knob: 'open', mode: 'idle', act: 'main' });
       case 'unlocked':
-        return v('warn', 'open', { alert: true, meta: 'Sbloccata · ' + ago, metaTone: true, label: 'Blocca', knob: 'lock', mode: 'idle', act: 'lock' });
+        return v('warn', 'open', { alert: true, meta: 'Sbloccata · ' + ago, metaTone: true, label: it.label || 'Apri', knob: 'open', mode: 'idle', act: 'main' });
       case 'open':
-        return v('warn', 'open', { alert: true, meta: 'Aperta', metaTone: true, label: 'Aperta', knob: 'lock', mode: 'off' });
+        return v('warn', 'open', { alert: true, meta: 'Aperta', metaTone: true, label: 'Aperta', knob: 'open', mode: 'off' });
       case 'unlocking':
       case 'opening': {
         const t = st === 'opening' ? 'Apertura…' : 'Sblocco…';
@@ -15294,8 +15299,6 @@ class QuickActionsCard extends HTMLElement {
 
   _call(i) {
     const it = this.config.items[i];
-    const v = this._views[i];
-    if (it.lock && v.act === 'lock') return ['lock', 'lock', { entity_id: it.lock }];
     if (!it.entity) return ['lock', 'open', { entity_id: it.lock }];
     if (it.action) {
       const p = String(it.action).split('.');
