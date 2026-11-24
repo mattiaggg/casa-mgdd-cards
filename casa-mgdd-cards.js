@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.110.0
+ * Version: 1.111.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -4709,6 +4709,7 @@ class EnergyControlsCard extends HTMLElement {
 
   _render() {
     if (this.config.layout === 'ups-status') this._renderUpsStatus();
+    else if (this.config.layout === 'ups-tiles') this._renderUpsTiles();
     else if (this.config.layout === 'ups') this._renderUps();
     else this._renderSwitches();
   }
@@ -4970,6 +4971,83 @@ class EnergyControlsCard extends HTMLElement {
     this._render();
   }
 
+  // layout ups-tiles (v1.111, variante E2 di docs/mockup-ups-3-2026-11-24.html):
+  // stato in testa, poi tre riquadri uguali (batteria, autonomia, carico) con
+  // icona, numero ed etichetta della stessa grandezza. Su batteria il bordo della
+  // card diventa rosso e il pallino pulsa rosso. Stesse chiavi `ups:` di ups-status.
+  _renderUpsTiles() {
+    const c = this.config.ups || {};
+    const st = this._state(c.status_entity);
+    const raw = st ? String(st.state) : '';
+    const noto = !!st && raw !== 'unavailable' && raw !== 'unknown';
+    const binario = /^binary_sensor\./.test(c.status_entity || '');
+    const aRete = binario ? raw === 'on' : /^(online|ol)\b/i.test(raw.trim());
+    const suBatteria = noto && !aRete;
+    const batteria = this._num(c.battery_entity);
+    const autonomia = this._num(c.time_left_entity);
+    const potenza = this._num(c.power_entity);
+    const tensione = c.output_voltage_entity ? this._num(c.output_voltage_entity) : this._num(c.voltage_entity);
+    const daQuanto = this._upsDurata(this._num(c.time_on_battery_entity));
+    const motivo = suBatteria ? this._upsMotivo(this._state(c.last_transfer_entity) && this._state(c.last_transfer_entity).state) : '';
+    let testo;
+    if (!noto) testo = 'Stato non disponibile';
+    else if (suBatteria) testo = ['Su batteria', daQuanto, motivo].filter(Boolean).join(' · ');
+    else testo = 'Alimentato dalla rete' + (tensione !== null ? ' · ' + this._fmt(tensione, ' V', 0) : '');
+
+    const soglia = c.low_battery === undefined ? 40 : c.low_battery;
+    const critica = c.critical_battery === undefined ? 20 : c.critical_battery;
+    let colore = batteria === null ? '#8a8d93' : batteria <= critica ? '#e5484d' : batteria <= soglia ? '#e08a00' : '#0fb57e';
+    if (suBatteria && colore === '#0fb57e') colore = '#e08a00';
+    const liv = batteria === null ? 0 : Math.max(0, Math.min(100, batteria));
+
+    if (!this._uid) { EnergyControlsCard._seq = (EnergyControlsCard._seq || 0) + 1; this._uid = EnergyControlsCard._seq; }
+    const cid = 'uptlq' + this._uid;
+    const top = 6 + (1 - liv / 100) * 52;
+    const onda = (y, a) => {
+      let d = 'M-80 ' + y.toFixed(1);
+      for (let x = -80; x < 160; x += 20) d += ' q10 ' + (-a) + ' 20 0';
+      return d + ' V70 H-80 Z';
+    };
+    // il livello "liquido" ridotto a icona, grande quanto le altre due (36 px)
+    const liquido =
+      '<svg class="upt-lq" viewBox="0 0 64 64" width="36" height="36" aria-hidden="true">' +
+      '<defs><clipPath id="' + cid + '"><circle cx="32" cy="32" r="27"/></clipPath></defs>' +
+      '<circle cx="32" cy="32" r="30" fill="none" stroke="' + colore + '" stroke-opacity=".5" stroke-width="3"/>' +
+      '<g clip-path="url(#' + cid + ')"><rect width="64" height="64" fill="' + colore + '" fill-opacity=".12"/>' +
+      (batteria === null ? '' :
+        '<path class="ups-w2" d="' + onda(top + 2, 3) + '" fill="' + colore + '" fill-opacity=".45"/>' +
+        '<path class="ups-w1" d="' + onda(top + 4, 2.5) + '" fill="' + colore + '"/>') +
+      '</g></svg>';
+    const ico = (p) => '<span class="upt-ic"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + p + '</svg></span>';
+    const riq = (entity, icona, valore, unita, label) =>
+      '<div class="upt-t"' + (entity ? ' data-entity="' + entity + '"' : '') + '>' + icona +
+      '<span class="upt-v" data-tw>' + valore + '<span class="upt-u">' + unita + '</span></span>' +
+      '<span class="upt-l">' + label + '</span></div>';
+
+    const html =
+      '<div class="upt' + (suBatteria ? ' b' : '') + '">' +
+      '<div class="upt-st"' + (c.status_entity ? ' data-entity="' + c.status_entity + '"' : '') + '>' +
+      '<i class="upt-pg' + (noto ? '' : ' na') + '"></i><span>' + testo + '</span></div>' +
+      '<div class="upt-g">' +
+      riq(c.battery_entity, liquido, batteria === null ? '--' : this._fmt(batteria, '', 0), '%', 'Batteria') +
+      riq(c.time_left_entity, ico('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'), autonomia === null ? '--' : this._fmt(autonomia, '', 0), 'min', 'Autonomia') +
+      riq(c.power_entity, ico('<path d="M13 2.5 5 13.5h6l-1 8 8-11h-6z"/>'), potenza === null ? '--' : this._fmt(potenza, '', 0), 'W', 'Carico') +
+      '</div></div>';
+
+    mgddPaint(this, this._styles(), html);
+    if (!this._upsWired) {
+      this._upsWired = true;
+      this.addEventListener('click', (ev) => {
+        const el = ev.target && ev.target.closest ? ev.target.closest('[data-entity]') : null;
+        if (el && this.contains(el)) this._openMoreInfo(el.getAttribute('data-entity'));
+      });
+    }
+    mgddIntro(this, (tl) => {
+      tl.add(this.querySelectorAll('.upt-t'), [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 450, stagger: 70 }, 0)
+        .count(this.querySelectorAll('.upt-v'), { duration: 800 }, 100);
+    });
+  }
+
   _renderUps() {
     const c = this.config.ups || {};
     const battery = this._num(c.battery_entity);
@@ -5046,6 +5124,27 @@ class EnergyControlsCard extends HTMLElement {
       '@keyframes upsWave{from{translate:0 0;}to{translate:-40px 0;}}' +
       '@media (prefers-reduced-motion:reduce){.ups-w1,.ups-w2{animation:none;}}' +
       '.ups-sp{height:22px;margin-top:3px;position:relative;}' +
+      // v1.111 layout ups-tiles (E2): stato in testa, tre riquadri uguali
+      '.upt{background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));' +
+      'border-radius:16px;padding:12px 14px 14px;font-variant-numeric:tabular-nums;transition:border-color .2s;}' +
+      '.upt.b{border-color:rgba(229,72,77,.6);}' +
+      '.upt-st{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--secondary-text-color,#6b6f76);margin-bottom:10px;cursor:pointer;' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.upt-st span{overflow:hidden;text-overflow:ellipsis;}' +
+      '.upt.b .upt-st{color:#e5484d;font-weight:700;}' +
+      '.upt-pg{width:8px;height:8px;border-radius:50%;background:#0fb57e;flex:0 0 auto;animation:upsPing 2s infinite;}' +
+      '.upt-pg.na{background:#8a8d93;animation:none;}' +
+      '.upt.b .upt-pg{background:#e5484d;animation:uptPingR 1.2s infinite;}' +
+      '@keyframes uptPingR{0%{box-shadow:0 0 0 0 rgba(229,72,77,.6);}70%{box-shadow:0 0 0 7px rgba(229,72,77,0);}100%{box-shadow:0 0 0 0 rgba(229,72,77,0);}}' +
+      '.upt-g{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}' +
+      '.upt-t{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;padding:10px 6px 9px;border-radius:13px;cursor:pointer;' +
+      'border:1px solid var(--divider-color,rgba(0,0,0,.08));background:color-mix(in srgb,var(--primary-text-color,#1c1c1e) 3%,transparent);min-width:0;}' +
+      '.upt-lq{display:block;}' +
+      '.upt-ic{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:rgba(127,127,127,.12);color:var(--secondary-text-color,#6b6f76);}' +
+      '.upt-v{font-size:22px;font-weight:700;letter-spacing:-.01em;line-height:1.1;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;}' +
+      '.upt-u{font-size:12px;font-weight:600;color:var(--secondary-text-color,#6b6f76);margin-left:2px;}' +
+      '.upt-l{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--secondary-text-color,#6b6f76);}' +
+      '@media (prefers-reduced-motion:reduce){.upt-pg{animation:none !important;}}' +
       // v1.110 cruscotto (proposta A)
       '.ups-top{display:flex;align-items:center;gap:16px;padding:12px 14px 4px;}' +
       '.ups-a .ups-lq{position:relative;flex:0 0 auto;width:84px;height:84px;cursor:pointer;}' +

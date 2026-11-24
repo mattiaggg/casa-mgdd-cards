@@ -160,6 +160,9 @@ add('c1', 'energy-controls-card', { layout: 'ups-status', title: 'UPS', ups: { s
   time_left_entity: 'sensor.ups_tower_durata_della_batteria', power_entity: 'sensor.ups_potenza', voltage_entity: 'sensor.ups_tower_tensione_di_bypass',
   output_voltage_entity: 'sensor.ups_tower_tensione_di_uscita', current_entity: 'sensor.ups_tower_corrente_di_uscita',
   power_factor_entity: 'sensor.ups_tower_fattore_di_potenza_di_uscita', uptime_entity: 'sensor.ups_tower_tempo_di_attivita' } });
+add('c1', 'energy-controls-card', { layout: 'ups-tiles', ups: { status_entity: 'binary_sensor.ups_tower_rete', battery_entity: 'sensor.ups_tower_livello_della_batteria',
+  time_left_entity: 'sensor.ups_tower_durata_della_batteria', power_entity: 'sensor.ups_potenza', voltage_entity: 'sensor.ups_tower_tensione_di_bypass',
+  output_voltage_entity: 'sensor.ups_tower_tensione_di_uscita' } });
 add('c2', 'energy-flow-card', { solar_power: 'sensor.powerwall3_solar_power', battery_power: 'sensor.powerwall3_battery_power', battery_soc: 'sensor.powerwall3_charge',
   grid_power: 'sensor.powerwall3_site_power', house_power: 'sensor.powerwall3_load_power', battery_min_flow: 150, arrival: 'ripple', grid_to_battery: false, style: 'particles' });
 const two = document.createElement('div'); two.className = 'two'; two.innerHTML = '<div id="c2a"></div><div id="c2b"></div>'; document.getElementById('c2').appendChild(two);
