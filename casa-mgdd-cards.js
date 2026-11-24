@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.108.0
+ * Version: 1.108.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -3335,11 +3335,12 @@ class EnergyPowerCard extends HTMLElement {
     const compBar = active.length && base ? '<div class="comp">' + compSegs + '<div style="flex:1;background:var(--divider-color,rgba(0,0,0,.08))"></div></div>' : '';
     const list = active.map((c) => {
       const color = this._paletteColor(circuits.findIndex((x) => x.entity === c.entity));
-      const sh = base ? Math.max(2, Math.min(100, (c.val / base) * 100)) : 0;
+      // sotto il 4% il fondino sarebbe un moncherino dietro il pallino: niente
+      const sh = base ? Math.min(100, (c.val / base) * 100) : 0;
       return (
         '<div class="load-row" data-entity="' + c.entity + '">' +
         // fondino lungo quanto la quota, nel colore del carico
-        '<span class="load-bg" style="width:' + sh.toFixed(1) + '%;background:' + color + '"></span>' +
+        '<span class="load-bg" style="width:' + (sh >= 4 ? sh.toFixed(1) : 0) + '%;background:' + color + '"></span>' +
         '<span class="load-dot" style="background:' + color + '"></span>' +
         '<span class="load-name">' + c.name + '</span>' +
         '<span class="load-pct">' + pctOf(c.val) + '</span>' +
@@ -5679,7 +5680,8 @@ class EnergyMonthlyCard extends HTMLElement {
       '.emc-pl i{background:var(--c);}' +
       '.emc-mx b,.emc-pl b{position:absolute;bottom:9px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:600;' +
       'color:var(--secondary-text-color,#6b6f76);white-space:nowrap;font-variant-numeric:tabular-nums;}' +
-      '.emc-pl b{bottom:auto;top:-5px;left:10px;transform:none;color:var(--c);font-weight:700;}' +
+      // la stima cade sull'ultimo punto, cioe' sul bordo destro: etichetta a SINISTRA del pallino
+      '.emc-pl b{bottom:auto;top:-5px;left:auto;right:10px;transform:none;color:var(--c);font-weight:700;}' +
       // anello sull'ultimo valore, con l'onda che pulsa
       '.emc-mk{position:absolute;width:10px;height:10px;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;' +
       'background:var(--ha-card-background,var(--card-background-color,#fff));border:2px solid var(--c);box-sizing:border-box;}' +
