@@ -13106,7 +13106,9 @@ const MON_DEFAULTS = {
     exclude_domains: ['select', 'button', 'number', 'update', 'text', 'time', 'date', 'datetime', 'image',
       'notify', 'event', 'scene', 'conversation', 'stt', 'tts', 'ai_task', 'input_button', 'wake_word', 'tag',
       'automation'], // le automazioni non disponibili hanno gia' la loro voce ALTA
-    exclude: 'iphone|ipad|dreamebot',
+    // Alexa: timer, sveglie e promemoria vanno a "non disponibile" quando non
+    // ce n'e' nessuno in programma
+    exclude: 'iphone|ipad|dreamebot|_prossim[oa]_(timer|sveglia|promemoria)$|_next_(timer|alarm|reminder)$',
   },
 };
 
