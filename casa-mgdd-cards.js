@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.111.0
+ * Version: 1.112.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13955,6 +13955,10 @@ const MON_TH = {
   battery_warn: 30,
   battery_low: 50,
   backup_age: 30, // ore dall'ultimo backup riuscito
+  speed_max: 1000, // Mbit/s, fondo scala del gauge speedtest
+  rtt_warn: 60, // ms, ping del gateway: oltre e' giallo
+  rtt_crit: 150, // oltre e' rosso
+  rtt_max: 300, // fondo scala
 };
 
 const MON_PAGES = { sistema: 1, rete: 1, manutenzione: 1 };
@@ -14037,6 +14041,128 @@ function monStart(r) {
   if (r == null) return NaN;
   if (typeof r.start === 'number') return r.start;
   return Date.parse(r.start);
+}
+
+// ---------- gauge a tacche (v1.112, idea presa da bklit Gauge) ----------
+// Arco di 270° fatto di tacche rastremate: le tacche accese prendono il colore
+// della fascia di soglia in cui cadono, le altre restano sul colore della
+// traccia. E' tutto una stringa: a ogni aggiornamento mgddPaint ritocca solo il
+// fill delle tacche che cambiano (con la transizione CSS), e l'ingresso della
+// pagina le accende in fila (vedi MonitorCard._intro).
+// Il numero sta al centro e scala con la larghezza del gauge (unita' cqw); la
+// didascalia sta nell'apertura in basso dell'arco o sotto, mai sopra le tacche.
+// o: v, min, max, unit, label, dec, txt (testo al posto del numero),
+//    size ('' | 'md' | 'sm' | 'xs'), start / end (gradi, 0 = a destra, senso
+//    orario), n (tacche), gap (0-1), col(x) (colore CSS della tacca che vale x),
+//    marks [valori segnati con ▲ fuori dall'arco], needle, ruler, solid (arco
+//    continuo), segs [[conteggio, colore]] (arco pieno diviso in parti), vcls.
+function monGauge(o) {
+  const st = o.start != null ? o.start : 135;
+  const en = o.end != null ? o.end : 405;
+  const span = en - st;
+  const min = o.min || 0;
+  const max = o.max > min ? o.max : min + 1;
+  const v = o.v;
+  const has = v != null && isFinite(v);
+  const fr = (x) => Math.max(0, Math.min(1, (x - min) / (max - min)));
+  const R = 88;
+  const th = o.solid ? 11 : o.size === 'sm' || o.size === 'xs' ? 20 : 17;
+  const ri = R - th;
+  const full = span >= 360;
+  const rad = (a) => (a * Math.PI) / 180;
+  const P = (r, a) => (100 + r * Math.cos(rad(a))).toFixed(2) + ' ' + (100 + r * Math.sin(rad(a))).toFixed(2);
+  const bottom = full ? 100 + R : Math.max(100 + R * Math.sin(rad(st)), 100 + R * Math.sin(rad(en)), o.needle ? 114 : 100);
+  const marks = (o.marks || []).filter((m) => m != null && isFinite(m));
+  const pad = o.ruler || marks.length ? 14 : 6;
+  const vbY = 100 - R - pad;
+  const vbH = bottom - (100 - R) + pad * 2;
+  const col = o.col || (() => 'var(--ac)');
+  const ang = (x) => st + span * fr(x);
+  let svg = '';
+  if (o.solid) {
+    const rr = R - th / 2;
+    const d = 'M' + P(rr, st) + ' A' + rr + ' ' + rr + ' 0 ' + (span > 180 ? 1 : 0) + ' 1 ' + P(rr, full ? en - 0.5 : en);
+    const f = has ? fr(v) : 0;
+    svg += '<path d="' + d + '" fill="none" stroke="var(--trk)" stroke-width="' + th + '" stroke-linecap="round"></path>' +
+      '<path class="arc" d="' + d + '" fill="none" pathLength="100" stroke-width="' + th + '" stroke-linecap="round" ' +
+      'stroke-dasharray="' + (f * 100).toFixed(2) + ' 100" style="stroke:' + (has ? col(v) : 'var(--trk)') + '"></path>';
+  } else {
+    const n = o.n || (o.size === 'sm' || o.size === 'xs' ? 20 : 40);
+    const step = span / n;
+    const w = step * (1 - (o.gap != null ? o.gap : 0.3));
+    let lit = has ? Math.round(fr(v) * n) : 0;
+    if (has && v > min && lit === 0) lit = 1; // un valore sopra zero accende almeno una tacca
+    const segs = o.segs ? o.segs.filter((s) => s[0] > 0) : null;
+    const tot = segs ? segs.reduce((a, s) => a + s[0], 0) : 0;
+    if (segs) lit = tot ? n : 0;
+    const segCol = (f) => {
+      let acc = 0;
+      for (let i = 0; i < segs.length; i++) {
+        acc += segs[i][0];
+        if (f * tot < acc) return segs[i][1];
+      }
+      return segs[segs.length - 1][1];
+    };
+    for (let i = 0; i < n; i++) {
+      const a0 = st + i * step + (step - w) / 2;
+      const a1 = a0 + w;
+      const k = w * 0.12;
+      const on = i < lit;
+      // colv: tutte le tacche accese col colore del valore (stato), non della loro posizione
+      const fill = !on ? 'var(--trk)' : segs ? segCol((i + 0.5) / n) : col(o.colv ? v : min + ((i + 0.5) / n) * (max - min));
+      svg += '<path class="n' + (on ? ' on' : '') + '" d="M' + P(R, a0) + ' L' + P(R, a1) + ' L' + P(ri, a1 - k) + ' L' + P(ri, a0 + k) + 'Z" style="fill:' + fill + '"></path>';
+    }
+  }
+  if (o.ruler) {
+    for (let k = 0; k <= 14; k++) {
+      const a = st + (span * k) / 14;
+      svg += '<line x1="' + P(R + 4, a).replace(' ', '" y1="') + '" x2="' + P(R + (k % 7 ? 7 : 10), a).replace(' ', '" y2="') +
+        '" stroke="var(--fa)" stroke-width="' + (k % 7 ? 0.8 : 1.4) + '" stroke-linecap="round"></line>';
+    }
+  }
+  marks.forEach((m) => {
+    const a = ang(m);
+    svg += '<path d="M' + P(R + 3, a) + ' L' + P(R + 11, a - 3.2) + ' L' + P(R + 11, a + 3.2) + 'Z" fill="var(--mu)"></path>';
+  });
+  if (o.needle) {
+    svg += '<g class="nd" style="transform:rotate(' + (has ? ang(v) : st).toFixed(1) + 'deg)">' +
+      '<line x1="100" y1="100" x2="' + (100 + ri * 0.72).toFixed(1) + '" y2="100" stroke="var(--tx)" stroke-width="3" stroke-linecap="round"></line>' +
+      '<circle cx="100" cy="100" r="6.5" fill="var(--card)" stroke="var(--tx)" stroke-width="2.2"></circle></g>';
+  }
+  const cy = o.needle ? 134 : span <= 180 ? 72 : 100;
+  const num = o.txt != null ? o.txt : has ? monNum(v, o.dec) : '—';
+  const cap = o.label ? '<span class="mn-gz-l' + (!full && span >= 270 && !o.needle ? ' pull' : '') + '">' + o.label + '</span>' : '';
+  return (
+    '<div class="mn-gz' + (o.size ? ' ' + o.size : '') + '" data-st="rotate(' + st + 'deg)" role="img" aria-label="' +
+    mgddEsc(String(o.aria || o.label || '').replace(/<[^>]*>/g, '') + ': ' + num + ' ' + (o.unit || '')) + '">' +
+    '<svg viewBox="0 ' + vbY.toFixed(1) + ' 200 ' + vbH.toFixed(1) + '" aria-hidden="true">' + svg + '</svg>' +
+    '<div class="mn-gz-c" style="top:' + (((cy - vbY) / vbH) * 100).toFixed(1) + '%"><span class="mn-gz-v ' + (o.vcls || '') + '" data-tw>' +
+    num + (o.unit ? '<small>' + o.unit + '</small>' : '') + '</span>' + (full ? cap : '') + '</div>' +
+    (full ? '' : cap) + '</div>'
+  );
+}
+
+// Barra orizzontale a tacche (RAM delle app, entita' giu' per dispositivo).
+function monLin(v, max, n, col) {
+  const has = v != null && isFinite(v) && max > 0;
+  let lit = has ? Math.round(Math.max(0, Math.min(1, v / max)) * n) : 0;
+  if (has && v > 0 && lit === 0) lit = 1;
+  let s = '';
+  for (let i = 0; i < n; i++) s += '<i' + (i < lit ? ' style="background:' + col(((i + 0.5) / n) * max) + '"' : '') + '></i>';
+  return '<span class="mn-lin" aria-hidden="true">' + s + '</span>';
+}
+
+// Colore per fasce: [[fino a, colore], ...]; oltre l'ultima fascia vale l'ultima.
+function monZones(z) {
+  return (x) => {
+    for (let i = 0; i < z.length; i++) if (x <= z[i][0]) return z[i][1];
+    return z[z.length - 1][1];
+  };
+}
+
+// Sfumatura fra due colori lungo la scala (color-mix: iOS 16.2+, Chrome 111+).
+function monRamp(a, b, min, max) {
+  return (x) => 'color-mix(in srgb,' + b + ' ' + Math.round(Math.max(0, Math.min(1, (x - min) / (max - min))) * 100) + '%,' + a + ')';
 }
 
 class MonitorCard extends HTMLElement {
@@ -14888,6 +15014,44 @@ class MonitorCard extends HTMLElement {
     }
     const cls = 'mn ' + (this._isDark() ? 'mn-dark' : 'mn-light') + (this.config.show_ids ? '' : ' noid') + (this._narrow ? ' mn-narrow' : '');
     mgddPaint(this, MON_STYLES, '<div class="' + cls + '"><div class="mn-wrap">' + body + '</div></div>');
+    // ingresso una volta, quando la scansione ha riempito la pagina
+    if (this._scan) mgddIntro(this, (tl) => this._intro(tl));
+  }
+
+  // Ingresso (v1.112, ritmo preso da anime.js): card a cascata, tacche dei gauge
+  // che si accendono in fila, lancette e archi che arrivano al valore, numeri che
+  // contano, sparkline e barre che crescono. Finisce entro ~1,6 s.
+  _intro(tl) {
+    const q = (s) => this.querySelectorAll(s);
+    const cards = q('.mn-card,.mn-chip,.mn-alert');
+    tl.add(cards, [{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 480, stagger: Math.min(30, 600 / (cards.length || 1)) }, 0);
+    const root = this.querySelector('.mn');
+    const trk = root ? getComputedStyle(root).getPropertyValue('--trk').trim() : '';
+    q('.mn-gz').forEach((g, k) => {
+      const t0 = 120 + Math.min(k, 12) * 45;
+      const lit = g.querySelectorAll('.n.on');
+      if (lit.length && trk) {
+        const gap = Math.min(24, 700 / lit.length);
+        lit.forEach((n, i) => {
+          const fin = getComputedStyle(n).fill;
+          try {
+            n.animate([{ fill: trk }, { fill: fin }], { duration: 160, delay: t0 + i * gap, easing: 'linear', fill: 'backwards' });
+          } catch (e) { /* niente */ }
+        });
+      }
+      const nd = g.querySelector('.nd');
+      if (nd) tl.add(nd, [{ transform: g.getAttribute('data-st') }, { transform: nd.style.transform }], { duration: 1000 }, t0);
+      const arc = g.querySelector('.arc');
+      if (arc) tl.add(arc, [{ strokeDasharray: '0 100' }, { strokeDasharray: arc.getAttribute('stroke-dasharray') }], { duration: 1000 }, t0);
+    });
+    tl.count(q('.mn-gz-v'), { duration: 900 }, 120)
+      .add(q('.mn-spark'), [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)' }], { duration: 1000, easing: 'cubic-bezier(.65,0,.35,1)' }, 250)
+      .add(q('.mn-stack i'), [{ transform: 'scaleX(0)' }, { transform: 'none' }], { duration: 500, stagger: 60 }, 300)
+      .add(q('.mn-hist i'), [{ transform: 'scaleY(0)' }, { transform: 'none' }], { duration: 500, stagger: 30 }, 300)
+      .add(q('.mn-dbar i'), [{ transform: 'scaleY(0)' }, { transform: 'none' }], { duration: 600, stagger: 25 }, 300)
+      .add(q('.mn-lin'), [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)' }], { duration: 700, stagger: 30 }, 300)
+      .add(q('.mn-outs span'), [{ opacity: 0, transform: 'scale(.6)' }, { opacity: 1, transform: 'none' }], { duration: 400, stagger: 30 }, 400);
   }
 
   // ================= pagina SISTEMA =================
@@ -14959,8 +15123,12 @@ class MonitorCard extends HTMLElement {
     tiles.push(
       '<div class="mn-card" data-more="' + mgddEsc(H.cpu) + '">' +
       '<div class="mn-row"><h2 class="mn-h2s">Processore</h2><span class="mn-small">' + mgddEsc(H.cpu_label || '') + '</span></div>' +
-      '<div class="mn-big' + (cpu != null && cpu >= T.cpu ? ' warn' : '') + '"><b>' + monNum(cpu) + '</b><span>%</span></div>' +
-      this._spark(st.cpu, 240, 48) +
+      monGauge({
+        v: cpu, max: 100, unit: '%', label: 'adesso', aria: 'Processore', marks: pk ? [pk.v] : [],
+        col: (x) => (x >= T.cpu ? 'var(--crit)' : monRamp('var(--ac)', 'var(--vi)', 0, T.cpu)(x)),
+        vcls: cpu != null && cpu >= T.cpu ? 'warn' : '',
+      }) +
+      this._spark(st.cpu, 240, 40) +
       '<span class="mn-small">' + (pk ? 'ultime 24 h · picco ' + monNum(pk.v) + ' % alle ' + monHM(pk.t) : 'ultime 24 h') + '</span>' +
       this._id(H.cpu) + '</div>'
     );
@@ -14968,20 +15136,18 @@ class MonitorCard extends HTMLElement {
     // temperatura
     const t = this._num(H.cpu_temp);
     const tc = this._tCls(t);
-    const span = T.temp_max - T.temp_min;
-    const pct = (v) => Math.max(0, Math.min(100, ((v - T.temp_min) / span) * 100));
-    const pw = pct(T.cpu_temp_warn);
-    const pc = pct(T.cpu_temp_crit);
     const avg = this._avg(st.temp);
     const tpk = this._peak(st.temp);
     tiles.push(
       '<div class="mn-card" data-more="' + mgddEsc(H.cpu_temp) + '">' +
       '<div class="mn-row"><h2 class="mn-h2s">Temperatura CPU</h2><span class="mn-small mn-' + tc + 't">' +
       (tc === 'crit' ? 'critica' : tc === 'warn' ? 'alta' : tc === 'ok' ? 'normale' : '') + '</span></div>' +
-      '<div class="mn-big ' + (tc === 'ok' ? '' : tc) + '"><b>' + monNum(t, t != null && t % 1 ? 1 : 0) + '</b><span>°C</span></div>' +
-      '<div class="mn-tbar" style="background:linear-gradient(90deg,var(--tok) 0%,var(--tok) ' + pw + '%,var(--twarn) ' + pw + '%,var(--twarn) ' + pc + '%,var(--tcrit) ' + pc + '%)">' +
-      (t != null ? '<i style="left:' + pct(t).toFixed(1) + '%"></i>' : '') + '</div>' +
-      '<div class="mn-scale"><span>' + T.temp_min + '</span><span>' + T.cpu_temp_warn + ' · attenzione</span><span>' + T.cpu_temp_crit + ' · critico</span><span>' + T.temp_max + '</span></div>' +
+      monGauge({
+        v: t, min: T.temp_min, max: T.temp_max, unit: '°C', dec: t != null && t % 1 ? 1 : 0, aria: 'Temperatura CPU',
+        label: 'soglie ' + T.cpu_temp_warn + ' / ' + T.cpu_temp_crit, needle: true, ruler: true, marks: tpk ? [tpk.v] : [],
+        col: monZones([[T.cpu_temp_warn, 'var(--ok)'], [T.cpu_temp_crit, 'var(--warn)'], [T.temp_max, 'var(--crit)']]),
+        vcls: tc === 'ok' ? '' : tc,
+      }) +
       '<span class="mn-small">' + (avg != null ? 'media 24 h ' + monNum(avg) + ' °C · massima ' + monNum(tpk ? tpk.v : null) + ' °C' : 'ultime 24 h: statistiche non ancora disponibili') + '</span>' +
       this._id(H.cpu_temp) + '</div>'
     );
@@ -14994,8 +15160,13 @@ class MonitorCard extends HTMLElement {
     tiles.push(
       '<div class="mn-card" data-more="' + mgddEsc(H.memory) + '">' +
       '<div class="mn-row"><h2 class="mn-h2s">Memoria</h2><span class="mn-small">' + (mu != null && mf != null ? monNum(mu + mf, 1) + ' GB' : '') + '</span></div>' +
-      '<div class="mn-mem"><div class="mn-donut" style="background:conic-gradient(' + (mp != null && mp >= T.memory ? 'var(--warn)' : 'var(--ac)') + ' 0 ' + (mp || 0).toFixed(1) + '%,var(--bd) 0)"><div>' + monNum(mp) + ' %</div></div>' +
-      '<div class="mn-memtx"><span><strong>' + monNum(mu, 1) + ' GB</strong> in uso</span><span><strong>' + monNum(mf, 1) + ' GB</strong> libera</span></div></div>' +
+      monGauge({
+        v: mp, max: 100, unit: '%', solid: true, aria: 'Memoria',
+        label: mu != null && mf != null ? monNum(mu, 1) + ' di ' + monNum(mu + mf, 1) + ' GB' : '',
+        col: (x) => (x >= T.memory ? 'var(--warn)' : 'var(--ac)'),
+        vcls: mp != null && mp >= T.memory ? 'warn' : '',
+      }) +
+      '<div class="mn-kv"><span><strong>' + monNum(mu, 1) + ' GB</strong> in uso</span><span><strong>' + monNum(mf, 1) + ' GB</strong> libera</span></div>' +
       this._id(H.memory + ' · ' + (H.memory_used || '').replace('sensor.system_monitor', '') + ' · ' + (H.memory_free || '').replace('sensor.system_monitor', '')) + '</div>'
     );
 
@@ -15006,8 +15177,12 @@ class MonitorCard extends HTMLElement {
     tiles.push(
       '<div class="mn-card" data-more="' + mgddEsc(H.disk_use) + '">' +
       '<div class="mn-row"><h2 class="mn-h2s">Disco</h2><span class="mn-small">' + (dp != null ? monNum(du + df) + ' GB' : '') + '</span></div>' +
-      '<div class="mn-big' + (dp != null && dp >= T.disk ? ' warn' : '') + '"><b>' + monNum(dp) + '</b><span>%</span></div>' +
-      '<div class="mn-bar"><i style="width:' + (dp || 0).toFixed(1) + '%' + (dp != null && dp >= T.disk ? ';background:var(--warn)' : '') + '"></i></div>' +
+      monGauge({
+        v: dp, max: 100, unit: '%', n: 30, gap: 0.38, aria: 'Disco',
+        label: dp != null ? monNum(du) + ' di ' + monNum(du + df) + ' GB' : '',
+        col: monZones([[T.disk, 'var(--ac)'], [100, 'var(--warn)']]),
+        vcls: dp != null && dp >= T.disk ? 'warn' : '',
+      }) +
       '<div class="mn-kv"><span><strong>' + monNum(du) + ' GB</strong> usati</span><span><strong>' + monNum(df) + ' GB</strong> liberi</span></div>' +
       this._id(H.disk_use + ' · ' + (H.disk_free || '').replace('sensor.system_monitor', '')) + '</div>'
     );
@@ -15060,6 +15235,8 @@ class MonitorCard extends HTMLElement {
     else if (ev === 'failed' || (tr && ok && tr > ok + 60000 && now - tr > 3600000)) badge = '<span class="mn-badge crit">fallito</span>';
     else if (!ok) badge = '<span class="mn-badge warn">nessuno</span>';
     const size = this._gb(B.size);
+    const T = this.config.thresholds;
+    const age = ok ? (now - ok) / 3600000 : null;
     const dur = ok && tr && ok >= tr ? ok - tr : null;
     const durTx = dur != null ? Math.floor(dur / 60000) + ' min ' + mgddPad2(Math.round((dur % 60000) / 1000)) + ' s' : '—';
     const cell = (k, v, id) => '<div class="mn-kvb"><span class="k">' + k + '</span><span class="v">' + v + '</span>' + this._id(id) + '</div>';
@@ -15110,12 +15287,19 @@ class MonitorCard extends HTMLElement {
         : 'Cronologia dei backup non disponibile.';
     return (
       '<div class="mn-card c14"><div class="mn-row"><h2 class="mn-h2">Backup</h2>' + badge + '</div>' +
+      '<div class="mn-gzrow">' +
+      monGauge({
+        v: age, max: 2 * T.backup_age, unit: 'h', dec: age != null && age < 10 ? 1 : 0, n: 24, size: 'md',
+        label: 'dall’ultimo', aria: 'Ore dall’ultimo backup riuscito', txt: age != null && age >= 2 * T.backup_age ? '>' + 2 * T.backup_age : null,
+        col: monZones([[T.backup_age, 'var(--ok)'], [2 * T.backup_age, 'var(--crit)']]),
+        vcls: age != null && age > T.backup_age ? 'crit' : '',
+      }) +
       '<div class="mn-bk">' +
       cell('Ultimo riuscito', monWhen(ok), B.last_ok) +
       cell('Prossimo', monWhen(nx), B.next) +
       cell('Dimensione', size != null ? monNum(size, 2) + ' GB' : '—', B.size) +
       cell('Durata', durTx, 'last_attempted → last_successful') +
-      '</div>' +
+      '</div></div>' +
       '<div class="mn-col6"><span class="mn-small">Ultimi 14 giorni</span><div class="mn-hist">' + bars + '</div>' +
       '<span class="mn-note">' + cap + '</span>' + this._id(B.event + ' · ' + B.state) + '</div></div>'
     );
@@ -15146,12 +15330,19 @@ class MonitorCard extends HTMLElement {
       }
       const cpu = a.cpu ? this._num(a.cpu) : null;
       const mem = a.mem ? this._num(a.mem) : null;
+      // RAM: 24 tacche sulla scala 0-25 %; CPU: mezzo arco piccolo accanto al numero
       const memBar = mem != null
-        ? '<div class="mn-mbar"><div class="mn-bar s"><i style="width:' + Math.min(100, mem * 4).toFixed(1) + '%;' + (mem >= 25 ? 'background:var(--warn)' : '') + '"></i></div><span>' + monNum(mem, 1) + ' %</span></div>'
+        ? '<div class="mn-mbar">' + monLin(mem, 25, 24, (x) => (x >= 20 ? 'var(--warn)' : monRamp('var(--ac)', 'var(--vi)', 0, 25)(x))) + '<span>' + monNum(mem, 1) + ' %</span></div>'
+        : '<span class="mn-fa">—</span>';
+      const cpuCell = cpu != null
+        ? '<div class="mn-mbar">' + monGauge({
+          v: cpu, max: 100, size: 'xs', start: 180, end: 360, n: 12, gap: 0.25, aria: 'CPU ' + a.name,
+          col: monZones([[50, 'var(--ac)'], [T.cpu, 'var(--warn)'], [100, 'var(--crit)']]),
+        }) + '<span>' + monNum(cpu, 1) + ' %</span></div>'
         : '<span class="mn-fa">—</span>';
       rows.push(
         '<tr data-more="' + mgddEsc(a.mem || a.run || a.upd) + '"><td class="nm">' + mgddEsc(a.name) + this._id(a.upd) + '</td><td class="mn-mu">' + ver + '</td><td>' + stato + '</td>' +
-        '<td>' + (cpu != null ? monNum(cpu, 1) + ' %' : '<span class="mn-fa">—</span>') + '</td><td>' + memBar + '</td></tr>'
+        '<td>' + cpuCell + '</td><td>' + memBar + '</td></tr>'
       );
     });
     if (rest.length) rows.push('<tr class="rest"><td colspan="5">+ ' + rest.join(', ') + '</td></tr>');
@@ -15263,10 +15454,8 @@ class MonitorCard extends HTMLElement {
     const du = this._gb(H.disk_use);
     const df = this._gb(H.disk_free);
     const dp = du != null && df != null && du + df > 0 ? (100 * du) / (du + df) : null;
-    const tile = (k, v, u, extra, more, vcls) =>
-      '<div class="mn-card mn-pt" data-more="' + mgddEsc(more) + '"><span class="mn-small">' + k + '</span><span class="mn-pv ' + (vcls || '') + '">' + v + ' <span>' + u + '</span></span>' + extra + '</div>';
-    const bar = (p, warn) => '<div class="mn-bar s"><i style="width:' + (p || 0).toFixed(1) + '%' + (warn ? ';background:var(--warn)' : '') + '"></i></div>';
-    const T2 = T.temp_max - T.temp_min;
+    const tile = (k, g, extra, more) =>
+      '<div class="mn-card mn-pt" data-more="' + mgddEsc(more) + '"><span class="mn-small">' + k + '</span>' + g + (extra || '') + '</div>';
 
     const lst = issues.slice(0, 4).map((i) =>
       '<div class="mn-pi"><i class="' + i.lvl + '"></i><div><span class="t">' + mgddEsc(i.title) + '</span><span class="d">' + mgddEsc(i.desc || '') + '</span></div></div>'
@@ -15299,10 +15488,24 @@ class MonitorCard extends HTMLElement {
       '<header class="mn-phead"><h1 class="mn-h1">HA Monitor</h1><span class="mn-time">' + monHM(Date.now()) + '</span></header>' +
       banner +
       '<div class="mn-p2">' +
-      tile('CPU', monNum(cpu), '%', this._spark(st.cpu, 140, 28).replace('class="mn-spark"', 'class="mn-spark s"'), H.cpu) +
-      tile('Temperatura', monNum(t, t != null && t % 1 ? 1 : 0), '°C', bar(t == null ? 0 : ((t - T.temp_min) / T2) * 100, tc !== 'ok'), H.cpu_temp, tc === 'ok' ? '' : tc) +
-      tile('RAM', monNum(mp), '%', bar(mp, mp != null && mp >= T.memory) + '<span class="mn-small">' + monNum(mu, 1) + ' di ' + monNum(mu != null && mf != null ? mu + mf : null, 1) + ' GB</span>', H.memory) +
-      tile('Disco', monNum(dp), '%', bar(dp, dp != null && dp >= T.disk) + '<span class="mn-small">' + monNum(df) + ' GB liberi</span>', H.disk_use) +
+      tile('CPU', monGauge({
+        v: cpu, max: 100, unit: '%', aria: 'CPU', marks: (() => { const p = this._peak(st.cpu); return p ? [p.v] : []; })(),
+        col: (x) => (x >= T.cpu ? 'var(--crit)' : monRamp('var(--ac)', 'var(--vi)', 0, T.cpu)(x)),
+        vcls: cpu != null && cpu >= T.cpu ? 'warn' : '',
+      }), this._spark(st.cpu, 140, 28).replace('class="mn-spark"', 'class="mn-spark s"'), H.cpu) +
+      tile('Temperatura', monGauge({
+        v: t, min: T.temp_min, max: T.temp_max, unit: '°C', dec: t != null && t % 1 ? 1 : 0, needle: true, aria: 'Temperatura CPU',
+        col: monZones([[T.cpu_temp_warn, 'var(--ok)'], [T.cpu_temp_crit, 'var(--warn)'], [T.temp_max, 'var(--crit)']]),
+        vcls: tc === 'ok' ? '' : tc,
+      }), '<span class="mn-small mn-c">soglie ' + T.cpu_temp_warn + ' / ' + T.cpu_temp_crit + ' °C</span>', H.cpu_temp) +
+      tile('RAM', monGauge({
+        v: mp, max: 100, unit: '%', solid: true, aria: 'RAM',
+        col: (x) => (x >= T.memory ? 'var(--warn)' : 'var(--ac)'), vcls: mp != null && mp >= T.memory ? 'warn' : '',
+      }), '<span class="mn-small mn-c">' + monNum(mu, 1) + ' di ' + monNum(mu != null && mf != null ? mu + mf : null, 1) + ' GB</span>', H.memory) +
+      tile('Disco', monGauge({
+        v: dp, max: 100, unit: '%', n: 30, gap: 0.38, aria: 'Disco',
+        col: monZones([[T.disk, 'var(--ac)'], [100, 'var(--warn)']]), vcls: dp != null && dp >= T.disk ? 'warn' : '',
+      }), '<span class="mn-small mn-c">' + monNum(df) + ' GB liberi</span>', H.disk_use) +
       '</div>' +
       (issues.length ? '<div class="mn-card"><h2 class="mn-h2">Da guardare</h2>' + lst + '</div>' : '') +
       '<div class="mn-card" data-more="' + mgddEsc(B.last_ok) + '"><div class="mn-row"><h2 class="mn-h2">Backup</h2>' +
@@ -15321,7 +15524,7 @@ class MonitorCard extends HTMLElement {
         ? '<div class="mn-card"><h2 class="mn-h2">App più pesanti</h2><div class="mn-pa">' +
         apps.map((x) => {
           const v = this._num(x.mem);
-          return '<span>' + mgddEsc(x.name.replace(/ \(Full Access\)| with Video Streaming/i, '')) + '</span><div class="mn-bar s"><i style="width:' + Math.min(100, (v || 0) * 4).toFixed(1) + '%' + (v >= 25 ? ';background:var(--warn)' : '') + '"></i></div><span class="r">' + monNum(v, 1) + ' %</span>';
+          return '<span>' + mgddEsc(x.name.replace(/ \(Full Access\)| with Video Streaming/i, '')) + '</span>' + monLin(v, 25, 14, (x) => (x >= 20 ? 'var(--warn)' : monRamp('var(--ac)', 'var(--vi)', 0, 25)(x))) + '<span class="r">' + monNum(v, 1) + ' %</span>';
         }).join('') + '</div></div>'
         : '') +
       (sc
@@ -15336,10 +15539,14 @@ class MonitorCard extends HTMLElement {
 
   // ================= pagina RETE =================
 
-  _uBar(label, v) {
+  // mezzo arco piccolo per CPU e RAM di un dispositivo UniFi
+  _uGauge(label, v, dev) {
     const T = this.config.thresholds;
-    return '<span class="mn-fa">' + label + '</span><div class="mn-bar s"><i style="width:' + Math.min(100, v || 0).toFixed(1) + '%' +
-      (v != null && v >= T.device_load ? ';background:var(--warn)' : '') + '"></i></div><span class="r">' + monNum(v) + ' %</span>';
+    return monGauge({
+      v: v, max: 100, unit: '%', label: label, aria: label + ' ' + dev, size: 'sm', start: 180, end: 360, n: 20,
+      col: monZones([[T.device_load, label === 'CPU' ? 'var(--ac)' : 'var(--vi)'], [100, 'var(--warn)']]),
+      vcls: v != null && v >= T.device_load ? 'warn' : '',
+    });
   }
 
   _pageRete() {
@@ -15364,22 +15571,45 @@ class MonitorCard extends HTMLElement {
       if (v != null && (!peak || v > peak.v)) peak = { v: v, t: monStart(r) };
     });
     const gwOn = this._txt(N.gateway_ping);
+    const T = c.thresholds;
+    // speedtest: scala fissa (speed_max), ▲ sulla media dei 7 giorni; sotto il 60 %
+    // della media e' lento, sotto il 25 % molto lento
+    const dm = (st.down || []).map((r) => r.mean).filter((x) => x != null);
+    const mean7 = dm.length ? dm.reduce((a, b) => a + b, 0) / dm.length : null;
+    const sMax = Math.max(T.speed_max, mean7 || 0, down || 0);
+    const low = down == null || !mean7 ? '' : down < mean7 * 0.25 ? 'crit' : down < mean7 * 0.6 ? 'warn' : '';
+    const cl = this._num(N.clients);
+    const cMax = Math.max(20, Math.ceil((Math.max(cl || 0, peak ? peak.v : 0) * 1.25) / 10) * 10);
+    const rtt = this._num(N.gateway_rtt);
     const conn =
-      '<section class="mn-grid gs" aria-label="Connettività">' +
+      '<section class="mn-grid gq" aria-label="Connettività">' +
       '<div class="mn-card" data-more="' + mgddEsc(N.wan_ip) + '"><span class="mn-txt">Internet</span>' +
       '<span class="mn-b26 ' + (ip ? 'mn-okt' : 'mn-critt') + '">' + (ip ? 'online' : 'senza IP') + '</span>' +
       '<span class="mn-txt">' + (ip ? 'IP pubblico ' + mgddEsc(ip) + (ipSince ? ' · invariato da ' + monDur(now - ipSince) : '') : 'IP pubblico non disponibile') + '</span>' +
       this._id(N.wan_ip) + '</div>' +
-      '<div class="mn-card" data-more="' + mgddEsc(N.speed_down) + '"><span class="mn-txt">Speedtest</span>' +
-      '<div class="mn-sp"><span><b>' + monNum(down) + '</b> <small>↓ Mbit/s</small></span><span><b>' + monNum(up) + '</b> <small>↑ Mbit/s</small></span></div>' +
-      '<span class="mn-txt">ping ' + monNum(ping) + ' ms' + (sdS ? ' · misurato ' + monWhen(Date.parse(sdS.last_updated)) : '') + '</span>' +
+      '<div class="mn-card" data-more="' + mgddEsc(N.speed_down) + '"><div class="mn-row"><span class="mn-txt">Speedtest</span>' +
+      (low ? '<span class="mn-badge ' + low + '">' + (low === 'crit' ? 'molto lento' : 'lento') + '</span>' : '') + '</div>' +
+      monGauge({
+        v: down, max: sMax, unit: 'Mbit/s', label: 'download', aria: 'Speedtest download', marks: mean7 != null ? [mean7] : [], colv: true,
+        col: mean7 ? monZones([[mean7 * 0.25, 'var(--crit)'], [mean7 * 0.6, 'var(--warn)'], [sMax, 'var(--ac)']]) : () => 'var(--ac)',
+        vcls: low === 'crit' ? 'crit' : low === 'warn' ? 'warn' : '',
+      }) +
+      '<span class="mn-txt">↑ ' + monNum(up) + ' Mbit/s · ping ' + monNum(ping) + ' ms' + (sdS ? ' · ' + monWhen(Date.parse(sdS.last_updated)) : '') +
+      (mean7 != null ? '<br>▲ media 7 giorni ' + monNum(mean7) + ' Mbit/s' : '') + '</span>' +
       this._id(N.speed_down + ' · _carica · _ping') + '</div>' +
       '<div class="mn-card" data-more="' + mgddEsc(N.clients) + '"><span class="mn-txt">Client Wi-Fi e LAN</span>' +
-      '<span class="mn-b26">' + monNum(this._num(N.clients)) + ' <small>connessi</small></span>' +
-      '<span class="mn-txt">' + monNum(this._num(N.guests)) + ' ospiti' + (peak ? ' · picco oggi ' + monNum(peak.v) + ' alle ' + monHM(peak.t) : '') + '</span>' +
+      monGauge({
+        v: cl, max: cMax, label: 'connessi', aria: 'Client connessi', marks: peak ? [peak.v] : [],
+        col: monRamp('var(--ac)', 'var(--ok)', 0, cMax),
+      }) +
+      '<span class="mn-txt">' + monNum(this._num(N.guests)) + ' ospiti' + (peak ? ' · ▲ picco oggi ' + monNum(peak.v) + ' alle ' + monHM(peak.t) : '') + '</span>' +
       this._id(N.clients + ' · ' + N.guests) + '</div>' +
       '<div class="mn-card" data-more="' + mgddEsc(N.gateway_rtt) + '"><span class="mn-txt">' + mgddEsc(N.gateway_name) + '</span>' +
-      '<span class="mn-b26">' + monNum(this._num(N.gateway_rtt)) + ' <small>ms</small></span>' +
+      monGauge({
+        v: rtt, max: T.rtt_max, unit: 'ms', label: 'ping medio', aria: 'Ping ' + N.gateway_name, needle: true,
+        col: monZones([[T.rtt_warn, 'var(--ok)'], [T.rtt_crit, 'var(--warn)'], [T.rtt_max, 'var(--crit)']]),
+        vcls: rtt != null && rtt > T.rtt_crit ? 'crit' : rtt != null && rtt > T.rtt_warn ? 'warn' : '',
+      }) +
       '<span class="mn-txt">' + monNum(this._num(N.gateway_loss), 1) + ' % pacchetti persi · ' + (gwOn === 'on' ? 'raggiungibile' : '<span class="mn-critt">non raggiungibile</span>') + '</span>' +
       this._id(N.gateway_ping + ' · ' + N.gateway_rtt) + '</div>' +
       '</section>';
@@ -15396,7 +15626,7 @@ class MonitorCard extends HTMLElement {
       const fwTx = fw ? 'firmware ' + mgddEsc(this._attr(d.firmware, 'installed_version') || '—') + (fw.state === 'on' ? ' <span class="mn-warnt">→ ' + mgddEsc(this._attr(d.firmware, 'latest_version') || '') + '</span>' : fw.state === 'off' ? ' aggiornato' : '') : '';
       return (
         '<div class="mn-dev" data-more="' + mgddEsc(d.cpu || d.state) + '"><div class="mn-row"><h3 class="mn-h3">' + mgddEsc(d.name) + '</h3><span class="mn-stat ' + (okS ? 'mn-okt' : 'mn-critt') + '">' + mgddEsc(stTx) + '</span></div>' +
-        '<div class="mn-ub">' + this._uBar('CPU', this._num(d.cpu)) + this._uBar('RAM', this._num(d.memory)) + '</div>' +
+        '<div class="mn-gzpair">' + this._uGauge('CPU', this._num(d.cpu), d.name) + this._uGauge('RAM', this._num(d.memory), d.name) + '</div>' +
         '<span class="mn-note">' + [upT ? 'attivo da ' + monDur(now - upT) : '', fwTx].filter(Boolean).join(' · ') + '</span>' +
         this._id(String(d.cpu || '').replace(/_cpu_utilization$/, '_*')) + '</div>'
       );
@@ -15414,10 +15644,14 @@ class MonitorCard extends HTMLElement {
       ups =
         '<div class="mn-card c14"><div class="mn-row"><h2 class="mn-h2">' + mgddEsc(U.name) + '</h2>' +
         '<span class="mn-badge ' + (on === 'on' ? 'ok' : on === 'off' ? 'crit' : 'warn') + '">' + (on === 'on' ? 'da rete' : on === 'off' ? 'a batteria' : 'stato ignoto') + '</span></div>' +
-        '<div class="mn-bk3">' +
-        '<div data-more="' + mgddEsc(U.battery) + '"><span class="mn-small">Batteria</span><b>' + monNum(this._num(U.battery)) + ' %</b></div>' +
+        '<div class="mn-gzrow"><div data-more="' + mgddEsc(U.battery) + '">' +
+        monGauge({
+          v: this._num(U.battery), max: 100, unit: '%', label: 'batteria', aria: 'Batteria UPS', size: 'md', colv: true,
+          col: monZones([[T.battery_crit, 'var(--crit)'], [T.battery_low, 'var(--warn)'], [100, 'var(--ok)']]),
+        }) + '</div>' +
+        '<div class="mn-bk3 c2">' +
         '<div data-more="' + mgddEsc(U.runtime) + '"><span class="mn-small">Autonomia</span><b>' + monNum(this._num(U.runtime)) + ' <small>min</small></b></div>' +
-        '<div data-more="' + mgddEsc(U.power) + '"><span class="mn-small">Carico</span><b>' + monNum(this._num(U.power)) + ' <small>W</small></b></div></div>' +
+        '<div data-more="' + mgddEsc(U.power) + '"><span class="mn-small">Carico</span><b>' + monNum(this._num(U.power)) + ' <small>W</small></b></div></div></div>' +
         '<div class="mn-flex mn-txt"><span>uscita ' + monNum(this._num(U.voltage), 1) + ' V</span><span>' + monNum(this._num(U.current), 2) + ' A</span><span>fattore di potenza ' + monNum(this._num(U.power_factor), 2) + '</span>' +
         (this._st(U.bypass) ? '<span>bypass ' + monNum(this._num(U.bypass), 1) + ' V</span>' : '') + '</div>' +
         (outs.length
@@ -15466,7 +15700,9 @@ class MonitorCard extends HTMLElement {
     const q = this._num(AG.queries);
     const ag =
       '<div class="mn-card" data-more="' + mgddEsc(AG.queries) + '"><h2 class="mn-h2">AdGuard Home</h2>' +
-      '<div class="mn-sp"><span><b>' + monNum(q) + '</b> <small>query oggi</small></span><span><b>' + monNum(this._num(AG.ratio), 1) + ' %</b> <small>bloccate</small></span></div>' +
+      '<div class="mn-gzrow">' +
+      monGauge({ v: this._num(AG.ratio), max: 100, unit: '%', dec: 1, label: 'bloccate', aria: 'Query bloccate', size: 'md', solid: true, start: -90, end: 270, col: () => 'var(--vi)' }) +
+      '<div class="mn-sp"><span><b>' + monNum(q) + '</b> <small>query oggi</small></span></div></div>' +
       '<span class="mn-txt">tempo medio di risposta ' + monNum(this._num(AG.latency), 1) + ' ms · navigazione sicura ' + monNum(this._num(AG.safe)) + '</span>' +
       (q === 0 ? '<span class="mn-note mn-warnt">Nessuna query: forse AdGuard non è il DNS usato dalla rete.</span>' : '') +
       this._id(AG.queries + ' · ' + AG.ratio + ' · ' + AG.latency) + '</div>';
@@ -15533,9 +15769,13 @@ class MonitorCard extends HTMLElement {
     };
     const shown = sc.devRows.slice(0, 12);
     const others = sc.devRows.slice(12);
+    // la barra dice quante entita' del dispositivo sono giu': piena = dispositivo muto
+    const vcol = { verificare: 'var(--crit)', atteso: 'var(--ac)', ferma: 'var(--gr)' };
     const rows = shown.map((r) =>
-      '<tr data-more="' + mgddEsc(r.ids[0]) + '"><td>' + mgddEsc(r.name) + '</td><td>' + r.n + (r.tot > r.n ? ' <span class="mn-fa">di ' + r.tot + '</span>' : '') + '</td>' +
-      '<td class="mn-mu">' + (r.verdict === 'ferma' ? 'oltre ' + ((this.config.unavailable_watch || {}).worked_days || 7) + ' g' : isFinite(r.since) ? monDur(now - r.since) : '—') + '</td><td>' + verd[r.verdict] + '</td></tr>'
+      '<tr data-more="' + mgddEsc(r.ids[0]) + '"><td>' + mgddEsc(r.name) + '</td><td><div class="mn-mbar">' +
+      monLin(r.n, Math.max(r.tot, r.n), 16, () => vcol[r.verdict] || 'var(--gr)') +
+      '<span>' + r.n + (r.tot > r.n ? ' <span class="mn-fa">/' + r.tot + '</span>' : '') + '</span></div></td>' +
+      '<td class="mn-mu nw">' + (r.verdict === 'ferma' ? 'oltre ' + ((this.config.unavailable_watch || {}).worked_days || 7) + ' g' : isFinite(r.since) ? monDur(now - r.since) : '—') + '</td><td class="nw">' + verd[r.verdict] + '</td></tr>'
     ).join('') +
       (others.length
         ? '<tr class="rest"><td colspan="4">+ ' + (others.length === 1 ? 'un altro dispositivo' : 'altri ' + others.length + ' dispositivi') + ', ' +
@@ -15584,18 +15824,55 @@ class MonitorCard extends HTMLElement {
     const battCard =
       '<section class="mn-card c14"><div class="mn-row"><h2 class="mn-h2">Batterie</h2><div class="mn-flex"><span class="mn-note">' + sc.batt.length + ' dispositivi · ' +
       mgddEsc(c.battery_exclude ? 'esclusi: ' + c.battery_exclude.replace(/\|/g, ', ') : '') + ' · dalla più scarica</span>' + chk + '</div></div>' +
-      '<div class="mn-batt">' + shownB.map((b) => {
-        const col = b.val < T.battery_crit ? 'var(--crit)' : b.val < T.battery_low ? 'var(--warn)' : 'var(--ac)';
-        const tcls = b.val < T.battery_crit ? 'mn-critt' : b.val < T.battery_low ? 'mn-warnt' : '';
-        return '<div class="mn-bt" data-more="' + mgddEsc(b.id) + '"><span class="nm">' + mgddEsc(b.name) + '</span><div class="mn-bar s"><i style="width:' + Math.max(2, b.val).toFixed(0) + '%;background:' + col + '"></i></div><span class="r ' + tcls + '">' + monNum(b.val) + ' %</span></div>';
-      }).join('') + '</div>' +
+      '<div class="mn-bgrid">' + shownB.map((b) =>
+        '<div class="mn-bg" data-more="' + mgddEsc(b.id) + '" title="' + mgddEsc(b.name) + '">' +
+        monGauge({
+          v: b.val, max: 100, unit: '%', size: 'sm', n: 16, aria: 'Batteria ' + b.name, colv: true,
+          col: monZones([[T.battery_crit, 'var(--crit)'], [T.battery_low, 'var(--warn)'], [100, 'var(--ok)']]),
+          vcls: b.val < T.battery_crit ? 'crit' : b.val < T.battery_low ? 'warn' : '',
+        }) + '<span class="nm">' + mgddEsc(b.name) + '</span></div>'
+      ).join('') + '</div>' +
       '<span class="mn-note">' + (restB.length ? '+ ' + restB.length + ' tra il ' + monNum(minRest) + ' e il 100 %' : '') +
       (sc.battUnav ? (restB.length ? ' · ' : '') + sc.battUnav + ' sensori batteria non disponibili' : '') +
       (res ? ' · ultimo controllo ' + (resT ? monWhen(resT) : '') + ': ' + mgddEsc(res.length > 140 ? res.slice(0, 137) + '…' : res) : '') + '</span>' +
       this._id('sensor.* con device_class battery' + (BC.button ? ' · ' + BC.button : '')) + '</section>';
 
+    // riepilogo a gauge: voci per priorita', entita' disponibili, aggiornamenti, batterie
+    const nA = issues.filter((i) => i.lvl === 'a').length;
+    const nM = issues.filter((i) => i.lvl === 'm').length;
+    const nB = issues.length - nA - nM;
+    const tot = sc.total || 0;
+    const nUpd = sc.upd.on.length + sc.upd.off + sc.upd.unav.length;
+    const okB = sc.batt.filter((b) => b.val >= T.battery_low).length;
+    const sum = (title, small, g, det) =>
+      '<div class="mn-card mn-sum"><div class="mn-row"><h2 class="mn-h2s">' + title + '</h2><span class="mn-small">' + small + '</span></div>' + g +
+      '<span class="mn-small mn-c">' + det + '</span></div>';
+    const summary =
+      '<section class="mn-grid gq" aria-label="Riepilogo">' +
+      sum('Da fare', 'per priorità', monGauge({
+        v: issues.length, max: Math.max(1, issues.length), unit: issues.length === 1 ? 'voce' : 'voci', aria: 'Voci da fare',
+        segs: [[nA, 'var(--crit)'], [nM, 'var(--warn)'], [nB, 'var(--gr)']],
+        label: issues.length ? '' : 'niente da fare',
+        vcls: nA ? 'crit' : nM ? 'warn' : '',
+      }), '<span class="mn-dotk a"></span>alta ' + nA + ' · <span class="mn-dotk m"></span>media ' + nM + ' · <span class="mn-dotk b"></span>bassa ' + nB) +
+      sum('Entità disponibili', monNum(tot), monGauge({
+        v: tot ? (100 * (tot - sc.unav)) / tot : null, max: 100, unit: '%', dec: 1, solid: true, aria: 'Entità disponibili',
+        label: monNum(tot - sc.unav) + ' di ' + monNum(tot), col: (x) => (x >= 95 ? 'var(--ok)' : x >= 80 ? 'var(--warn)' : 'var(--crit)'),
+      }), monNum(sc.unav) + ' non disponibili · ' + monNum(sc.unknown) + ' sconosciute') +
+      sum('Aggiornamenti', monNum(nUpd), monGauge({
+        v: sc.upd.off, max: Math.max(1, nUpd), label: 'aggiornati su ' + nUpd, aria: 'Aggiornamenti installati',
+        col: () => 'var(--ok)', vcls: sc.upd.on.length ? 'warn' : '',
+      }), (sc.upd.on.length ? '<span class="mn-warnt">' + sc.upd.on.length + ' da installare</span>' : '0 da installare') +
+        ' · ' + (sc.upd.unav.length ? '<span class="mn-warnt">' + sc.upd.unav.length + ' non disponibili</span>' : '0 non disponibili')) +
+      sum('Batterie', monNum(sc.batt.length), monGauge({
+        v: okB, max: Math.max(1, sc.batt.length), label: 'sopra il ' + T.battery_low + ' %', aria: 'Batterie sopra il ' + T.battery_low + ' %',
+        col: () => 'var(--ok)',
+      }), (sc.batt.length - okB) + ' sotto il ' + T.battery_low + ' % · ' + sc.batt.filter((b) => b.val < T.battery_crit).length + ' sotto il ' + T.battery_crit + ' %') +
+      '</section>';
+
     return (
       this._head('Manutenzione', 'Cosa richiede un intervento, in ordine di importanza') +
+      summary +
       '<section class="mn-col10" aria-label="Da fare">' + todo + '</section>' +
       '<section class="mn-grid g2">' + unavCard + '<div class="mn-col16">' + autCard + updCard + '</div></section>' +
       battCard
@@ -15764,6 +16041,39 @@ const MON_STYLES =
   '.mn-alert .t{font-size:14px;font-weight:600}.mn-alert .d{font-size:13px;color:var(--tx)}.mn-alert .w{color:var(--warnt)}' +
   '.mn .mn-pnav button{flex:1;min-height:44px;display:flex;align-items:center;justify-content:center;border-radius:12px;border:1px solid var(--gr);font-size:14px}' +
   '@media (max-width:600px){.mn-cnt{grid-template-columns:repeat(2,minmax(0,1fr))}.mn-bk3{grid-template-columns:repeat(3,minmax(0,1fr))}.mn-bk3 b{font-size:20px}}' +
+  // gauge a tacche (v1.112): il numero scala con la larghezza del gauge (cqw)
+  '.mn{--trk:rgba(255,255,255,.09)}.mn.mn-light{--trk:rgba(20,30,50,.1)}' +
+  '.mn-gz{position:relative;width:100%;max-width:210px;margin:0 auto;container-type:inline-size}' +
+  '.mn-gz svg{display:block;width:100%;height:auto;overflow:visible}' +
+  '.mn-gz .n{transition:fill .35s}' +
+  '.mn-gz .nd{transform-box:view-box;transform-origin:100px 100px;transition:transform .7s cubic-bezier(.16,1,.3,1)}' +
+  '.mn-gz .arc{transition:stroke-dasharray .7s cubic-bezier(.16,1,.3,1)}' +
+  '.mn-gz-c{position:absolute;left:50%;transform:translate(-50%,-50%);text-align:center;white-space:nowrap;pointer-events:none}' +
+  '.mn-gz-v{display:block;font-weight:800;letter-spacing:-.03em;line-height:1;font-size:clamp(13px,21cqw,44px);font-variant-numeric:tabular-nums}' +
+  '.mn-gz-v small{font-size:clamp(8px,7cqw,15px);color:var(--mu);font-weight:500;margin-left:2px;letter-spacing:0}' +
+  '.mn-gz-v.warn{color:var(--warnt)}.mn-gz-v.crit{color:var(--critt)}' +
+  '.mn-gz-l{display:block;color:var(--fa);font-size:clamp(9.5px,6.2cqw,12px);line-height:1.25;text-align:center;margin:2px auto 0;max-width:62%;position:relative}' +
+  '.mn-gz-l.pull{margin-top:-12cqw;max-width:50%}' +
+  '.mn-gz-c .mn-gz-l{max-width:none;margin-top:3px;white-space:nowrap}' +
+  '.mn-gz.md{max-width:150px}.mn-gz.sm{max-width:118px}' +
+  '.mn-gz.xs{width:44px;max-width:44px;flex:none;margin:0}.mn-gz.xs .mn-gz-c{display:none}' +
+  '.mn-lin{display:flex;gap:2px;height:10px;flex:1;min-width:60px}.mn-lin i{flex:1;border-radius:2px;background:var(--trk);transition:background .35s}' +
+  '.mn-mbar .mn-lin{flex:1}' +
+  '.mn-gzrow{display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px}' +
+  '.mn-gzrow>.mn-gz,.mn-gzrow>div[data-more]{flex:0 0 150px;margin:0}.mn-gzrow>div[data-more] .mn-gz{margin:0}' +
+  '.mn-gzrow>.mn-bk,.mn-gzrow>.mn-bk3,.mn-gzrow>.mn-sp{flex:1 1 200px}' +
+  '.mn-bk3.c2{grid-template-columns:repeat(2,minmax(0,1fr))}' +
+  '.mn-gzpair{display:flex;justify-content:space-around;gap:8px}.mn-gzpair .mn-gz{margin:0}' +
+  '.mn-c{text-align:center}' +
+  '.mn-grid.gq{grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr))}' +
+  '.mn-card.mn-sum{gap:8px}' +
+  '.mn-dotk{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px}' +
+  '.mn-dotk.a{background:var(--crit)}.mn-dotk.m{background:var(--warn)}.mn-dotk.b{background:var(--gr)}' +
+  '.mn-bgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px}' +
+  '.mn-bg{background:var(--in);border-radius:12px;padding:8px 6px;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:0}' +
+  '.mn-bg .nm{font-size:11.5px;color:var(--mu);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+  '.mn-card.mn-pt .mn-gz{max-width:170px}' +
+  '.mn-hist i,.mn-dbar i{transform-origin:bottom}.mn-stack i{transform-origin:left}' +
   '</style>';
 
 MonitorCard.getStubConfig = function () {
