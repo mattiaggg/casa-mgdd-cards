@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.112.1
+ * Version: 1.113.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -12802,6 +12802,10 @@ class LaundryCard extends HTMLElement {
         const t = e.key === 'Enter' && e.target && e.target.closest ? e.target.closest('[data-ld-go]') : null;
         if (t) t.click();
       });
+      // mirino sulla curva della batteria (block pagina)
+      this.addEventListener('pointermove', (e) => ldCvMove(this, e));
+      this.addEventListener('pointerdown', (e) => ldCvMove(this, e));
+      this.addEventListener('pointerleave', () => { if (this._ldCvEl) this._ldCvEl.classList.remove('ldp-cv-on'); this._ldCvEl = null; });
     }
   }
 
@@ -12875,6 +12879,12 @@ class LaundryCard extends HTMLElement {
     const dark = !!(this._hass.themes && this._hass.themes.darkMode);
     const inner = fn ? fn.call(this) : '<ha-card class="ld-c"><div class="ld-sub">blocco non valido: ' + mgddEsc(b) + '</div></ha-card>';
     mgddPaint(this, b === 'pagina' ? LD_STYLES_PAGINA : LD_STYLES, '<div class="ldq' + (dark ? ' ld-dark' : '') + '">' + inner + '</div>');
+    // ingresso una volta sola, quando c'e' il piano; nessuna ripetizione se la card
+    // si ricostruisce subito dopo (come la monitor card dalla v1.112.1)
+    if (b === 'pagina' && !this._mgddIntro && this._piano('giorni')) {
+      mgddIntro(this, (tl) => LD_PAGINA._intro.call(this, tl));
+      this._mgddIntroFn = null;
+    }
   }
 
   // ---------- pezzi comuni ----------
@@ -13358,6 +13368,37 @@ function ldQuando(d, now) {
   return g + ' alle ' + ldHM(d);
 }
 
+// Testo diviso in lettere per l'ingresso (come il text split di anime.js). Ogni
+// parola resta intera (nowrap) per non andare a capo a meta'.
+function ldSplit(t) {
+  return String(t).split(/(\s+)/).map((w) => (/^\s+$/.test(w) ? ' ' : w
+    ? '<span class="ldp-w">' + Array.from(w).map((c) => '<span class="ldp-ch">' + mgddEsc(c) + '</span>').join('') + '</span>' : '')).join('');
+}
+// Testo diviso in parole (testo Gemini che compare parola per parola).
+function ldWords(t) {
+  return String(t).split(/(\s+)/).map((w) => (/^\s+$/.test(w) ? ' ' : w ? '<span class="ldp-wd">' + mgddEsc(w) + '</span>' : '')).join('');
+}
+// Icone meteo disegnate (raggi che girano, nuvola che fluttua, pioggia che cade).
+// Le condizioni senza disegno restano sull'icona MDI.
+function ldMeteo(m) {
+  const sole = (cx, cy, r, rl) => {
+    let s = '<g class="ldp-wx-sun"><circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="currentColor" stroke-width="1.8"/><g class="ldp-wx-rays" style="transform-origin:' + cx + 'px ' + cy + 'px">';
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4;
+      const x = (k) => (cx + Math.cos(a) * k).toFixed(1);
+      const y = (k) => (cy + Math.sin(a) * k).toFixed(1);
+      s += '<line x1="' + x(r + 2) + '" y1="' + y(r + 2) + '" x2="' + x(r + 2 + rl) + '" y2="' + y(r + 2 + rl) + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>';
+    }
+    return s + '</g></g>';
+  };
+  const nuv = (dy) => '<path class="ldp-wx-cl" transform="translate(0 ' + dy + ')" d="M7 19h10a4 4 0 0 0 .4-7.98A6 6 0 0 0 6 11.5 3.75 3.75 0 0 0 7 19z" fill="var(--ld-bg)" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>';
+  const goc = (x) => '<line class="ldp-wx-dr" x1="' + x + '" y1="19" x2="' + (x - 1) + '" y2="21.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>';
+  const k = { sunny: 'sun', partlycloudy: 'part', cloudy: 'cloud', fog: 'cloud', rainy: 'rain', pouring: 'rain', 'lightning-rainy': 'rain', 'snowy-rainy': 'rain' }[m];
+  if (!k) return ldIco(LD_METEO_MDI[m] || 'weather-cloudy');
+  const body = k === 'sun' ? sole(12, 12, 4.2, 2.6) : k === 'part' ? sole(8, 8, 3, 1.8) + nuv(2) : k === 'cloud' ? nuv(0) : nuv(-3) + goc(9) + goc(13) + goc(17);
+  return '<svg class="ldp-wx" viewBox="0 0 24 24" aria-hidden="true">' + body + '</svg>';
+}
+
 const LD_PAGINA = {
   hero() {
     const s = this._st(this.config.piano);
@@ -13368,16 +13409,18 @@ const LD_PAGINA = {
     const col = s.state;
     const pill = { verde: this._pill('g', ldIco('check-circle') + 'Si può lavare'), ambra: this._pill('a', ldIco('alert-circle') + 'Solo un lavaggio leggero'),
       rosso: this._pill('r', ldIco('close-circle') + 'Niente lavatrici') }[col] || '';
-    const titolo = mgddEsc(c.titolo).replace(': ', ':<br>');
+    // titolo diviso in lettere per l'ingresso; "X: Y" va a capo dopo i due punti
+    const titolo = String(c.titolo).split(': ').map(ldSplit).join(':<br>');
     const acts = (c.suggerimenti || []).map((t) => this._pill('n', mgddEsc(t))).join('');
     const costi = this._piano('se_lavassi_oggi') || {};
     const cats = Object.keys(costi).sort((a, b) => costi[a] - costi[b]);
+    const cMax = Math.max(0.1, ...cats.map((k) => Number(costi[k]) || 0));
     const cost = cats.map((k) => {
       const v = Number(costi[k]) || 0;
       return '<div><span class="ld-tiny">' + (LD_CAT[k] || LD_CAT.altro).n + '</span><b' + (v <= 0.05 ? ' class="ld-tg"' : '') + '>' +
-        (v <= 0.05 ? '0' : '+' + ldNum(v)) + '</b><span class="ld-tiny">kWh Enel</span></div>';
+        (v <= 0.05 ? '0' : '+' + ldNum(v)) + '</b><i class="ldp-cost-b"><i style="width:' + (v <= 0.05 ? 0 : Math.round((v / cMax) * 100)) + '%"></i></i><span class="ld-tiny">kWh Enel</span></div>';
     }).join('');
-    return '<ha-card class="ld-c ld-hero ldp-hero ld-h-' + mgddEsc(col) + '"><div class="ld-hd" style="margin:0"><span class="ld-lbl">' + label + '</span>' + pill +
+    return '<ha-card class="ld-c ld-hero ldp-hero ld-h-' + mgddEsc(col) + '"><div class="ldp-beams"><i></i><i></i></div><div class="ld-hd" style="margin:0"><span class="ld-lbl">' + label + '</span>' + pill +
       '</div><h2>' + titolo + '</h2><div class="ld-sub">' + mgddEsc(c.testo) + '</div>' + (acts ? '<div class="ld-acts">' + acts + '</div>' : '') +
       (cost ? '<div class="ldp-cost-t ld-tiny">Se lavassi oggi</div><div class="ldp-cost">' + cost + '</div>' : '') + '</ha-card>';
   },
@@ -13430,10 +13473,15 @@ const LD_PAGINA = {
       const lav = '<div class="ldp-kv"><span>Enel</span><b' + (enel == null ? '' : enel < 0.05 ? ' class="ld-tg"' : ' class="ld-tr"') + '>' +
         (enel == null ? '—' : enel < 0.05 ? '0' : ldNum(enel) + ' kWh') + '</b></div><div class="ldp-kv"><span>Carica max</span><b>' + (max == null ? '—' : max + '%') + '</b></div>' + verd;
       const nota = d.data === oggi ? 'oggi' : d.migliore ? 'migliore' : '';
+      // 20 tacche = 100% dei consumi fissi; oltre il 100% una tacca verde staccata
+      const on = Math.round(Math.min(100, cop || 0) / 5);
+      let tk = '';
+      for (let k = 0; k < 20; k++) tk += k < on ? '<i class="on"></i>' : '<i></i>';
+      if (cop > 100) tk += '<i class="ldp-tk-gap"></i><i class="ldp-tk-ov"></i>';
       return '<div class="ldp-day' + (d.data === oggi ? ' ldp-oggi' : '') + (d.migliore ? ' ldp-best' : '') + '"><div class="ldp-d"><span>' + mgddEsc(d.nome) + ' ' +
-        ldDay(d.data).getDate() + '</span>' + (nota ? '<span class="ld-tiny">' + nota + '</span>' : '') + '</div>' + ldIco(LD_METEO_MDI[d.meteo] || 'weather-cloudy') +
-        '<div class="ldp-k">' + ldNum(d.kwh) + ' <small>kWh</small></div><div class="ld-bar ldp-bar"><i style="width:' + Math.min(100, cop || 0) + '%;background:' +
-        (colv[d.colore] || 'var(--ld-t2)') + '"></i></div><span class="ld-tiny">' + (cop == null ? '—' : 'copre il ' + cop + '%') + '</span>' +
+        ldDay(d.data).getDate() + '</span>' + (nota ? '<span class="ld-tiny">' + nota + '</span>' : '') + '</div>' + ldMeteo(d.meteo) +
+        '<div class="ldp-k">' + ldNum(d.kwh) + ' <small>kWh</small></div><div class="ldp-tk" style="--ldp-tc:' + (colv[d.colore] || 'var(--ld-t2)') + '">' + tk +
+        '</div><span class="ld-tiny">' + (cop == null ? '—' : 'copre il ' + cop + '%') + '</span>' +
         lav + '</div>';
     }).join('');
     // Quanto fidarsi dei kWh previsti: errore medio degli ultimi giorni e verso dello scarto.
@@ -13456,7 +13504,7 @@ const LD_PAGINA = {
 
   gemini() {
     const s = this._st(this.config.ai);
-    const txt = s && s.state === 'ok' && s.attributes.testo ? '<p>' + mgddEsc(s.attributes.testo) + '</p>'
+    const txt = s && s.state === 'ok' && s.attributes.testo ? '<p>' + ldWords(s.attributes.testo) + '</p>'
       : s && s.state === 'errore' ? '<p class="ld-sub">Gemini non ha risposto all\'ultimo aggiornamento del piano.</p>'
         : '<p class="ld-sub">Il consiglio di Gemini comparirà al prossimo aggiornamento del piano.</p>';
     return '<ha-card class="ld-c ld-ai ldp-ai">' + ldIco('creation') + txt + '</ha-card>';
@@ -13499,15 +13547,24 @@ const LD_PAGINA = {
     const pct = soc == null ? null : Math.max(0, Math.min(100, Math.round(soc)));
     const maxOggi = sg && pct != null && sg.max >= pct + 5 ? sg.max : null; // sotto 5 punti il tratteggio non si vedrebbe
     const parola = pct == null ? 'Non disponibile' : pct < 5 ? 'Vuota' : pct < 30 ? 'Bassa' : pct < 70 ? 'A metà' : pct < 95 ? 'Carica' : 'Piena';
-    const mk = maxOggi == null ? '' : '<div class="ldp-pila-mk' + (maxOggi > 65 ? ' ldp-mk-r' : maxOggi < 35 ? ' ldp-mk-l' : '') + '" style="left:' + maxOggi + '%"><span>max oggi ' + maxOggi + '%' +
-      (sg.ora != null ? ' · ' + mgddPad2(sg.ora) + ':00' : '') + '</span></div>';
-    if (casa != null) fatti += fact('La casa sta usando', String(casa.toFixed(2)).replace('.', ',') + ' kW');
+    if (casa != null) fatti += fact('<i class="ldp-live"></i>La casa sta usando', '<span data-tw>' + String(casa.toFixed(2)).replace('.', ',') + '</span> kW');
+    // Pila verticale col liquido che ondeggia (v1.113): carica di adesso piena,
+    // fin dove arriva oggi a tratteggio con la linea del massimo.
+    const id = this._ldId || (this._ldId = 'ld' + Math.random().toString(36).slice(2, 7));
+    const yL = (p) => (94 - (82 * p) / 100).toFixed(1);
+    let onda = 'M-58 2';
+    for (let k = 0; k < 12; k++) onda += ' q7.25 ' + (k % 2 ? 3 : -3) + ' 14.5 0';
+    onda += ' V100 H-58Z';
+    const cella = '<svg class="ldp-cell ldp-l' + tono + '" viewBox="0 0 58 100" aria-hidden="true"><defs><clipPath id="' + id + '-c"><rect x="6" y="12" width="46" height="82" rx="7"/></clipPath>' +
+      '<pattern id="' + id + '-h" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="6" style="fill:var(--ld-g)" fill-opacity=".35"/></pattern></defs>' +
+      '<rect x="20" y="2" width="18" height="7" rx="3" style="fill:var(--ld-div)"/><rect x="3" y="9" width="52" height="88" rx="10" fill="none" style="stroke:var(--ld-t2)" stroke-opacity=".55" stroke-width="2.5"/>' +
+      '<g clip-path="url(#' + id + '-c)">' + (maxOggi == null ? '' : '<rect x="6" y="' + yL(maxOggi) + '" width="46" height="82" fill="url(#' + id + '-h)"/>') +
+      '<g transform="translate(0 ' + yL(pct == null ? 0 : Math.max(3, pct)) + ')"><g class="ldp-lq"><path class="ldp-wave" d="' + onda + '"/></g></g></g>' +
+      (maxOggi == null ? '' : '<line x1="6" x2="52" y1="' + yL(maxOggi) + '" y2="' + yL(maxOggi) + '" style="stroke:var(--ld-g)" stroke-width="1.5" stroke-dasharray="3 2"/>') + '</svg>';
     const sinistra = '<div class="ldp-now"><div class="ld-hd" style="margin:0"><span class="ld-lbl">Batteria adesso</span>' + pill + '</div>' +
-      '<div class="ldp-lv ldp-l' + tono + '"><b>' + (pct == null ? '—' : pct + '%') + '</b><span class="ldp-parola">' + parola + '</span></div>' +
+      '<div class="ldp-nowr">' + cella + '<div><div class="ldp-lv ldp-l' + tono + '"><b>' + (pct == null ? '—' : pct + '%') + '</b><span class="ldp-parola">' + parola + '</span></div>' +
       (pct == null ? '' : '<div class="ld-tiny ldp-lv-k">' + ldNum((pct / 100) * cap) + ' di ' + ldNum(cap) + ' kWh</div>') +
-      '<div class="ldp-pila ldp-l' + tono + (maxOggi == null ? '' : ' ldp-pila-con') + '"><div class="ldp-pila-in">' +
-      (maxOggi == null ? '' : '<div class="ldp-pila-max" style="width:' + maxOggi + '%"></div>') +
-      '<div class="ldp-pila-f" style="width:' + (pct || 0) + '%"></div>' + mk + '</div></div>' +
+      (maxOggi == null ? '' : '<div class="ldp-maxo">max oggi ' + maxOggi + '%' + (sg.ora != null ? ' · ' + mgddPad2(sg.ora) + ':00' : '') + '</div>') + '</div></div>' +
       '<div class="ldp-facts">' + fatti + '</div></div>';
 
     let destra;
@@ -13538,12 +13595,17 @@ const LD_PAGINA = {
       }
       for (let i = 0; i < N; i++) {
         const e = Number(enelOre[i]) || 0;
-        if (e > 0.005) svg += '<rect x="' + (i + 0.2) + '" y="' + (Z + 2) + '" width=".6" height="' + ((e / enMax) * (98 - Z - 2)).toFixed(2) + '" fill="var(--ld-r)" fill-opacity=".8"/>';
+        if (e > 0.005) svg += '<rect class="ldp-cv-en" x="' + (i + 0.2) + '" y="' + (Z + 2) + '" width=".6" height="' + ((e / enMax) * (98 - Z - 2)).toFixed(2) + '" fill="var(--ld-r)" fill-opacity=".8"/>';
       }
-      const pts = [];
-      for (let i = 0; i < N; i++) pts.push((i + 0.5) + ',' + yS(sv(i)).toFixed(2));
-      svg += '<polygon points="0.5,' + Z + ' ' + pts.join(' ') + ' ' + (N - 0.5) + ',' + Z + '" fill="var(--ld-g)" fill-opacity=".25"/>' +
-        '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--ld-g)" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' +
+      // curva monotona (non sfora sotto lo zero) e area con gradiente, come i grafici bklit
+      const P = [];
+      for (let i = 0; i < N; i++) P.push([i + 0.5, yS(sv(i))]);
+      const dC = mgddMono(P);
+      const gid = (this._ldId || (this._ldId = 'ld' + Math.random().toString(36).slice(2, 7))) + '-g';
+      svg += '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--ld-g)" stop-opacity=".5"/>' +
+        '<stop offset="1" style="stop-color:var(--ld-g)" stop-opacity=".04"/></linearGradient></defs>' +
+        '<path d="' + dC + ' L' + (N - 0.5) + ',' + Z + ' L0.5,' + Z + 'Z" fill="url(#' + gid + ')"/>' +
+        '<path d="' + dC + '" fill="none" stroke="var(--ld-g)" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' +
         '<line x1="0" x2="' + N + '" y1="' + Z + '" y2="' + Z + '" stroke="currentColor" stroke-opacity=".2" vector-effect="non-scaling-stroke"/>';
       // giorni: colonne proporzionali alle ore che la simulazione copre
       const gg = [];
@@ -13563,6 +13625,7 @@ const LD_PAGINA = {
       const dot = (i, cls) => '<i class="ldp-cv-dot ' + cls + '" style="left:' + px(i).toFixed(2) + '%;top:' + yS(sv(i)).toFixed(2) + '%"></i>';
       const tag = (i, y, cls, txt) => { const x = px(i); return '<span class="ldp-cv-tag ' + cls + (x > 80 ? ' ldp-cv-r' : x < 12 ? ' ldp-cv-l' : '') + '" style="left:' + x.toFixed(2) + '%;top:' + y.toFixed(2) + '%">' + txt + '</span>'; };
       const iN = Math.min(N - 1, Math.floor(iNow));
+      this._ldCv = { N, yMax, Z, t0 }; // per il mirino (ldCvMove)
       let over = dot(iN, 'ldp-cv-now');
       if (sv(iP) > sv(iN)) {
         const tp = new Date(t0 + iP * 3600e3);
@@ -13585,7 +13648,8 @@ const LD_PAGINA = {
         '<span><i class="ldp-s-sole"></i>ore di sole</span><span><i class="ldp-s-enel"></i>kWh da Enel</span></div></div>' +
         '<div class="ldp-cv-row ldp-cv-d">' + testa + '</div>' +
         '<div class="ldp-cv"><svg viewBox="0 0 ' + N + ' 100" preserveAspectRatio="none">' + svg + '</svg>' +
-        (px(iP) < 14 && sv(iP) > sv(iN) ? '' : '<span class="ldp-cv-y" style="top:' + yS(yMax) + '%">' + yMax + '%</span>') + over + '</div>' +
+        (px(iP) < 14 && sv(iP) > sv(iN) ? '' : '<span class="ldp-cv-y" style="top:' + yS(yMax) + '%">' + yMax + '%</span>') + over +
+        '<i class="ldp-cv-vl"></i><i class="ldp-cv-hd"></i><div class="ldp-cv-tip"></div></div>' +
         '<div class="ldp-cv-row ldp-cv-e">' + piede + '</div>';
     }
     return '<ha-card class="ld-c ldp-bat">' + sinistra + '<div class="ldp-next">' + destra + '</div></ha-card>';
@@ -13605,10 +13669,25 @@ const LD_PAGINA = {
       T += o.target;
       F += f;
       const fatto = f >= o.target;
-      return '<div class="ldp-row' + (fatto ? ' ldp-fatto' : '') + '">' + ldIco(fatto ? 'check-circle' : LD_CAT_MDI[k]) + '<span><b>' + LD_CAT[k].n + '</b>' + (o.target > 1 ? ' × ' + o.target : '') +
-        '</span><span class="ld-tiny">' + (fatto ? 'fatto' : (f > 0 ? f + ' di ' + o.target + ' · ' : '') + ldNum(cons[k]) + ' kWh' + (o.target > 1 ? " l'uno" : '')) + '</span></div>';
+      let stato = '';
+      if (o.target > 1) { stato = '<span class="ldp-pips">'; for (let j = 0; j < o.target; j++) stato += j < f ? '<i class="on"></i>' : '<i></i>'; stato += '</span>' + f + ' di ' + o.target; }
+      else stato = '<span class="ldp-chk' + (fatto ? ' on' : '') + '">' + (fatto ? ldIco('check') : '') + '</span>';
+      return '<div class="ldp-row ldp-goal-r' + (fatto ? ' ldp-fatto' : '') + '">' + ldIco(LD_CAT_MDI[k]) + '<span><b>' + LD_CAT[k].n + '</b>' + (o.target > 1 ? ' × ' + o.target : '') +
+        ' <small class="ld-tiny">' + ldNum(cons[k]) + ' kWh' + (o.target > 1 ? " l'uno" : '') + '</small></span><span class="ld-tiny ldp-st">' + stato + '</span></div>';
     }).join('');
-    return this._card('', label, this._pill(T && F >= T ? 'g' : 'n', F + ' di ' + T), rows);
+    // anello a segmenti, uno per lavaggio (stile "activity" di kokonutui)
+    const R = 50;
+    const C = 2 * Math.PI * R;
+    const seg = T > 1 ? C / T - 17 : C; // 17 = 6 di spazio visibile + gli 11 dei tappi tondi
+    let ring = '';
+    for (let j = 0; j < T; j++) {
+      ring += '<circle class="' + (j < F ? 'ldp-ring-on' : '') + '" cx="60" cy="60" r="' + R + '" fill="none" stroke-width="11" stroke-linecap="round" stroke-dasharray="' +
+        seg.toFixed(2) + ' ' + (C - seg).toFixed(2) + '" stroke-dashoffset="' + (-(j * C) / T).toFixed(2) + '"/>';
+    }
+    const resta = T - F;
+    return this._card('', label, resta > 0 ? '<span class="ld-tiny">' + (resta === 1 ? '1 lavaggio ancora da fare' : resta + ' lavaggi ancora da fare') + '</span>' : this._pill('g', 'tutto fatto'),
+      '<div class="ldp-obj"><div class="ldp-ring"><svg viewBox="0 0 120 120">' + ring + '</svg><div><b>' + F + '<small> di ' + T + '</small></b><span class="ld-tiny">fatti</span></div></div>' +
+      '<div class="ldp-ol">' + rows + '</div></div>');
   },
 
   ultimi() {
@@ -13617,14 +13696,18 @@ const LD_PAGINA = {
     const l = (this._attr(this.config.lavaggi, 'lavaggi') || []).filter((w) => (Number(w.kwh_lav) || 0) + (Number(w.kwh_asc) || 0) >= 0.3)
       .sort((a, b) => (a.fine < b.fine ? 1 : -1)).slice(0, 4);
     if (!l.length) return this._vuoto(label, 'Nessun lavaggio registrato: compariranno qui appena gli Shelly vedono finire un ciclo.');
+    // barre lunghe in proporzione ai kWh, divise per fonte; al passaggio il dettaglio
+    const tot = (w) => (Number(w.kwh_lav) || 0) + (Number(w.kwh_asc) || 0);
+    const mx = Math.max(0.3, ...l.map(tot));
     const rows = l.map((w) => {
       const d = new Date(w.fine);
-      const c = LD_CAT[w.cat] || LD_CAT.altro;
       const nome = ldNomeLavaggio(w);
-      const pc = (v) => Math.max(0, Math.round((Number(v) || 0) * 100));
-      return '<div class="ldp-row ldp-dt"><span class="ld-tiny">' + LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + d.getDate() + '</span><span><b>' + mgddEsc(nome) + '</b> · ' +
-        ldNum((Number(w.kwh_lav) || 0) + (Number(w.kwh_asc) || 0)) + ' kWh</span><div class="ld-mix ldp-mix"><i style="width:' + pc(w.sole) + '%;background:var(--ld-a)"></i><i style="width:' +
-        pc(w.batteria) + '%;background:var(--ld-g)"></i><i style="width:' + pc(w.enel) + '%;background:var(--ld-r)"></i></div></div>';
+      const t = tot(w);
+      const q = (v) => Math.max(0, Number(v) || 0);
+      return '<div class="ldp-row ldp-dt"><span class="ld-tiny">' + LD_GIORNI[d.getDay()].slice(0, 3) + ' ' + d.getDate() + '</span><span class="ldp-dt-n"><b>' + mgddEsc(nome) + '</b> · ' +
+        ldNum(t) + ' kWh</span><div class="ldp-sbw"><div class="ldp-sb" style="width:' + Math.round((t / mx) * 100) + '%"><i style="flex:' + q(w.sole) + ';background:var(--ld-a)"></i><i style="flex:' +
+        q(w.batteria) + ';background:var(--ld-g)"></i><i style="flex:' + q(w.enel) + ';background:var(--ld-r)"></i></div></div>' +
+        '<div class="ldp-tt"><span class="ld-ta">sole ' + ldNum(q(w.sole) * t) + '</span><span class="ld-tg">batteria ' + ldNum(q(w.batteria) * t) + '</span><span class="ld-tr">Enel ' + ldNum(q(w.enel) * t) + ' kWh</span></div></div>';
     }).join('');
     return this._card('', label, '<div class="ldp-leg"><span><i class="ldp-s-sole"></i>sole</span><span><i class="ldp-s-bat"></i>batteria</span><span><i class="ldp-s-enel"></i>Enel</span></div>', rows);
   },
@@ -13634,7 +13717,8 @@ const LD_PAGINA = {
   // restano congelati, quindi conta solo connectivitystate.
   programma() {
     const path = this.config.programma;
-    if (!path) return '';
+    const h1 = '<div class="ldp-h1">' + ldSplit('Lavatrici') + '</div>';
+    if (!path) return '<div class="ldp-head"><div>' + h1 + '</div></div>';
     const now = this._now();
     const m = lpStato(this._hass);
     const st = this._st(LP_E.impostazioni);
@@ -13655,8 +13739,11 @@ const LD_PAGINA = {
     } else {
       sub = s ? 'Ultime scelte: ' + lpRiassunto(s) : 'Scegli programma, opzioni e orario';
     }
-    return '<div class="ld-c ldp-prog' + cls + '" role="link" tabindex="0" data-ld-go="' + mgddEsc(path) + '"><span class="ldp-prog-ic">' + ldIco('calendar-clock') + '</span>' +
-      '<div class="ldp-prog-t"><b>Programma lavaggio</b><small>' + mgddEsc(sub) + '</small></div>' + ldIco('chevron-right') + '</div>';
+    // Titolo con lo stato della lavatrice sotto, pulsante a destra col testo che
+    // scorre al passaggio (slide text button di kokonutui).
+    return '<div class="ldp-head' + cls + '"><div class="ldp-head-t">' + h1 + '<div class="ldp-head-s">' + mgddEsc(sub) + '</div></div>' +
+      '<div class="ldp-prog" role="link" tabindex="0" data-ld-go="' + mgddEsc(path) + '"><span class="ldp-prog-ic">' + ldIco('calendar-clock') + '</span>' +
+      '<span class="ldp-prog-lb"><span>Programma lavaggio</span><span>Apri la pagina →</span></span></div></div>';
   },
 
   piede() {
@@ -13668,6 +13755,90 @@ const LD_PAGINA = {
       'Piano aggiornato ' + (agg ? quando(agg) : '—') + ' · batteria ricalcolata ' + (bat ? quando(bat) : '—') + ' · meteo iLMeteo</div>';
   },
 };
+
+// Ingresso della pagina (v1.113, ritmo da anime.js, Web Animations): titolo e
+// verdetto lettera per lettera, card a cascata, tacche dei giorni in fila, numeri
+// che contano, testo Gemini parola per parola, liquido della pila che sale, curva
+// che si scopre da sinistra con le barre Enel che crescono, anello e barre in fondo.
+// Finisce entro ~1,8 s (Puppet scatta dopo 2,5 s).
+LD_PAGINA._intro = function (tl) {
+  const q = (s) => this.querySelectorAll(s);
+  const up = [{ opacity: 0, transform: 'translateY(12px)' }, { opacity: 1, transform: 'none' }];
+  const molla = 'cubic-bezier(.34,1.56,.64,1)';
+  const io = 'cubic-bezier(.65,0,.35,1)';
+  const st = (n, max, tot) => Math.min(max, tot / Math.max(1, n));
+  const h1 = q('.ldp-h1 .ldp-ch');
+  tl.add(h1, [{ opacity: 0, transform: 'translateY(60%) rotate(8deg)' }, { opacity: 1, transform: 'none' }], { duration: 650, stagger: 25, easing: molla }, 0);
+  const cards = q('.ldp > .ld-c, .ldp-top > .ld-c, .ldp-bot > .ld-c, .ldp-prog');
+  tl.add(cards, up, { duration: 550, stagger: 60 }, 0);
+  const vt = q('.ldp-hero h2 .ldp-ch');
+  tl.add(vt, [{ opacity: 0, filter: 'blur(6px)', transform: 'translateY(40%)' }, { opacity: 1, filter: 'blur(0)', transform: 'none' }], { duration: 550, stagger: st(vt.length, 18, 500) }, 120)
+    .add(q('.ldp-hero .ld-acts .ld-pill'), [{ opacity: 0, transform: 'scale(.6)' }, { opacity: 1, transform: 'none' }], { duration: 450, stagger: 60, easing: molla }, 450)
+    .add(q('.ldp-cost > div'), up, { duration: 450, stagger: 50 }, 400)
+    .add(q('.ldp-cost-b i'), [{ transform: 'scaleX(0)' }, { transform: 'none' }], { duration: 750, stagger: 50 }, 500)
+    .count(q('.ldp-cost b'), { duration: 900 }, 450)
+    .add(q('.ldp-day'), up, { duration: 500, stagger: 50 }, 150);
+  q('.ldp-day').forEach((d, k) => {
+    tl.add(d.querySelectorAll('.ldp-tk i'), [{ transform: 'scaleY(0)' }, { transform: 'none' }], { duration: 360, stagger: 16, easing: molla }, 320 + k * 50)
+      .add(d.querySelector('.ldp-wx, ha-icon'), [{ opacity: 0, transform: 'scale(.4) rotate(-30deg)' }, { opacity: 1, transform: 'none' }], { duration: 650, easing: molla }, 280 + k * 50)
+      .add(d.querySelector('.ldp-verd'), [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 400 }, 800 + k * 50);
+  });
+  tl.count(q('.ldp-k'), { duration: 900 }, 300);
+  const wd = q('.ldp-ai .ldp-wd');
+  tl.add(q('.ldp-ai ha-icon'), [{ transform: 'scale(0) rotate(-180deg)' }, { transform: 'scale(1.25) rotate(20deg)', offset: 0.7 }, { transform: 'none' }], { duration: 800 }, 300)
+    .add(wd, [{ opacity: 0, filter: 'blur(8px)', transform: 'translateY(4px)' }, { opacity: 1, filter: 'blur(0)', transform: 'none' }], { duration: 420, stagger: st(wd.length, 20, 1000) }, 400)
+    .add(q('.ldp-lq'), [{ transform: 'translateY(90px)' }, { transform: 'none' }], { duration: 1200 }, 350)
+    .count(q('.ldp-lv b'), { duration: 1100 }, 350)
+    .add(q('.ldp-fact'), [{ opacity: 0, transform: 'translateX(-10px)' }, { opacity: 1, transform: 'none' }], { duration: 450, stagger: 60 }, 500)
+    .add(q('.ldp-cv svg'), [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)' }], { duration: 1200, easing: io }, 300);
+  const en = q('.ldp-cv-en');
+  tl.add(en, [{ transform: 'scaleY(0)' }, { transform: 'none' }], { duration: 380, stagger: st(en.length, 14, 900), easing: molla }, 400)
+    .add(q('.ldp-cv-dot, .ldp-cv-tag'), [{ opacity: 0 }, { opacity: 1 }], { duration: 400, stagger: 80 }, 1300);
+  q('.ldp-ring-on').forEach((c, i) => {
+    const C = 2 * Math.PI * 50;
+    tl.add(c, [{ strokeDasharray: '0 ' + C }, { strokeDasharray: c.getAttribute('stroke-dasharray') }], { duration: 900 }, 600 + i * 120);
+  });
+  tl.add(q('.ldp-goal-r'), [{ opacity: 0, transform: 'translateX(12px)' }, { opacity: 1, transform: 'none' }], { duration: 450, stagger: 60 }, 600)
+    .add(q('.ldp-pips i.on, .ldp-chk.on'), [{ transform: 'scale(0)' }, { transform: 'scale(1.4)', offset: 0.6 }, { transform: 'none' }], { duration: 500, stagger: 60 }, 1100)
+    .add(q('.ldp-dt'), [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 450, stagger: 60 }, 650)
+    .add(q('.ldp-sb'), [{ transform: 'scaleX(0)' }, { transform: 'none' }], { duration: 800, stagger: 70 }, 750);
+};
+
+// Mirino sulla curva della batteria (come i grafici bklit): linea verticale,
+// pallino sulla curva e riquadro con ora, carica, da dove arriva la corrente ed Enel.
+function ldCvMove(card, e) {
+  const cv = e.target && e.target.closest ? e.target.closest('.ldp-cv') : null;
+  const prev = card._ldCvEl;
+  if (prev && prev !== cv) prev.classList.remove('ldp-cv-on');
+  card._ldCvEl = cv;
+  const g = card._ldCv;
+  if (!cv || !g) return;
+  const r = cv.getBoundingClientRect();
+  if (!r.width) return;
+  const i = Math.max(0, Math.min(g.N - 1, Math.floor(((e.clientX - r.left) / r.width) * g.N)));
+  const soc = Math.max(0, Math.min(100, Number((card._bat('soc') || [])[i]) || 0));
+  const f = (card._bat('fonti') || '')[i];
+  const en = Number((card._bat('enel_ore') || [])[i]) || 0;
+  const x = ((i + 0.5) / g.N) * 100;
+  const y = g.Z - (soc / g.yMax) * (g.Z - 4);
+  const t = new Date(g.t0 + i * 3600e3);
+  const vl = cv.querySelector('.ldp-cv-vl');
+  const hd = cv.querySelector('.ldp-cv-hd');
+  const tip = cv.querySelector('.ldp-cv-tip');
+  if (!vl || !hd || !tip) return;
+  vl.style.left = x + '%';
+  hd.style.left = x + '%';
+  hd.style.top = y + '%';
+  const fonte = f === 'S' ? '<b class="ld-ta">sole</b>' : f === 'E' ? '<b class="ld-tr">Enel</b>' : '<b class="ld-tg">batteria</b>';
+  tip.innerHTML = '<b>' + LD_GIORNI[t.getDay()].slice(0, 3) + ' ' + t.getDate() + ' · ' + mgddPad2(t.getHours()) + ':00</b>' +
+    '<div><span>Batteria</span><b>' + Math.round(soc) + '%</b></div><div><span>Corrente da</span>' + fonte + '</div>' +
+    '<div><span>Da Enel</span><b' + (en > 0.005 ? ' class="ld-tr"' : '') + '>' + ldNum(en) + ' kWh</b></div>';
+  const px = (x / 100) * r.width;
+  const tw = tip.offsetWidth || 150;
+  tip.style.left = Math.max(0, Math.min(r.width - tw, px + 14 + tw > r.width ? px - tw - 14 : px + 14)) + 'px';
+  tip.style.top = Math.max(0, (y / 100) * r.height - 30) + 'px';
+  cv.classList.add('ldp-cv-on');
+}
 
 LD_BLOCKS.pagina = function () {
   const P = LD_PAGINA;
@@ -13715,15 +13886,15 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-lv b{font-size:44px;font-weight:750;letter-spacing:-1.5px;line-height:1;}' +
   '.ldq .ldp-parola{font-size:20px;font-weight:750;letter-spacing:-.3px;color:var(--ldp-ct);}' +
   '.ldq .ldp-parola{white-space:nowrap;}.ldq .ldp-lv-k{margin-top:4px;}' +
-  '.ldq .ldp-pila{position:relative;margin:12px 9px 4px 0;height:36px;border:2px solid var(--ld-t2);border-radius:9px;padding:3px;}' +
-  '.ldq .ldp-pila::after{content:"";position:absolute;right:-8px;top:9px;width:5px;height:14px;border-radius:0 3px 3px 0;background:var(--ld-t2);}' +
-  '.ldq .ldp-pila-con{margin-bottom:24px;}' +
-  '.ldq .ldp-pila-in{position:relative;height:100%;}' +
-  '.ldq .ldp-pila-f{position:absolute;left:0;top:0;bottom:0;min-width:6px;border-radius:5px;background:var(--ldp-c);}' +
-  '.ldq .ldp-pila-max{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--ld-g) 45%,transparent) 0 4px,color-mix(in srgb,var(--ld-g) 16%,transparent) 4px 8px);}' +
-  '.ldq .ldp-pila-mk{position:absolute;top:-8px;bottom:-8px;width:2px;margin-left:-1px;background:var(--ld-g);}' +
-  '.ldq .ldp-pila-mk span{position:absolute;top:100%;left:0;margin-top:4px;font-size:11px;font-weight:600;color:var(--ld-g2);white-space:nowrap;transform:translateX(-50%);}' +
-  '.ldq .ldp-pila-mk.ldp-mk-r span{transform:translateX(-100%);}.ldq .ldp-pila-mk.ldp-mk-l span{transform:translateX(-14px);}' +
+  // pila verticale col liquido che ondeggia
+  '.ldq .ldp-nowr{display:flex;align-items:center;gap:18px;margin-top:12px;}' +
+  '.ldq .ldp-nowr .ldp-lv{margin:0;}' +
+  '.ldq .ldp-cell{width:58px;height:100px;flex:none;overflow:visible;}' +
+  '.ldq .ldp-wave{fill:var(--ldp-c);animation:ldp-wave 2.4s linear infinite;}' +
+  '@keyframes ldp-wave{to{transform:translateX(29px);}}' +
+  '.ldq .ldp-maxo{font-size:11.5px;font-weight:650;color:var(--ld-g2);margin-top:6px;}' +
+  '.ldq .ldp-live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ld-g);color:var(--ld-g);margin-right:7px;animation:ldp-ping 2s infinite;}' +
+  '@keyframes ldp-ping{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 55%,transparent);}70%,100%{box-shadow:0 0 0 7px transparent;}}' +
   '.ldq .ldp-facts{margin-top:auto;padding-top:14px;}' +
   '.ldq .ldp-fact{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:9px 0;border-top:1px solid var(--ld-div);font-size:13px;color:var(--ld-t2);}' +
   '.ldq .ldp-fact b{font-size:15px;color:var(--ld-t1);white-space:nowrap;}.ldq .ldp-fact b.ld-tr{color:var(--ld-r2);}.ldq .ldp-fact b.ld-tg{color:var(--ld-g2);}' +
@@ -13750,19 +13921,96 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-dt{grid-template-columns:52px 1fr auto;}' +
   '.ldq .ldp-mix{width:90px;height:6px;}' +
   '.ldq .ldp-piede{padding:0 4px;}' +
-  // pulsante Programma lavaggio
-  '.ldq .ldp-prog{display:flex;align-items:center;gap:12px;border:1.5px solid var(--ld-g);cursor:pointer;padding:12px 15px;}' +
-  '.ldq .ldp-prog-ic{width:40px;height:40px;border-radius:12px;background:var(--ld-gbg);color:var(--ld-g2);display:grid;place-items:center;flex:none;}' +
-  '.ldq .ldp-prog-on .ldp-prog-ic{background:color-mix(in srgb,var(--ld-p) 14%,transparent);color:var(--ld-p);}' +
-  '.ldq .ldp-prog-t{flex:1;min-width:0;}.ldq .ldp-prog-t b{display:block;font-size:15px;}' +
-  '.ldq .ldp-prog-t small{display:block;font-size:12.5px;color:var(--ld-t2);margin-top:2px;}' +
-  '.ldq .ldp-prog>ha-icon{color:var(--ld-t2);}' +
+  // testata e pulsante Programma lavaggio (testo che scorre al passaggio)
+  '.ldq .ldp-head{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;padding:2px 4px;}' +
+  '.ldq .ldp-head-t{min-width:0;}' +
+  '.ldq .ldp-h1{font-size:30px;font-weight:800;letter-spacing:-.025em;line-height:1.1;}' +
+  '.ldq .ldp-head-s{font-size:13.5px;color:var(--ld-t2);margin-top:4px;}' +
+  '.ldq .ldp-prog-on .ldp-head-s{color:var(--ld-p);font-weight:600;}' +
+  '.ldq .ldp-prog{display:inline-flex;align-items:center;gap:10px;height:46px;padding:0 18px 0 8px;border-radius:13px;cursor:pointer;font-weight:650;font-size:14px;' +
+  'border:1px solid color-mix(in srgb,var(--ld-p) 45%,var(--ld-div));background:color-mix(in srgb,var(--ld-p) 11%,var(--ld-bg));color:var(--ld-t1);overflow:hidden;}' +
+  '.ldq .ldp-prog-ic{width:30px;height:30px;border-radius:9px;background:var(--ld-p);color:#fff;display:grid;place-items:center;flex:none;}' +
+  '.ldq .ldp-prog-ic ha-icon{--mdc-icon-size:18px;width:18px;height:18px;}' +
+  '.ldq .ldp-prog-lb{display:block;height:20px;overflow:hidden;}' +
+  '.ldq .ldp-prog-lb span{display:block;line-height:20px;transition:transform .45s cubic-bezier(.16,1,.3,1);}' +
+  '.ldq .ldp-prog-lb span+span{color:var(--ld-p);}' +
+  '.ldq .ldp-prog:hover .ldp-prog-lb span,.ldq .ldp-prog:focus-visible .ldp-prog-lb span{transform:translateY(-20px);}' +
   '.ldq .ldp-prog:focus-visible{outline:2px solid var(--ld-p);outline-offset:2px;}' +
+  // lettere e parole per l'ingresso
+  '.ldq .ldp-w{display:inline-block;white-space:nowrap;}.ldq .ldp-ch,.ldq .ldp-wd{display:inline-block;white-space:pre;}' +
+  // verdetto: fasci sfocati che si muovono dietro (kokonutui)
+  '.ldq .ldp-hero{position:relative;overflow:hidden;isolation:isolate;--ldp-glow:color-mix(in srgb,var(--ld-t2) 14%,transparent);}' +
+  '.ldq .ld-h-rosso{--ldp-glow:color-mix(in srgb,var(--ld-r) 22%,transparent);}.ldq .ld-h-ambra{--ldp-glow:color-mix(in srgb,var(--ld-a) 22%,transparent);}.ldq .ld-h-verde{--ldp-glow:color-mix(in srgb,var(--ld-g) 22%,transparent);}' +
+  '.ldq .ldp-beams{position:absolute;inset:0;z-index:-1;pointer-events:none;overflow:hidden;}' +
+  '.ldq .ldp-beams i{position:absolute;width:70%;height:140%;top:-20%;border-radius:50%;background:radial-gradient(closest-side,var(--ldp-glow),transparent);filter:blur(10px);animation:ldp-drift 14s ease-in-out infinite alternate;}' +
+  '.ldq .ldp-beams i+i{left:40%;animation-duration:19s;animation-delay:-6s;opacity:.7;}' +
+  '@keyframes ldp-drift{from{transform:translate(-25%,0) rotate(0);}to{transform:translate(20%,8%) rotate(25deg);}}' +
+  '.ldq .ldp-hero .ld-pill ha-icon{animation:ldp-beat 2.4s ease-in-out infinite;}' +
+  '@keyframes ldp-beat{50%{transform:scale(1.15);}}' +
+  '.ldq .ldp-cost-b{display:block;height:4px;border-radius:9px;background:var(--ld-neutral);overflow:hidden;margin:4px 0 5px;}' +
+  '.ldq .ldp-cost-b i{display:block;height:100%;border-radius:9px;background:var(--ld-r);transform-origin:left;}' +
+  // giorni: tacche, icone meteo animate, bordo che gira sul migliore
+  '.ldq .ldp-day{transition:transform .35s cubic-bezier(.34,1.56,.64,1),box-shadow .35s;}' +
+  '.ldq .ldp-day:hover{transform:translateY(-3px);box-shadow:0 10px 24px -14px rgba(0,0,0,.5);}' +
+  '.ldq .ldp-tk{display:flex;gap:2px;height:14px;}' +
+  '.ldq .ldp-tk i{flex:1;border-radius:2px;background:var(--ld-neutral);transform-origin:bottom;}' +
+  '.ldq .ld-dark .ldp-tk i,.ldq.ld-dark .ldp-tk i{background:rgba(255,255,255,.1);}' +
+  '.ldq .ldp-tk i.on,.ldq.ld-dark .ldp-tk i.on{background:var(--ldp-tc);}' +
+  '.ldq .ldp-tk .ldp-tk-gap,.ldq.ld-dark .ldp-tk .ldp-tk-gap{flex:0 0 2px;background:none;}' +
+  '.ldq .ldp-tk .ldp-tk-ov,.ldq.ld-dark .ldp-tk .ldp-tk-ov{flex:0 0 5px;background:var(--ld-g);}' +
+  '.ldq .ldp-wx{width:30px;height:30px;color:var(--ld-t2);overflow:visible;}' +
+  '.ldq .ldp-wx-sun{color:var(--ld-a);}' +
+  '.ldq .ldp-wx-rays{animation:ldp-rot 16s linear infinite;}' +
+  '.ldq .ldp-wx-cl{animation:ldp-float 5s ease-in-out infinite alternate;}' +
+  '.ldq .ldp-wx-dr{color:var(--ld-p);animation:ldp-rain 1.3s linear infinite;}' +
+  '.ldq .ldp-wx-dr:nth-of-type(2){animation-delay:-.45s;}.ldq .ldp-wx-dr:nth-of-type(3){animation-delay:-.9s;}' +
+  '@keyframes ldp-rot{to{transform:rotate(360deg);}}@keyframes ldp-float{from{transform:translateX(-1px);}to{transform:translateX(1.5px);}}' +
+  '@keyframes ldp-rain{0%{transform:translateY(-2px);opacity:0;}30%{opacity:1;}100%{transform:translateY(5px);opacity:0;}}' +
+  '@property --ldp-a{syntax:"<angle>";inherits:false;initial-value:0deg;}' +
+  '.ldq .ldp-best{outline:none;border:2px solid transparent;background:linear-gradient(var(--ld-neutral),var(--ld-neutral)) padding-box,linear-gradient(var(--ld-bg),var(--ld-bg)) padding-box,' +
+  'conic-gradient(from var(--ldp-a),color-mix(in srgb,var(--ld-g) 30%,transparent) 0deg,var(--ld-g) 60deg,color-mix(in srgb,var(--ld-g) 30%,transparent) 120deg,color-mix(in srgb,var(--ld-g) 30%,transparent) 360deg) border-box;' +
+  'animation:ldp-spin 4.5s linear infinite;box-shadow:0 0 26px -12px var(--ld-g);}' +
+  '.ldq .ldp-best .ldp-d .ld-tiny{color:var(--ld-g2);font-weight:650;}' +
+  '@keyframes ldp-spin{to{--ldp-a:360deg;}}' +
+  // mirino sulla curva
+  '.ldq .ldp-cv{touch-action:pan-y;cursor:crosshair;}' +
+  '.ldq .ldp-cv-vl{position:absolute;top:0;bottom:0;width:0;border-left:1px dashed var(--ld-t2);opacity:0;pointer-events:none;}' +
+  '.ldq .ldp-cv-hd{position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:var(--ld-g);box-shadow:0 0 0 2px var(--ld-bg);opacity:0;pointer-events:none;}' +
+  '.ldq .ldp-cv-tip{position:absolute;min-width:150px;background:var(--ld-bg);border:1px solid var(--ld-div);border-radius:10px;padding:8px 10px;font-size:12px;box-shadow:0 10px 30px -10px rgba(0,0,0,.45);opacity:0;pointer-events:none;transition:opacity .15s;z-index:2;}' +
+  '.ldq .ldp-cv-tip>b{display:block;margin-bottom:4px;}' +
+  '.ldq .ldp-cv-tip div{display:flex;justify-content:space-between;gap:14px;color:var(--ld-t2);}.ldq .ldp-cv-tip div b{color:var(--ld-t1);}' +
+  '.ldq .ldp-cv-tip div b.ld-tr{color:var(--ld-r2);}.ldq .ldp-cv-tip div b.ld-tg{color:var(--ld-g2);}.ldq .ldp-cv-tip div b.ld-ta{color:var(--ld-a2);}' +
+  '.ldq .ldp-cv-on .ldp-cv-vl,.ldq .ldp-cv-on .ldp-cv-hd,.ldq .ldp-cv-on .ldp-cv-tip{opacity:1;}' +
+  '.ldq .ld-ta{color:var(--ld-a2);}' +
+  // obiettivo: anello a segmenti
+  '.ldq .ldp-obj{display:grid;grid-template-columns:124px minmax(0,1fr);gap:20px;align-items:center;}' +
+  '.ldq .ldp-ring{position:relative;width:124px;height:124px;}' +
+  '.ldq .ldp-ring svg{width:100%;height:100%;transform:rotate(-90deg);}' +
+  '.ldq .ldp-ring circle{stroke:var(--ld-neutral);}.ldq.ld-dark .ldp-ring circle{stroke:rgba(255,255,255,.1);}' +
+  '.ldq .ldp-ring circle.ldp-ring-on,.ldq.ld-dark .ldp-ring circle.ldp-ring-on{stroke:var(--ld-g);filter:drop-shadow(0 0 5px color-mix(in srgb,var(--ld-g) 45%,transparent));}' +
+  '.ldq .ldp-ring>div{position:absolute;inset:0;display:grid;place-content:center;text-align:center;}' +
+  '.ldq .ldp-ring b{font-size:30px;font-weight:800;letter-spacing:-.03em;line-height:1;}.ldq .ldp-ring b small{font-size:15px;color:var(--ld-t2);font-weight:600;letter-spacing:0;}' +
+  '.ldq .ldp-goal-r small{margin-left:4px;}' +
+  '.ldq .ldp-st{display:inline-flex;align-items:center;gap:8px;}' +
+  '.ldq .ldp-pips{display:inline-flex;gap:3px;}.ldq .ldp-pips i{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--ld-g);}.ldq .ldp-pips i.on{background:var(--ld-g);}' +
+  '.ldq .ldp-chk{width:18px;height:18px;border-radius:6px;border:1.5px solid var(--ld-div);display:grid;place-items:center;}' +
+  '.ldq .ldp-chk.on{background:var(--ld-g);border-color:var(--ld-g);color:#fff;}.ldq .ldp .ldp-chk ha-icon{--mdc-icon-size:14px;width:14px;height:14px;color:#fff;}' +
+  // ultimi: barre impilate con dettaglio al passaggio
+  '.ldq .ldp-dt{grid-template-columns:52px minmax(0,1fr) minmax(90px,1.1fr);position:relative;}' +
+  '.ldq .ldp-dt-n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.ldq .ldp-sb{display:flex;height:10px;gap:2px;border-radius:9px;overflow:hidden;transform-origin:left;min-width:12px;}' +
+  '.ldq .ldp-sb i{display:block;height:100%;}' +
+  '.ldq .ldp-tt{position:absolute;right:0;bottom:calc(100% - 6px);display:flex;gap:12px;background:var(--ld-bg);border:1px solid var(--ld-div);border-radius:10px;padding:6px 10px;font-size:12px;font-weight:600;white-space:nowrap;box-shadow:0 10px 30px -10px rgba(0,0,0,.45);opacity:0;transform:translateY(4px);transition:.18s;pointer-events:none;z-index:2;}' +
+  '.ldq .ldp-dt:hover .ldp-tt{opacity:1;transform:none;}' +
+  '.ldq .ldp-tt .ld-tg{color:var(--ld-g2);}.ldq .ldp-tt .ld-tr{color:var(--ld-r2);}' +
+  '@media (prefers-reduced-motion: reduce){.ldq .ldp *,.ldq .ldp-best{animation:none!important;transition:none!important;}}' +
   // schermi stretti
   '@container (max-width:1100px){.ldq .ldp-top{grid-template-columns:minmax(0,1fr);}}' +
   '@container (max-width:900px){.ldq .ldp-bot{grid-template-columns:minmax(0,1fr);}.ldq .ldp-bat{grid-template-columns:minmax(0,1fr);}' +
   '.ldq .ldp-now{border-right:none;border-bottom:1px solid var(--ld-div);}.ldq .ldp-facts{margin-top:0;}}' +
   '@container (max-width:640px){.ldq .ldp{padding:8px;}.ldq .ldp-week{grid-template-columns:repeat(3,minmax(0,1fr));}.ldq .ldp-hero h2{font-size:24px;}' +
+  '.ldq .ldp-cost{grid-template-columns:repeat(2,minmax(0,1fr));}.ldq .ldp-obj{grid-template-columns:1fr;justify-items:center;}.ldq .ldp-ol{width:100%;}.ldq .ldp-h1{font-size:26px;}' +
+  '.ldq .ldp-dt{grid-template-columns:44px minmax(0,1fr);}.ldq .ldp-sbw{grid-column:1/-1;}.ldq .ldp-week .ldp-day{padding:10px;}' +
   '.ldq .ldp-cv-row>div{padding:0 2px;}.ldq .ldp-cv-s .ldp-cv-x{display:none;}.ldq .ldp-cv-d b,.ldq .ldp-cv-e b{font-size:11.5px;}.ldq .ldp-cv-e small{display:none;}.ldq .ldp-cv{flex-basis:140px;min-height:140px;}.ldq .ldp-leg{display:none;}}' +
   '</style>');
 
