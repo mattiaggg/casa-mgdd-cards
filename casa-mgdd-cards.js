@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.112.0
+ * Version: 1.112.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -14073,7 +14073,9 @@ function monGauge(o) {
   const P = (r, a) => (100 + r * Math.cos(rad(a))).toFixed(2) + ' ' + (100 + r * Math.sin(rad(a))).toFixed(2);
   const bottom = full ? 100 + R : Math.max(100 + R * Math.sin(rad(st)), 100 + R * Math.sin(rad(en)), o.needle ? 114 : 100);
   const marks = (o.marks || []).filter((m) => m != null && isFinite(m));
-  const pad = o.ruler || marks.length ? 14 : 6;
+  // i gauge grandi hanno sempre il margine per ▲ e scala, cosi' in una fila di
+  // card stanno tutti alla stessa altezza anche senza segni (v1.112.1)
+  const pad = o.ruler || marks.length || !o.size ? 14 : 6;
   const vbY = 100 - R - pad;
   const vbH = bottom - (100 - R) + pad * 2;
   const col = o.col || (() => 'var(--ac)');
@@ -14225,7 +14227,9 @@ class MonitorCard extends HTMLElement {
     if (!this._ro && typeof ResizeObserver !== 'undefined') {
       this._ro = new ResizeObserver((entries) => {
         const w = entries[0] && entries[0].contentRect ? entries[0].contentRect.width : 0;
-        const narrow = w > 0 && w < (this.config ? this.config.phone_width : 600);
+        // larghezza 0 = card ancora vuota (primo disegno trattenuto): non dice niente
+        if (!w) return;
+        const narrow = w < (this.config ? this.config.phone_width : 600);
         if (narrow !== this._narrow) {
           this._narrow = narrow;
           this._schedule();
@@ -14791,6 +14795,7 @@ class MonitorCard extends HTMLElement {
       if (r2) out.clients = r2[n.clients] || null;
     }
     this._stats = out;
+    this._statsOk = true;
     this._schedule();
   }
 
@@ -14997,6 +15002,20 @@ class MonitorCard extends HTMLElement {
   _render() {
     if (!this._hass || !this.config) return;
     this._maybeScan();
+    // Il primo disegno aspetta statistiche, riparazioni e notifiche (al massimo
+    // 1,2 s): se arrivano dopo, la pagina cambia struttura, si ricostruisce e
+    // l'ingresso animato si vedeva due volte.
+    if (!this._painted) {
+      const ready = this._statsOk && (this.config.page === 'rete' || (this._repairs !== null && this._notif !== null));
+      if (!ready) {
+        if (!this._holdAt) {
+          this._holdAt = Date.now();
+          setTimeout(() => this._schedule(), 1300);
+        }
+        if (Date.now() - this._holdAt < 1200) return;
+      }
+      this._painted = true;
+    }
     // primo disegno: il ResizeObserver non ha ancora risposto, si misura il
     // contenitore per non mostrare un attimo il layout desktop sul telefono
     if (this._narrow === undefined) {
@@ -15014,8 +15033,14 @@ class MonitorCard extends HTMLElement {
     }
     const cls = 'mn ' + (this._isDark() ? 'mn-dark' : 'mn-light') + (this.config.show_ids ? '' : ' noid') + (this._narrow ? ' mn-narrow' : '');
     mgddPaint(this, MON_STYLES, '<div class="' + cls + '"><div class="mn-wrap">' + body + '</div></div>');
-    // ingresso una volta, quando la scansione ha riempito la pagina
-    if (this._scan) mgddIntro(this, (tl) => this._intro(tl));
+    // Ingresso una volta, quando scansione e statistiche hanno riempito la
+    // pagina. Niente ripetizione (v1.112.1): se poco dopo la card si ricostruisce
+    // (una notifica, una riparazione in piu') i nodi nuovi compaiono gia' fermi;
+    // prima l'ingresso ripartiva da capo e sembrava che la pagina si ricaricasse.
+    if (this._scan && !this._mgddIntro) {
+      mgddIntro(this, (tl) => this._intro(tl));
+      this._mgddIntroFn = null;
+    }
   }
 
   // Ingresso (v1.112, ritmo preso da anime.js): card a cascata, tacche dei gauge
@@ -15129,7 +15154,7 @@ class MonitorCard extends HTMLElement {
         vcls: cpu != null && cpu >= T.cpu ? 'warn' : '',
       }) +
       this._spark(st.cpu, 240, 40) +
-      '<span class="mn-small">' + (pk ? 'ultime 24 h · picco ' + monNum(pk.v) + ' % alle ' + monHM(pk.t) : 'ultime 24 h') + '</span>' +
+      '<span class="mn-small mn-foot">' + (pk ? 'ultime 24 h · picco ' + monNum(pk.v) + ' % alle ' + monHM(pk.t) : 'ultime 24 h') + '</span>' +
       this._id(H.cpu) + '</div>'
     );
 
@@ -15148,7 +15173,7 @@ class MonitorCard extends HTMLElement {
         col: monZones([[T.cpu_temp_warn, 'var(--ok)'], [T.cpu_temp_crit, 'var(--warn)'], [T.temp_max, 'var(--crit)']]),
         vcls: tc === 'ok' ? '' : tc,
       }) +
-      '<span class="mn-small">' + (avg != null ? 'media 24 h ' + monNum(avg) + ' °C · massima ' + monNum(tpk ? tpk.v : null) + ' °C' : 'ultime 24 h: statistiche non ancora disponibili') + '</span>' +
+      '<span class="mn-small mn-foot">' + (avg != null ? 'media 24 h ' + monNum(avg) + ' °C · massima ' + monNum(tpk ? tpk.v : null) + ' °C' : 'ultime 24 h: statistiche non ancora disponibili') + '</span>' +
       this._id(H.cpu_temp) + '</div>'
     );
 
@@ -15166,7 +15191,7 @@ class MonitorCard extends HTMLElement {
         col: (x) => (x >= T.memory ? 'var(--warn)' : 'var(--ac)'),
         vcls: mp != null && mp >= T.memory ? 'warn' : '',
       }) +
-      '<div class="mn-kv"><span><strong>' + monNum(mu, 1) + ' GB</strong> in uso</span><span><strong>' + monNum(mf, 1) + ' GB</strong> libera</span></div>' +
+      '<div class="mn-kv mn-foot"><span><strong>' + monNum(mu, 1) + ' GB</strong> in uso</span><span><strong>' + monNum(mf, 1) + ' GB</strong> libera</span></div>' +
       this._id(H.memory + ' · ' + (H.memory_used || '').replace('sensor.system_monitor', '') + ' · ' + (H.memory_free || '').replace('sensor.system_monitor', '')) + '</div>'
     );
 
@@ -15183,7 +15208,7 @@ class MonitorCard extends HTMLElement {
         col: monZones([[T.disk, 'var(--ac)'], [100, 'var(--warn)']]),
         vcls: dp != null && dp >= T.disk ? 'warn' : '',
       }) +
-      '<div class="mn-kv"><span><strong>' + monNum(du) + ' GB</strong> usati</span><span><strong>' + monNum(df) + ' GB</strong> liberi</span></div>' +
+      '<div class="mn-kv mn-foot"><span><strong>' + monNum(du) + ' GB</strong> usati</span><span><strong>' + monNum(df) + ' GB</strong> liberi</span></div>' +
       this._id(H.disk_use + ' · ' + (H.disk_free || '').replace('sensor.system_monitor', '')) + '</div>'
     );
     return '<section class="mn-grid g4" aria-label="Host">' + tiles.join('') + '</section>';
@@ -15300,7 +15325,7 @@ class MonitorCard extends HTMLElement {
       cell('Dimensione', size != null ? monNum(size, 2) + ' GB' : '—', B.size) +
       cell('Durata', durTx, 'last_attempted → last_successful') +
       '</div></div>' +
-      '<div class="mn-col6"><span class="mn-small">Ultimi 14 giorni</span><div class="mn-hist">' + bars + '</div>' +
+      '<div class="mn-col6 mn-foot"><span class="mn-small">Ultimi 14 giorni</span><div class="mn-hist">' + bars + '</div>' +
       '<span class="mn-note">' + cap + '</span>' + this._id(B.event + ' · ' + B.state) + '</div></div>'
     );
   }
@@ -15422,7 +15447,7 @@ class MonitorCard extends HTMLElement {
       this._freshBanner() +
       '<section class="mn-chips" aria-label="Versioni">' + chips + '</section>' +
       this._hostTiles() +
-      '<section class="mn-grid g2">' + this._health() + this._backup() + '</section>' +
+      '<section class="mn-grid g2 st">' + this._health() + this._backup() + '</section>' +
       this._appsTable() +
       this._services()
     );
@@ -16073,6 +16098,7 @@ const MON_STYLES =
   '.mn-bg{background:var(--in);border-radius:12px;padding:8px 6px;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:0}' +
   '.mn-bg .nm{font-size:11.5px;color:var(--mu);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
   '.mn-card.mn-pt .mn-gz{max-width:170px}' +
+  '.mn .mn-foot{margin-top:auto}.mn-grid.g2.st{align-items:stretch}' +
   '.mn-hist i,.mn-dbar i{transform-origin:bottom}.mn-stack i{transform-origin:left}' +
   '</style>';
 
