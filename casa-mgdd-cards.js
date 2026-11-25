@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card.
  *
- * Version: 1.113.1
+ * Version: 1.113.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13864,7 +13864,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-week{display:grid;grid-template-columns:repeat(var(--ldp-n,6),minmax(0,1fr));gap:10px;}' +
   '.ldq .ldp-day{border-radius:14px;background:var(--ld-neutral);padding:12px 12px 13px;display:flex;flex-direction:column;gap:6px;min-width:0;}' +
   '.ldq .ldp-oggi{outline:2px solid var(--ld-t1);}.ldq .ldp-best{outline:2px solid var(--ld-g);}' +
-  '.ldq .ldp-d{font-size:13px;font-weight:650;display:flex;justify-content:space-between;gap:4px;}' +
+  '.ldq .ldp-d{font-size:13px;font-weight:650;display:flex;justify-content:space-between;gap:0 4px;flex-wrap:wrap;align-items:baseline;}.ldq .ldp-d>span:first-child{white-space:nowrap;}' +
   '.ldq .ldp-day>ha-icon{--mdc-icon-size:30px;width:30px;height:30px;color:var(--ld-t2);}' +
   '.ldq .ldp-k{font-size:24px;font-weight:700;letter-spacing:-.5px;white-space:nowrap;}.ldq .ldp-k small{font-size:12px;font-weight:600;color:var(--ld-t2);}' +
   '.ldq .ldp-bar{height:6px;}' +
@@ -13968,7 +13968,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '@keyframes ldp-rain{0%{transform:translateY(-2px);opacity:0;}30%{opacity:1;}100%{transform:translateY(5px);opacity:0;}}' +
   '@property --ldp-a{syntax:"<angle>";inherits:false;initial-value:0deg;}' +
   '.ldq .ldp-best{outline:none;border:2px solid transparent;background:linear-gradient(var(--ld-neutral),var(--ld-neutral)) padding-box,linear-gradient(var(--ld-bg),var(--ld-bg)) padding-box,' +
-  'conic-gradient(from var(--ldp-a),color-mix(in srgb,var(--ld-g) 30%,transparent) 0deg,var(--ld-g) 60deg,color-mix(in srgb,var(--ld-g) 30%,transparent) 120deg,color-mix(in srgb,var(--ld-g) 30%,transparent) 360deg) border-box;' +
+  'conic-gradient(from var(--ldp-a),color-mix(in srgb,var(--ld-g) 45%,transparent) 0deg,var(--ld-g) 60deg,color-mix(in srgb,var(--ld-g) 45%,transparent) 120deg,color-mix(in srgb,var(--ld-g) 45%,transparent) 360deg) border-box;' +
   'animation:ldp-spin 4.5s linear infinite;box-shadow:0 0 26px -12px var(--ld-g);}' +
   '.ldq .ldp-best .ldp-d .ld-tiny{color:var(--ld-g2);font-weight:650;}' +
   '@keyframes ldp-spin{to{--ldp-a:360deg;}}' +
