@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.114.0
+ * Version: 1.114.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -579,7 +579,10 @@ class TemperatureBentoCard extends HTMLElement {
     if (!entities.length || !this._hass) return;
     const start = new Date(now - hours * 3600 * 1000).toISOString();
     try {
-      const path = 'history/period/' + start + '?filter_entity_id=' + entities.join(',') + '&minimal_response';
+      // end_time esplicito: senza, HA restituisce solo le 24 ore dopo `start` e
+      // con chart_hours 48 la seconda meta' del grafico restava piatta (v1.114.1)
+      const path = 'history/period/' + start + '?end_time=' + encodeURIComponent(new Date(now).toISOString()) +
+        '&filter_entity_id=' + entities.join(',') + '&minimal_response';
       const data = await this._hass.callApi('GET', path);
       let idx = 0;
       if (wantChart) {
@@ -18903,7 +18906,7 @@ window.customCards.push({
   description: 'Tile di un purificatore d\u2019aria (entita\u2019 fan): modalita\u2019 in pillola, filtri o timer, tasto accensione e segmenti delle modalita\u2019. Opzioni: name, modes, filters, filter_alert, timer, auto_plus.',
 });
 
-// ===== casa-mgdd-temperature-card (v1.114.0) =====
+// ===== casa-mgdd-temperature-card (v1.114) =====
 // Vista temperature in una card sola, dal mockup docs/mockup-temperature-v2-2026-11-25.html:
 // fascia allerte a tutta riga (colori presi dal tema, leggibile anche in scuro),
 // meteo con la linea delle prossime 12 ore e i giorni a barre minima-massima,
@@ -19115,8 +19118,10 @@ class TemperaturePageCard extends HTMLElement {
     if (!uniq.length) return;
     const start = new Date(now - hours * 3600e3).toISOString();
     try {
+      // end_time esplicito: senza, HA restituisce solo le 24 ore dopo `start`
       const data = await this._hass.callApi('GET', 'history/period/' + start +
-        '?filter_entity_id=' + uniq.join(',') + '&minimal_response&no_attributes');
+        '?end_time=' + encodeURIComponent(new Date(now).toISOString()) +
+        '&filter_entity_id=' + uniq.join(',') + '&minimal_response&no_attributes');
       const out = {};
       (data || []).forEach((arr) => {
         if (!arr || !arr.length) return;
