@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.114.4
+ * Version: 1.114.6
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -14298,8 +14298,8 @@ function monStart(r) {
 // Arco di 270° fatto di tacche rastremate: le tacche accese prendono il colore
 // della fascia di soglia in cui cadono, le altre restano sul colore della
 // traccia. E' tutto una stringa: a ogni aggiornamento mgddPaint ritocca solo il
-// fill delle tacche che cambiano (con la transizione CSS), e l'ingresso della
-// pagina le accende in fila (vedi MonitorCard._intro).
+// fill delle tacche che cambiano (con la transizione CSS). Niente ingresso
+// animato dalla v1.114.6.
 // Il numero sta al centro e scala con la larghezza del gauge (unita' cqw); la
 // didascalia sta nell'apertura in basso dell'arco o sotto, mai sopra le tacche.
 // o: v, min, max, unit, label, dec, txt (testo al posto del numero),
@@ -14526,9 +14526,15 @@ class MonitorCard extends HTMLElement {
   // Al massimo un ridisegno ogni 1,5 s: la pagina legge decine di sensori e
   // quelli di potenza cambiano di continuo. mgddPaint poi non tocca nulla se
   // il risultato e' identico.
-  _schedule() {
+  // `now`: dati appena arrivati dal recorder o dalle notifiche (pochi e rari),
+  // si disegnano subito invece di aspettare il turno.
+  _schedule(now) {
+    if (now && this._renderT) {
+      clearTimeout(this._renderT);
+      this._renderT = null;
+    }
     if (this._renderT) return;
-    const wait = this._lastRender ? Math.max(0, 1500 - (Date.now() - this._lastRender)) : 0;
+    const wait = !now && this._lastRender ? Math.max(0, 1500 - (Date.now() - this._lastRender)) : 0;
     this._renderT = setTimeout(() => {
       this._renderT = null;
       this._lastRender = Date.now();
@@ -14772,7 +14778,7 @@ class MonitorCard extends HTMLElement {
     this._uhBusy = false;
     this._scanAt = 0;
     this._maybeScan();
-    this._schedule();
+    this._schedule(true);
   }
 
   // "Sensore temperatura bagno Batteria" -> "Batteria" quando il dispositivo e' gia' nel titolo
@@ -15023,31 +15029,34 @@ class MonitorCard extends HTMLElement {
     const c = this.config;
     const now = Date.now();
     const out = {};
+    // le due richieste partono insieme (prima una dopo l'altra)
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
     if (c.page === 'sistema') {
-      const r = await this._statsWS([c.host.cpu, c.host.cpu_temp], 'hour', now - 24 * 3600000, ['mean', 'max']);
+      const [r, r2] = await Promise.all([
+        this._statsWS([c.host.cpu, c.host.cpu_temp], 'hour', now - 24 * 3600000, ['mean', 'max']),
+        this._statsWS([c.backup.size], 'day', d.getTime() - 13 * 86400000, ['max']),
+      ]);
       if (r) {
         out.cpu = r[c.host.cpu] || null;
         out.temp = r[c.host.cpu_temp] || null;
       }
-      const d = new Date();
-      d.setHours(0, 0, 0, 0);
-      const r2 = await this._statsWS([c.backup.size], 'day', d.getTime() - 13 * 86400000, ['max']);
       if (r2) out.size = r2[c.backup.size] || null;
     } else if (c.page === 'rete') {
-      const d = new Date();
-      d.setHours(0, 0, 0, 0);
       const n = c.network;
-      const r = await this._statsWS([n.speed_down, n.speed_up], 'day', d.getTime() - 6 * 86400000, ['mean']);
+      const [r, r2] = await Promise.all([
+        this._statsWS([n.speed_down, n.speed_up], 'day', d.getTime() - 6 * 86400000, ['mean']),
+        this._statsWS([n.clients], 'hour', d.getTime(), ['max']),
+      ]);
       if (r) {
         out.down = r[n.speed_down] || null;
         out.up = r[n.speed_up] || null;
       }
-      const r2 = await this._statsWS([n.clients], 'hour', d.getTime(), ['max']);
       if (r2) out.clients = r2[n.clients] || null;
     }
     this._stats = out;
     this._statsOk = true;
-    this._schedule();
+    this._schedule(true);
   }
 
   async _fetchBackupHist() {
@@ -15078,7 +15087,7 @@ class MonitorCard extends HTMLElement {
     } catch (e) {
       this._bkHist = null;
     }
-    this._schedule();
+    this._schedule(true);
   }
 
   async _fetchRepairs() {
@@ -15088,7 +15097,7 @@ class MonitorCard extends HTMLElement {
     } catch (e) {
       this._repairs = null;
     }
-    this._schedule();
+    this._schedule(true);
   }
 
   _subscribeNotifications() {
@@ -15104,7 +15113,7 @@ class MonitorCard extends HTMLElement {
           const items = msg.notifications || {};
           if (msg.type === 'removed') Object.keys(items).forEach((k) => delete this._notif[k]);
           else Object.keys(items).forEach((k) => (this._notif[k] = items[k]));
-          this._schedule();
+          this._schedule(true);
         },
         { type: 'persistent_notification/subscribe' }
       );
@@ -15253,20 +15262,10 @@ class MonitorCard extends HTMLElement {
   _render() {
     if (!this._hass || !this.config) return;
     this._maybeScan();
-    // Il primo disegno aspetta statistiche, riparazioni e notifiche (al massimo
-    // 1,2 s): se arrivano dopo, la pagina cambia struttura, si ricostruisce e
-    // l'ingresso animato si vedeva due volte.
-    if (!this._painted) {
-      const ready = this._statsOk && (this.config.page === 'rete' || (this._repairs !== null && this._notif !== null));
-      if (!ready) {
-        if (!this._holdAt) {
-          this._holdAt = Date.now();
-          setTimeout(() => this._schedule(), 1300);
-        }
-        if (Date.now() - this._holdAt < 1200) return;
-      }
-      this._painted = true;
-    }
+    // v1.114.6: il primo disegno parte subito con gli stati gia' in hass.
+    // Prima aspettava statistiche, riparazioni e notifiche fino a 1,2 s e poi
+    // il limite di 1,5 s fra due disegni lo spostava a ~1,5 s, seguito da un
+    // ingresso animato di altri ~1,5-2 s: la pagina sembrava lenta.
     // primo disegno: il ResizeObserver non ha ancora risposto, si misura il
     // contenitore per non mostrare un attimo il layout desktop sul telefono
     if (this._narrow === undefined) {
@@ -15284,50 +15283,9 @@ class MonitorCard extends HTMLElement {
     }
     const cls = 'mn ' + (this._isDark() ? 'mn-dark' : 'mn-light') + (this.config.show_ids ? '' : ' noid') + (this._narrow ? ' mn-narrow' : '');
     mgddPaint(this, MON_STYLES, '<div class="' + cls + '"><div class="mn-wrap">' + body + '</div></div>');
-    // Ingresso una volta, quando scansione e statistiche hanno riempito la
-    // pagina. Niente ripetizione (v1.112.1): se poco dopo la card si ricostruisce
-    // (una notifica, una riparazione in piu') i nodi nuovi compaiono gia' fermi;
-    // prima l'ingresso ripartiva da capo e sembrava che la pagina si ricaricasse.
-    if (this._scan && !this._mgddIntro) {
-      mgddIntro(this, (tl) => this._intro(tl));
-      this._mgddIntroFn = null;
-    }
-  }
-
-  // Ingresso (v1.112, ritmo preso da anime.js): card a cascata, tacche dei gauge
-  // che si accendono in fila, lancette e archi che arrivano al valore, numeri che
-  // contano, sparkline e barre che crescono. Finisce entro ~1,6 s.
-  _intro(tl) {
-    const q = (s) => this.querySelectorAll(s);
-    const cards = q('.mn-card,.mn-chip,.mn-alert');
-    tl.add(cards, [{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }],
-      { duration: 480, stagger: Math.min(30, 600 / (cards.length || 1)) }, 0);
-    const root = this.querySelector('.mn');
-    const trk = root ? getComputedStyle(root).getPropertyValue('--trk').trim() : '';
-    q('.mn-gz').forEach((g, k) => {
-      const t0 = 120 + Math.min(k, 12) * 45;
-      const lit = g.querySelectorAll('.n.on');
-      if (lit.length && trk) {
-        const gap = Math.min(24, 700 / lit.length);
-        lit.forEach((n, i) => {
-          const fin = getComputedStyle(n).fill;
-          try {
-            n.animate([{ fill: trk }, { fill: fin }], { duration: 160, delay: t0 + i * gap, easing: 'linear', fill: 'backwards' });
-          } catch (e) { /* niente */ }
-        });
-      }
-      const nd = g.querySelector('.nd');
-      if (nd) tl.add(nd, [{ transform: g.getAttribute('data-st') }, { transform: nd.style.transform }], { duration: 1000 }, t0);
-      const arc = g.querySelector('.arc');
-      if (arc) tl.add(arc, [{ strokeDasharray: '0 100' }, { strokeDasharray: arc.getAttribute('stroke-dasharray') }], { duration: 1000 }, t0);
-    });
-    tl.count(q('.mn-gz-v'), { duration: 900 }, 120)
-      .add(q('.mn-spark'), [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)' }], { duration: 1000, easing: 'cubic-bezier(.65,0,.35,1)' }, 250)
-      .add(q('.mn-stack i'), [{ transform: 'scaleX(0)' }, { transform: 'none' }], { duration: 500, stagger: 60 }, 300)
-      .add(q('.mn-hist i'), [{ transform: 'scaleY(0)' }, { transform: 'none' }], { duration: 500, stagger: 30 }, 300)
-      .add(q('.mn-dbar i'), [{ transform: 'scaleY(0)' }, { transform: 'none' }], { duration: 600, stagger: 25 }, 300)
-      .add(q('.mn-lin'), [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0% 0 0)' }], { duration: 700, stagger: 30 }, 300)
-      .add(q('.mn-outs span'), [{ opacity: 0, transform: 'scale(.6)' }, { opacity: 1, transform: 'none' }], { duration: 400, stagger: 30 }, 400);
+    // v1.114.6: tolto l'ingresso animato (card a cascata, tacche, lancette,
+    // numeri che contano): ~250 animazioni sulla manutenzione e la pagina
+    // ferma solo dopo ~2 s. Restano le transizioni brevi sui cambi di valore.
   }
 
   // ================= pagina SISTEMA =================
