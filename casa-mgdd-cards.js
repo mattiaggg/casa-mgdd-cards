@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.114.2
+ * Version: 1.114.3
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -19696,7 +19696,7 @@ const TP_STYLES = '<style>' +
   '.tp-gz{position:relative;width:100%;container-type:inline-size;}' +
   '.tp-gz svg{display:block;width:100%;height:auto;overflow:visible;}' +
   '.tp-gz-c{position:absolute;left:50%;top:54.3%;transform:translate(-50%,-50%);text-align:center;white-space:nowrap;}' +
-  '.tp-gz-v{position:relative;display:inline-block;font-weight:800;letter-spacing:-.03em;line-height:1;font-size:clamp(20px,22cqw,44px);}' +
+  '.tp-gz-v{position:relative;display:inline-block;font-weight:800;letter-spacing:-.03em;line-height:1;font-size:clamp(18px,16cqw,36px);}' +
   '.tp-gz-v b{font-weight:800;}.tp-gz-v span{position:absolute;left:100%;top:.12em;font-size:.4em;color:var(--tp-tx2);font-weight:500;letter-spacing:0;margin-left:2px;}' +
   '.tp-gz-l{color:var(--tp-tx3);font-size:12px;margin-top:4px;}' +
   '.tp-scale{display:flex;justify-content:space-between;font-size:11px;color:var(--tp-tx3);margin-top:8px;}' +
