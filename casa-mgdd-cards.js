@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.114.7
+ * Version: 1.114.8
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -15273,7 +15273,14 @@ class MonitorCard extends HTMLElement {
     } catch (e) {
       body = '<div class="mn-card"><h2 class="mn-h2">Errore nella card</h2><p class="mn-txt">' + mgddEsc(e && e.message) + '</p></div>';
     }
-    const cls = 'mn ' + (this._isDark() ? 'mn-dark' : 'mn-light') + (this.config.show_ids ? '' : ' noid') + (this._narrow ? ' mn-narrow' : '');
+    // grafici animati (CSS) solo per 1,5 s dalla prima apertura: chi compare
+    // in quella finestra si disegna; dopo la classe sparisce e un ridisegno
+    // pieno non rianima nulla
+    if (!this._inUntil) {
+      this._inUntil = Date.now() + 1500;
+      setTimeout(() => this._schedule(), 1600);
+    }
+    const cls = 'mn ' + (Date.now() < this._inUntil ? 'mn-in ' : '') + (this._isDark() ? 'mn-dark' : 'mn-light') + (this.config.show_ids ? '' : ' noid') + (this._narrow ? ' mn-narrow' : '');
     mgddPaint(this, MON_STYLES, '<div class="' + cls + '"><div class="mn-wrap">' + body + '</div></div>');
     // v1.114.6: tolto l'ingresso animato (card a cascata, tacche, lancette,
     // numeri che contano): ~250 animazioni sulla manutenzione e la pagina
@@ -16130,7 +16137,7 @@ const MON_STYLES =
   '.mn-h1{margin:0;font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.15}' +
   '.mn-sub{margin:0;font-size:14px;color:var(--mu)}' +
   '.mn-tools{display:flex;flex-wrap:wrap;gap:10px;align-items:center}' +
-  '.mn .mn-pill{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;font-size:13px;font-weight:600;min-height:36px}' +
+  '.mn .mn-pill{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;min-height:40px;box-sizing:border-box}' +
   '.mn-pill i{width:8px;height:8px;border-radius:50%}' +
   '.mn-pill.ok{background:var(--okbg);color:var(--okt)}.mn-pill.ok i{background:var(--ok)}' +
   '.mn-pill.warn{background:var(--warnbg);color:var(--warnt)}.mn-pill.warn i{background:var(--warn)}' +
@@ -16194,7 +16201,7 @@ const MON_STYLES =
   '.mn-stack{display:flex;height:12px;border-radius:6px;overflow:hidden;gap:2px}.mn-stack i{display:block;min-width:3px}' +
   '.mn-leg{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--mu)}' +
   '.mn-leg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}' +
-  '.mn-badge{padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}' +
+  '.mn-badge{padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap}' +
   '.mn-badge.ok{background:var(--okbg);color:var(--okt)}.mn-badge.warn{background:var(--warnbg);color:var(--warnt)}.mn-badge.crit{background:var(--critbg);color:var(--critb)}' +
   '.mn-bk{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}' +
   '.mn-kvb{display:flex;flex-direction:column;gap:2px;min-width:0}.mn-kvb .k{font-size:12px;color:var(--fa)}.mn-kvb .v{font-size:18px;font-weight:600}' +
@@ -16301,6 +16308,14 @@ const MON_STYLES =
   '.mn-card.mn-pt .mn-gz{max-width:170px}' +
   '.mn .mn-foot{margin-top:auto}.mn-grid.g2.st{align-items:stretch}' +
   '.mn-hist i,.mn-dbar i{transform-origin:bottom}.mn-stack i{transform-origin:left}' +
+  // v1.114.8: animazione leggera dei grafici, solo CSS e solo nella prima
+  // finestra dopo l'apertura (classe mn-in, vedi _render). Nessuna attesa.
+  '@media (prefers-reduced-motion:no-preference){' +
+  '.mn-in .mn-spark{animation:mnDraw .8s cubic-bezier(.65,0,.35,1) both}' +
+  '.mn-in .mn-hist i,.mn-in .mn-dbar i{animation:mnGrowY .5s cubic-bezier(.16,1,.3,1) both}' +
+  '.mn-in .mn-stack i{animation:mnGrowX .5s cubic-bezier(.16,1,.3,1) both}}' +
+  '@keyframes mnDraw{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}' +
+  '@keyframes mnGrowY{from{transform:scaleY(0)}}@keyframes mnGrowX{from{transform:scaleX(0)}}' +
   '</style>';
 
 MonitorCard.getStubConfig = function () {
