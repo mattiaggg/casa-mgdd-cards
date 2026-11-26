@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.114.6
+ * Version: 1.114.7
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13476,11 +13476,10 @@ const LD_PAGINA = {
       const lav = '<div class="ldp-kv"><span>Enel</span><b' + (enel == null ? '' : enel < 0.05 ? ' class="ld-tg"' : ' class="ld-tr"') + '>' +
         (enel == null ? '—' : enel < 0.05 ? '0' : ldNum(enel) + ' kWh') + '</b></div><div class="ldp-kv"><span>Carica max</span><b>' + (max == null ? '—' : max + '%') + '</b></div>' + verd;
       const nota = d.data === oggi ? 'oggi' : d.migliore ? 'migliore' : '';
-      // 20 tacche = 100% dei consumi fissi; oltre il 100% una tacca verde staccata
+      // 20 tacche = 100% dei consumi fissi; oltre il 100% la barra resta piena
       const on = Math.round(Math.min(100, cop || 0) / 5);
       let tk = '';
       for (let k = 0; k < 20; k++) tk += k < on ? '<i class="on"></i>' : '<i></i>';
-      if (cop > 100) tk += '<i class="ldp-tk-gap"></i><i class="ldp-tk-ov"></i>';
       return '<div class="ldp-day' + (d.data === oggi ? ' ldp-oggi' : '') + (d.migliore ? ' ldp-best' : '') + '"><div class="ldp-d"><span>' + mgddEsc(d.nome) + ' ' +
         ldDay(d.data).getDate() + '</span>' + (nota ? '<span class="ld-tiny">' + nota + '</span>' : '') + '</div>' + ldMeteo(d.meteo) +
         '<div class="ldp-k">' + ldNum(d.kwh) + ' <small>kWh</small></div><div class="ldp-tk" style="--ldp-tc:' + (colv[d.colore] || 'var(--ld-t2)') + '">' + tk +
@@ -13866,7 +13865,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-wk-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}.ldq .ldp-aff{cursor:help;}' +
   '.ldq .ldp-week{display:grid;grid-template-columns:repeat(var(--ldp-n,6),minmax(0,1fr));gap:10px;}' +
   '.ldq .ldp-day{border-radius:14px;background:var(--ld-neutral);padding:12px 12px 13px;display:flex;flex-direction:column;gap:6px;min-width:0;}' +
-  '.ldq .ldp-oggi{outline:2px solid var(--ld-t1);}.ldq .ldp-best{outline:2px solid var(--ld-g);}' +
+  '.ldq .ldp-oggi{outline:2px solid var(--ld-t1);}' +
   '.ldq .ldp-d{font-size:13px;font-weight:650;display:flex;justify-content:space-between;gap:0 4px;flex-wrap:wrap;align-items:baseline;}.ldq .ldp-d>span:first-child{white-space:nowrap;}' +
   '.ldq .ldp-day>ha-icon{--mdc-icon-size:30px;width:30px;height:30px;color:var(--ld-t2);}' +
   '.ldq .ldp-k{font-size:24px;font-weight:700;letter-spacing:-.5px;white-space:nowrap;}.ldq .ldp-k small{font-size:12px;font-weight:600;color:var(--ld-t2);}' +
@@ -13959,8 +13958,6 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-tk i{flex:1;border-radius:2px;background:var(--ld-neutral);transform-origin:bottom;}' +
   '.ldq .ld-dark .ldp-tk i,.ldq.ld-dark .ldp-tk i{background:rgba(255,255,255,.1);}' +
   '.ldq .ldp-tk i.on,.ldq.ld-dark .ldp-tk i.on{background:var(--ldp-tc);}' +
-  '.ldq .ldp-tk .ldp-tk-gap,.ldq.ld-dark .ldp-tk .ldp-tk-gap{flex:0 0 2px;background:none;}' +
-  '.ldq .ldp-tk .ldp-tk-ov,.ldq.ld-dark .ldp-tk .ldp-tk-ov{flex:0 0 5px;background:var(--ld-g);}' +
   '.ldq .ldp-wx{width:30px;height:30px;color:var(--ld-t2);overflow:visible;}' +
   '.ldq .ldp-wx-sun{color:var(--ld-a);}' +
   '.ldq .ldp-wx-rays{animation:ldp-rot 16s linear infinite;}' +
@@ -13969,12 +13966,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-wx-dr:nth-of-type(2){animation-delay:-.45s;}.ldq .ldp-wx-dr:nth-of-type(3){animation-delay:-.9s;}' +
   '@keyframes ldp-rot{to{transform:rotate(360deg);}}@keyframes ldp-float{from{transform:translateX(-1px);}to{transform:translateX(1.5px);}}' +
   '@keyframes ldp-rain{0%{transform:translateY(-2px);opacity:0;}30%{opacity:1;}100%{transform:translateY(5px);opacity:0;}}' +
-  '@property --ldp-a{syntax:"<angle>";inherits:false;initial-value:0deg;}' +
-  '.ldq .ldp-best{outline:none;border:2px solid transparent;background:linear-gradient(var(--ld-neutral),var(--ld-neutral)) padding-box,linear-gradient(var(--ld-bg),var(--ld-bg)) padding-box,' +
-  'conic-gradient(from var(--ldp-a),color-mix(in srgb,var(--ld-g) 45%,transparent) 0deg,var(--ld-g) 60deg,color-mix(in srgb,var(--ld-g) 45%,transparent) 120deg,color-mix(in srgb,var(--ld-g) 45%,transparent) 360deg) border-box;' +
-  'animation:ldp-spin 4.5s linear infinite;}' +
   '.ldq .ldp-best .ldp-d .ld-tiny{color:var(--ld-g2);font-weight:650;}' +
-  '@keyframes ldp-spin{to{--ldp-a:360deg;}}' +
   // mirino sulla curva
   '.ldq .ldp-cv{touch-action:pan-y;cursor:crosshair;}' +
   '.ldq .ldp-cv-vl{position:absolute;top:0;bottom:0;width:0;border-left:1px dashed var(--ld-t2);opacity:0;pointer-events:none;}' +
@@ -14006,7 +13998,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '.ldq .ldp-tt{position:absolute;right:0;bottom:calc(100% - 6px);display:flex;gap:12px;background:var(--ld-bg);border:1px solid var(--ld-div);border-radius:10px;padding:6px 10px;font-size:12px;font-weight:600;white-space:nowrap;box-shadow:0 10px 30px -10px rgba(0,0,0,.45);opacity:0;transform:translateY(4px);transition:.18s;pointer-events:none;z-index:2;}' +
   '.ldq .ldp-dt:hover .ldp-tt{opacity:1;transform:none;}' +
   '.ldq .ldp-tt .ld-tg{color:var(--ld-g2);}.ldq .ldp-tt .ld-tr{color:var(--ld-r2);}' +
-  '@media (prefers-reduced-motion: reduce){.ldq .ldp *,.ldq .ldp-best{animation:none!important;transition:none!important;}}' +
+  '@media (prefers-reduced-motion: reduce){.ldq .ldp *{animation:none!important;transition:none!important;}}' +
   // schermi stretti
   '@container (max-width:1100px){.ldq .ldp-top{grid-template-columns:minmax(0,1fr);}}' +
   '@container (max-width:900px){.ldq .ldp-bot{grid-template-columns:minmax(0,1fr);}.ldq .ldp-bat{grid-template-columns:minmax(0,1fr);}' +
