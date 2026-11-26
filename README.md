@@ -12,6 +12,7 @@ Tutte si configurano in YAML; solo le due card temperatura hanno l'editor visual
 |------|---------------|-------------|
 | Temperatura (bento / lista) | `custom:temperature-bento-card` | Media casa, calda/fredda, zona giorno/notte, o lista stanze (`layout: bento` / `list`). Editor visuale. |
 | Riga temperatura | `custom:temperature-row-card` | Una stanza: temperatura, umidità opzionale, mini grafico. Editor visuale. |
+| Temperature (pagina) | `custom:casa-mgdd-temperature-card` | Vista temperature in una card: fascia allerte a tutta riga (pioggia/temporali da iLMeteo, Protezione Civile con la striscia dei giorni; colori del tema, leggibile anche in scuro), meteo con la linea delle prossime 12 ore e i giorni a barre minima–massima, Media casa con gauge a tacche, umidità media e scostamento di ogni stanza dalla media, zone e stanze con curve delle ultime 48 h e mirino al passaggio. Opzioni: `title`, `weather_entity`, `dpc_entities`, `dpc_zone_entity`, `rain_alert_mm`, `rain_alert_hours`, `zona_giorno`, `zona_notte`, `chart_hours`, `rooms` (`name`, `temp`, `hum`, `media: false` per escluderla dalla media). Banco: `dev/temperatura.html`. |
 | Meteo e allerte | `custom:weather-alert-card` | Previsioni ore/giorni, banner allerta Protezione Civile, rischio pioggia/temporale. |
 | Energia panoramica/circuiti | `custom:energy-power-card` | Consumo istantaneo con trend, oggi/mese, carichi attivi, o lista circuiti con sparkline. |
 | Energia interruttori/UPS | `custom:energy-controls-card` | Griglia di interruttori, oppure statistiche UPS. |

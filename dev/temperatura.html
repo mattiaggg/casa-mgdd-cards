@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco temperature</title>
+<style>
+  body { margin: 0; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  body.light { background: #f3f4f7; --primary-text-color: #15181d; --secondary-text-color: #5b6270; --divider-color: #e3e6ec; --card-background-color: #fff; }
+  body.dark { background: #111318; --primary-text-color: #e8eaed; --secondary-text-color: #9aa0aa; --divider-color: #2a2f37; --card-background-color: #1c1f25; }
+  .bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; font-size: 12px; color: var(--secondary-text-color); }
+  .page { max-width: 1260px; margin: 0 auto; padding: 0 16px 40px; }
+  .page.phone { max-width: 390px; }
+</style>
+</head>
+<body class="dark">
+<!-- casa-mgdd-temperature-card con dati finti: allerte a scelta, tema, larghezza. -->
+<div class="bar">
+  Allerta: <button data-a="none">Nessuna</button><button data-a="rain">Pioggia</button><button data-a="storm">Temporali</button><button data-a="dpc">Prot. civile</button>
+  &nbsp; Tema: <button data-t="dark">Scuro</button><button data-t="light">Chiaro</button>
+  &nbsp; Larghezza: <button data-w="desk">Desktop</button><button data-w="phone">Telefono</button>
+</div>
+<div class="page" id="page"></div>
+<script>window.customCards = window.customCards || [];</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  const ROOMS = [
+    ['Soggiorno', 'sog', 20.4, 57, 20.2, 20.7], ['Camera Matrimoniale', 'mat', 18.2, 61, 18.2, 18.5], ['Cabina Armadio', 'cab', 17.2, 67, 16.9, 17.4],
+    ['Bagno Mattia', 'bm', 17.8, 67, 17.8, 18.7], ['Camera Ospiti', 'osp', 17.3, 66, 17.3, 17.5], ['Bagno Deborah', 'bd', null],
+    ['Stireria', 'sti', 18.5, 60, 18.4, 18.9], ['Lavanderia', 'lav', 13.5, 68, 13.3, 21.1, false], ['Garage', 'gar', 11.3, 77, 10.1, 11.3, false],
+    ['Corridoio', 'cor', 18.2, 63, 18.1, 18.2, false],
+  ];
+  const now = Date.now();
+  const slot0 = Math.floor(now / 10800e3) * 10800e3;
+  function hourly(kind) {
+    const T = [8.9, 8.6, 7.7, 7.4, 6.9, 6.7, 5.8, 7.7, 9.4, 8.5];
+    const mm = kind === 'none' ? [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] : kind === 'storm' ? [1.8, 3.9, 2.4, 0.6, 0.2, 0, 0, 0, 0, 0] : [1.79, 1.18, 3.42, 1.66, 0.2, 0, 0, 0, 0, 0];
+    const C = kind === 'none' ? ['cloudy', 'cloudy', 'partlycloudy', 'clear-night', 'clear-night', 'partlycloudy', 'sunny', 'sunny', 'sunny', 'partlycloudy']
+      : kind === 'storm' ? ['rainy', 'lightning-rainy', 'lightning-rainy', 'rainy', 'cloudy', 'partlycloudy', 'partlycloudy', 'partlycloudy', 'partlycloudy', 'cloudy']
+        : ['rainy', 'rainy', 'rainy', 'rainy', 'cloudy', 'partlycloudy', 'partlycloudy', 'partlycloudy', 'partlycloudy', 'cloudy'];
+    return T.map((t, i) => ({ datetime: new Date(slot0 + i * 10800e3).toISOString(), temperature: t, apparent_temperature: t - 2.5, precipitation: mm[i], condition: C[i] }));
+  }
+  const daily = [[7, 10, 'lightning-rainy'], [4, 10, 'cloudy'], [2, 8, 'sunny'], [2, 9, 'partlycloudy'], [2, 8, 'cloudy']].map((d, i) => {
+    const dt = new Date(now); dt.setHours(0, 0, 0, 0); dt.setDate(dt.getDate() + i);
+    return { datetime: dt.toISOString(), templow: d[0], temperature: d[1], condition: d[2] };
+  });
+  function rng(seed) { let x = seed * 9973 + 17; return () => { x = (x * 16807) % 2147483647; return x / 2147483647; }; }
+  function hist(seed, min, max) {
+    const R = rng(seed), pts = [];
+    for (let t = now - 48 * 3600e3; t < now; t += 900e3) {
+      const k = (t - (now - 48 * 3600e3)) / (48 * 3600e3);
+      const h = new Date(t).getHours();
+      const y = 0.5 + 0.3 * Math.sin(k * 2 * Math.PI * 2 + seed) + 0.25 * Math.exp(-((h - 7.5) ** 2) / 4) + 0.3 * Math.exp(-((h - 19.5) ** 2) / 5) + (R() - 0.5) * 0.08;
+      pts.push({ state: (min + Math.max(0, Math.min(1, y)) * (max - min)).toFixed(1), last_changed: new Date(t).toISOString() });
+    }
+    return pts;
+  }
+  function states(alert) {
+    const s = {
+      'weather.ilmeteo_site_1': { state: alert === 'none' ? 'cloudy' : 'rainy', attributes: { temperature: 9, humidity: 84 } },
+      'sensor.dpc_alert_zone': { state: 'Bacino del Livenza e del Lemene', attributes: {} },
+      'sensor.temp_zona_giorno': { state: '20.48', attributes: {} },
+      'sensor.temperatura_media_zona_notte': { state: '18.1', attributes: {} },
+    };
+    const dpc = alert === 'dpc' ? { today_hydrogeological: 'orange', tomorrow_hydraulic: 'yellow' } : {};
+    for (const d of ['today', 'tomorrow']) for (const r of ['hydraulic', 'hydrogeological', 'thunderstorm']) {
+      s['sensor.dpc_' + d + '_' + r + '_risk_level'] = { state: dpc[d + '_' + r] || 'green', attributes: {} };
+    }
+    ROOMS.forEach((r) => {
+      s['sensor.' + r[1] + '_t'] = { state: r[2] === null ? 'unavailable' : String(r[2]), attributes: {} };
+      s['sensor.' + r[1] + '_h'] = { state: r[2] === null ? 'unavailable' : String(r[3]), attributes: {} };
+    });
+    return s;
+  }
+  const el = document.createElement('casa-mgdd-temperature-card');
+  el.setConfig({
+    title: 'Sacile', weather_entity: 'weather.ilmeteo_site_1',
+    dpc_entities: ['today', 'tomorrow'].flatMap((d) => ['hydraulic', 'hydrogeological', 'thunderstorm'].map((r) => 'sensor.dpc_' + d + '_' + r + '_risk_level')),
+    dpc_zone_entity: 'sensor.dpc_alert_zone', rain_alert_mm: 3, rain_alert_hours: 6,
+    zona_giorno: 'sensor.temp_zona_giorno', zona_notte: 'sensor.temperatura_media_zona_notte', chart_hours: 48,
+    rooms: ROOMS.map((r) => Object.assign({ name: r[0], temp: 'sensor.' + r[1] + '_t', hum: 'sensor.' + r[1] + '_h' }, r[6] === false ? { media: false } : {})),
+  });
+  document.getElementById('page').appendChild(el);
+  let alert = q.get('a') || 'rain';
+  let dark = (q.get('t') || 'dark') === 'dark';
+  function hass() {
+    return {
+      states: states(alert), themes: { darkMode: dark },
+      callWS: async (m) => ({ response: { [m.service_data.entity_id]: { forecast: m.service_data.type === 'hourly' ? hourly(alert) : daily } } }),
+      callApi: async () => {
+        const out = [[{ entity_id: 'sensor.temp_zona_giorno', state: '20', last_changed: new Date(now - 48 * 3600e3).toISOString() }].concat(hist(11, 19.6, 21.1)),
+          [{ entity_id: 'sensor.temperatura_media_zona_notte', state: '18', last_changed: new Date(now - 48 * 3600e3).toISOString() }].concat(hist(5, 17.4, 18.9))];
+        ROOMS.forEach((r, i) => { if (r[2] !== null) out.push([{ entity_id: 'sensor.' + r[1] + '_t', state: String(r[4]), last_changed: new Date(now - 48 * 3600e3).toISOString() }].concat(hist(i + 3, r[4], r[5]))); });
+        await new Promise((res) => setTimeout(res, 300));
+        return out;
+      },
+    };
+  }
+  function apply() {
+    document.body.className = dark ? 'dark' : 'light';
+    el._fcAt = 0;
+    el.hass = hass();
+  }
+  document.querySelectorAll('[data-a]').forEach((b) => b.onclick = () => { alert = b.dataset.a; apply(); });
+  document.querySelectorAll('[data-t]').forEach((b) => b.onclick = () => { dark = b.dataset.t === 'dark'; apply(); });
+  document.querySelectorAll('[data-w]').forEach((b) => b.onclick = () => document.getElementById('page').classList.toggle('phone', b.dataset.w === 'phone'));
+  if (q.get('w') === 'phone') document.getElementById('page').classList.add('phone');
+  apply();
+</script>
+</body>
+</html>

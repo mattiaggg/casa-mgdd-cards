@@ -11,9 +11,9 @@
  * casa-mgdd-vacuum-card, casa-mgdd-laundry-card, casa-mgdd-monitor-card,
  * casa-mgdd-quick-actions-card, casa-mgdd-scenes-card,
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
- * casa-mgdd-purifier-tile-card.
+ * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.113.2
+ * Version: 1.114.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -18901,4 +18901,859 @@ window.customCards.push({
   type: 'casa-mgdd-purifier-tile-card',
   name: 'Casa MGDD Tile purificatore',
   description: 'Tile di un purificatore d\u2019aria (entita\u2019 fan): modalita\u2019 in pillola, filtri o timer, tasto accensione e segmenti delle modalita\u2019. Opzioni: name, modes, filters, filter_alert, timer, auto_plus.',
+});
+
+// ===== casa-mgdd-temperature-card (v1.114.0) =====
+// Vista temperature in una card sola, dal mockup docs/mockup-temperature-v2-2026-11-25.html:
+// fascia allerte a tutta riga (colori presi dal tema, leggibile anche in scuro),
+// meteo con la linea delle prossime 12 ore e i giorni a barre minima-massima,
+// Media casa con gauge a tacche e scostamento di ogni stanza dalla media, zone e
+// stanze con curve come bklit (monotone, disegnate alla larghezza vera in pixel,
+// sfumate a sinistra, mirino al passaggio). Ingresso animato una volta, con Web
+// Animations e senza librerie.
+function tpF(n) { return Math.round(n * 100) / 100; }
+function tpEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+function tpTvar(t) {
+  if (t === null || t === undefined) return 'var(--tp-tx3)';
+  return t < 14 ? 'var(--tp-cold)' : t < 18 ? 'var(--tp-ac)' : t <= 21.5 ? 'var(--tp-ok)' : t <= 24 ? 'var(--tp-warn)' : 'var(--tp-crit)';
+}
+function tpHH(ms) { return String(new Date(ms).getHours()).padStart(2, '0'); }
+const TP_IC = {
+  rain: '<svg viewBox="0 0 24 24"><path d="M5 14h13a3.6 3.6 0 0 0 .5-7.1A5.2 5.2 0 0 0 8.5 4 4.3 4.3 0 0 0 5 14Z" fill="#a9cdf3"/><g stroke="#4f9be8" stroke-width="2" stroke-linecap="round"><path d="M8 17.5v2.5M12 17.5v2.5M16 17.5v2.5"/></g></svg>',
+  storm: '<svg viewBox="0 0 24 24"><path d="M5 13h13a3.6 3.6 0 0 0 .5-7.1A5.2 5.2 0 0 0 8.5 3 4.3 4.3 0 0 0 5 13Z" fill="#8a8f99"/><path d="M13 12.5l-3.5 5h3.5l-2 5" fill="#ffd27a" stroke="#f4b740" stroke-width="1" stroke-linejoin="round"/></svg>',
+  cloud: '<svg viewBox="0 0 24 24"><path d="M5 18h13a3.6 3.6 0 0 0 .5-7.1A5.2 5.2 0 0 0 8.5 8 4.3 4.3 0 0 0 5 18Z" fill="#b4b8c0"/></svg>',
+  partly: '<svg viewBox="0 0 24 24"><circle cx="9" cy="9" r="4" fill="#f4b740"/><g stroke="#f4b740" stroke-width="1.6" stroke-linecap="round"><path d="M9 2.2v1.6M2.2 9h1.6M4.2 4.2l1.1 1.1M13.8 4.2l-1.1 1.1"/></g><path d="M7 20h11a3.3 3.3 0 0 0 .4-6.6 4.6 4.6 0 0 0-8.8-1.6A3.7 3.7 0 0 0 7 20Z" fill="#c3c7cf"/></svg>',
+  sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.6" fill="#f4b740"/><g stroke="#f4b740" stroke-width="2" stroke-linecap="round"><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></g></svg>',
+  moon: '<svg viewBox="0 0 24 24"><path d="M18 15.5A7.5 7.5 0 1 1 8.7 5.2a6 6 0 0 0 9.3 10.3Z" fill="#9b95f0"/></svg>',
+  snow: '<svg viewBox="0 0 24 24"><path d="M5 14h13a3.6 3.6 0 0 0 .5-7.1A5.2 5.2 0 0 0 8.5 4 4.3 4.3 0 0 0 5 14Z" fill="#c9d8ea"/><g fill="#4f9be8"><circle cx="8" cy="18.5" r="1.3"/><circle cx="12" cy="20" r="1.3"/><circle cx="16" cy="18.5" r="1.3"/></g></svg>',
+};
+function tpIcon(cond) {
+  const c = cond || '';
+  if (c === 'sunny') return TP_IC.sun;
+  if (c === 'clear-night') return TP_IC.moon;
+  if (c === 'partlycloudy') return TP_IC.partly;
+  if (c === 'rainy' || c === 'pouring') return TP_IC.rain;
+  if (c === 'lightning' || c === 'lightning-rainy' || c === 'hail') return TP_IC.storm;
+  if (c === 'snowy' || c === 'snowy-rainy') return TP_IC.snow;
+  return TP_IC.cloud;
+}
+const TP_AL_IC = {
+  rain: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14a4 4 0 0 1 .5-7.97A5.5 5.5 0 0 1 17 8a4 4 0 0 1 0 6"/><g><path class="tp-drop" d="M8 17v2"/><path class="tp-drop" d="M12 17v2"/><path class="tp-drop" d="M16 17v2"/></g></svg>',
+  storm: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14a4 4 0 0 1 .5-7.97A5.5 5.5 0 0 1 17 8a4 4 0 0 1 0 6"/><path class="tp-bolt" d="M13 12l-3 4h3l-2 4" fill="currentColor" fill-opacity=".25"/></svg>',
+  dpc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 2.8 20h18.4L12 3.5Z"/><path d="M12 10v4.2"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg>',
+};
+const TP_THERM = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0Z"/></svg>';
+const TP_HOME = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/></svg>';
+const TP_COND = {
+  sunny: 'Sereno', 'clear-night': 'Sereno', partlycloudy: 'Poco nuvoloso', cloudy: 'Nuvoloso', fog: 'Nebbia',
+  rainy: 'Pioggia', pouring: 'Pioggia intensa', lightning: 'Temporale', 'lightning-rainy': 'Temporale', hail: 'Grandine',
+  snowy: 'Neve', 'snowy-rainy': 'Pioggia e neve', windy: 'Ventoso', 'windy-variant': 'Ventoso', exceptional: 'Condizioni estreme',
+};
+const TP_WET = ['rainy', 'pouring', 'lightning-rainy', 'lightning', 'hail', 'snowy', 'snowy-rainy'];
+// Livelli DPC: 1 verde, 2 gialla, 3 arancione, 4 rossa
+const TP_LV = { 1: ['--tp-ok', 'verde'], 2: ['--tp-warn', 'gialla'], 3: ['--tp-org', 'arancione'], 4: ['--tp-crit', 'rossa'] };
+const TP_SEV = { 2: 'y', 3: 'o', 4: 'r' };
+
+// Curva stile bklit, scritta come stringa SVG alla larghezza vera W in pixel: niente
+// preserveAspectRatio stirato, quindi linea di 1,75 px e pallini tondi a ogni misura.
+// Torna { html, meta } (meta = coordinate e testi per il mirino).
+function tpCurve(id, o) {
+  const W = o.W, H = o.H, v = o.v || [], n = v.length;
+  const p = Object.assign({ t: 8, b: 8, l: 0, r: 0 }, o.pad || {});
+  if (!W || n < 2) return { html: '', meta: null };
+  let lo = Math.min.apply(null, v), hi = Math.max.apply(null, v);
+  const pr = (hi - lo || 1) * (o.ypad != null ? o.ypad : 0.14);
+  lo -= pr; hi += pr;
+  const pw = W - p.l - p.r, ph = H - p.t - p.b;
+  const X = (i) => p.l + (i / (n - 1)) * pw;
+  const Y = (x) => p.t + (1 - (x - lo) / (hi - lo)) * ph;
+  const P = v.map((x, i) => [X(i), Y(x)]);
+  const d = mgddMono(P);
+  const col = o.col;
+  const fade = o.fade !== false;
+  let s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '"><defs>';
+  if (o.area) {
+    s += '<linearGradient id="' + id + 'a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:' + col + ';stop-opacity:' + (o.a0 || 0.32) + '"/>' +
+      '<stop offset="1" style="stop-color:' + col + ';stop-opacity:0"/></linearGradient>';
+  }
+  if (fade) {
+    s += '<linearGradient id="' + id + 'f" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/>' +
+      '<stop offset="' + (o.fadeL || 0.09) + '" stop-color="#fff" stop-opacity="1"/><stop offset="1" stop-color="#fff" stop-opacity="1"/></linearGradient>' +
+      '<mask id="' + id + 'm" maskUnits="userSpaceOnUse" x="-20" y="-40" width="' + (W + 40) + '" height="' + (H + 80) + '">' +
+      '<rect x="-20" y="-40" width="' + (W + 40) + '" height="' + (H + 80) + '" fill="url(#' + id + 'f)"/></mask>';
+  }
+  s += '</defs>';
+  for (let k = 1; k <= (o.grid || 0); k++) {
+    const y = tpF(p.t + (k * ph) / ((o.grid || 0) + 1));
+    s += '<line class="tp-gl" x1="0" x2="' + W + '" y1="' + y + '" y2="' + y + '"/>';
+  }
+  s += '<g' + (fade ? ' mask="url(#' + id + 'm)"' : '') + '>';
+  if (o.area) {
+    s += '<path d="' + d + ' L' + tpF(P[n - 1][0]) + ',' + (H - p.b) + ' L' + tpF(P[0][0]) + ',' + (H - p.b) + 'Z" fill="url(#' + id + 'a)"/>';
+  }
+  s += '<path d="' + d + '" fill="none" style="stroke:' + col + '" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></g>';
+  if (o.end) {
+    const ex = tpF(P[n - 1][0]), ey = tpF(P[n - 1][1]);
+    s += '<circle class="tp-halo" cx="' + ex + '" cy="' + ey + '" r="3.5" style="fill:' + col + '"/>' +
+      '<circle class="tp-end" cx="' + ex + '" cy="' + ey + '" r="3.5" style="fill:' + col + ';stroke:var(--tp-card)" stroke-width="2"/>';
+  }
+  (o.points || []).forEach((q) => {
+    const x = tpF(X(q.i)), y = tpF(Y(v[q.i]));
+    s += '<g class="tp-pt"><circle cx="' + x + '" cy="' + y + '" r="3.4" style="fill:var(--tp-card);stroke:' + col + '" stroke-width="2"/>' +
+      '<text class="tp-pl" x="' + x + '" y="' + tpF(y - 9) + '" text-anchor="middle">' + tpEsc(q.lab) + '</text></g>';
+  });
+  (o.xl || []).forEach((a) => {
+    const i = a[0];
+    const anchor = o.xlMid ? 'middle' : i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle';
+    s += '<text class="tp-xl" x="' + tpF(X(i)) + '" y="' + (H - 1) + '" text-anchor="' + anchor + '">' + tpEsc(a[1]) + '</text>';
+  });
+  s += '<g class="tp-cur" opacity="0"><line x1="0" x2="0" y1="' + (p.t - 6) + '" y2="' + (H - p.b) + '"/>' +
+    '<circle r="4.5" cx="0" cy="0" style="fill:' + col + ';stroke:var(--tp-card)" stroke-width="2"/></g></svg>';
+  if (o.icons) {
+    s += '<div class="tp-icrow" style="top:' + o.iconTop + 'px">' +
+      o.icons.map((a) => '<span style="left:' + tpF(X(a[0])) + 'px">' + a[1] + '</span>').join('') + '</div>';
+  }
+  s += '<div class="tp-tt"></div>';
+  return { html: s, meta: { X: P.map((q) => tpF(q[0])), Y: P.map((q) => tpF(q[1])), tips: o.tips || [], W: W } };
+}
+
+class TemperaturePageCard extends HTMLElement {
+  setConfig(config) {
+    if (!config || !Array.isArray(config.rooms)) throw new Error('Config "rooms" mancante o non valida');
+    this.config = config;
+    this._fc = null;
+    this._fd = null;
+    this._fcAt = 0;
+    this._hist = {};
+    this._histAt = 0;
+    this._histOk = false;
+    this._W = this._W || {};
+    this._cvm = {};
+    this._lastSig = null;
+    if (!this._uid) {
+      TemperaturePageCard._seq = (TemperaturePageCard._seq || 0) + 1;
+      this._uid = TemperaturePageCard._seq;
+    }
+    this.style.display = 'block';
+    this.style.containerType = 'inline-size';
+    this.style.containerName = 'tp';
+    if (!this._wired) this._wire();
+  }
+
+  getCardSize() { return 14; }
+  getGridOptions() { return { columns: 'full', rows: 'auto' }; }
+
+  connectedCallback() {
+    if (!this._ro && typeof ResizeObserver !== 'undefined') {
+      this._ro = new ResizeObserver(() => this._measure());
+      this._ro.observe(this);
+    }
+  }
+  disconnectedCallback() {
+    if (this._ro) { this._ro.disconnect(); this._ro = null; }
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const c = this.config;
+    const ids = [c.weather_entity, c.dpc_zone_entity, c.zona_giorno, c.zona_notte]
+      .concat(c.dpc_entities || [])
+      .concat(c.rooms.flatMap((r) => [r.temp, r.hum]))
+      .filter(Boolean);
+    const dark = !!(hass && hass.themes && hass.themes.darkMode);
+    const sig = mgddStatesSig(hass, ids) + dark;
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      this._render();
+    }
+    this._fetchForecast();
+    this._fetchHistory();
+  }
+
+  _num(eid) {
+    const s = eid && this._hass && this._hass.states[eid];
+    if (!s) return null;
+    const v = parseFloat(s.state);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  async _fetchForecast() {
+    const we = this.config.weather_entity;
+    if (!we || !this._hass) return;
+    const now = Date.now();
+    if (this._fcAt && now - this._fcAt < 5 * 60 * 1000) return;
+    this._fcAt = now;
+    const get = async (type) => {
+      try {
+        const r = await this._hass.callWS({
+          type: 'call_service', domain: 'weather', service: 'get_forecasts',
+          service_data: { entity_id: we, type: type }, return_response: true,
+        });
+        return (r && r.response && r.response[we] && r.response[we].forecast) || null;
+      } catch (e) { return null; }
+    };
+    const res = await Promise.all([get('hourly'), get('daily')]);
+    this._fc = res[0];
+    this._fd = res[1];
+    this._fcDone = Date.now();
+    this._render();
+  }
+
+  // Storico delle ultime N ore (default 48) di zone e stanze, ridotto a un punto
+  // per ora: media dei valori dell'ora, buchi riempiti col valore precedente.
+  async _fetchHistory() {
+    if (!this._hass) return;
+    const c = this.config;
+    const now = Date.now();
+    if (this._histAt && now - this._histAt < 5 * 60 * 1000) return;
+    this._histAt = now;
+    const hours = c.chart_hours || 48;
+    const ids = [c.zona_giorno, c.zona_notte].concat(c.rooms.map((r) => r.temp)).filter(Boolean);
+    const uniq = ids.filter((x, i) => ids.indexOf(x) === i);
+    if (!uniq.length) return;
+    const start = new Date(now - hours * 3600e3).toISOString();
+    try {
+      const data = await this._hass.callApi('GET', 'history/period/' + start +
+        '?filter_entity_id=' + uniq.join(',') + '&minimal_response&no_attributes');
+      const out = {};
+      (data || []).forEach((arr) => {
+        if (!arr || !arr.length) return;
+        const eid = arr[0].entity_id;
+        const b = [];
+        for (let i = 0; i < hours; i++) b.push([]);
+        arr.forEach((p) => {
+          const v = parseFloat(p.state);
+          if (Number.isNaN(v)) return;
+          const t = new Date(p.last_changed || p.lu * 1000).getTime();
+          let i = Math.floor((t - (now - hours * 3600e3)) / 3600e3);
+          if (i < 0) i = 0;
+          if (i >= hours) i = hours - 1;
+          b[i].push(v);
+        });
+        let last = null;
+        const vals = b.map((a) => {
+          if (a.length) last = a.reduce((x, y) => x + y, 0) / a.length;
+          return last;
+        });
+        const first = vals.find((x) => x !== null);
+        if (first === undefined) return;
+        out[eid] = vals.map((x) => (x === null ? first : x));
+      });
+      this._hist = out;
+      this._histOk = true;
+    } catch (e) {
+      this._histOk = true; // niente storico: si disegna senza curve
+    }
+    this._render();
+  }
+
+  // La serie da disegnare: storico orario, con l'ultimo punto = valore di adesso
+  _series(eid) {
+    const h = this._hist[eid];
+    if (!h || h.length < 2) return null;
+    const v = h.slice();
+    const cur = this._num(eid);
+    if (cur !== null) v[v.length - 1] = cur;
+    return v;
+  }
+
+  // ---------------------------------------------------------------- allerte
+  _dpc() {
+    const ents = this.config.dpc_entities || [];
+    const z = this._hass.states[this.config.dpc_zone_entity];
+    const zone = z && z.state !== 'unknown' && z.state !== 'unavailable' ? z.state : '';
+    const W = WeatherAlertCard.prototype;
+    const items = [];
+    ents.forEach((eid) => {
+      const s = this._hass.states[eid];
+      if (!s) return;
+      const a = s.attributes || {};
+      let lv = 0;
+      let known = true;
+      if (eid.indexOf('binary_sensor.') === 0) {
+        if (s.state === 'on') { lv = Number(a.level) || 2; known = !!Number(a.level); }
+        else if (s.state === 'off') lv = 1;
+      } else {
+        lv = { green: 1, yellow: 2, orange: 3, red: 4 }[s.state] || 0;
+      }
+      items.push({ eid: eid, lv: lv, known: known, day: W._dpcDay(eid), risk: a.risk || W._dpcRiskName(eid), zone: a.zone_name || zone });
+    });
+    return items;
+  }
+
+  _rainWindow() {
+    const fc = this._fc;
+    if (!fc || fc.length < 2) return null;
+    const hours = this.config.rain_alert_hours || 6;
+    const now = Date.now();
+    const slot = Math.max(3600e3, new Date(fc[1].datetime).getTime() - new Date(fc[0].datetime).getTime());
+    const end = now + hours * 3600e3;
+    const win = [];
+    fc.forEach((f) => {
+      const t = new Date(f.datetime).getTime();
+      const ov = Math.min(t + slot, end) - Math.max(t, now);
+      if (ov <= 0) return;
+      win.push({ t: t, f: f, w: ov / slot });
+    });
+    if (!win.length) return null;
+    const total = win.reduce((s, x) => s + (x.f.precipitation || 0) * x.w, 0);
+    const storm = win.find((x) => ['lightning', 'lightning-rainy', 'hail'].indexOf(x.f.condition) >= 0);
+    return { win: win, total: total, storm: storm, hours: hours };
+  }
+
+  _alerts() {
+    const list = [];
+    const R = this._rainWindow();
+    const thr = this.config.rain_alert_mm != null ? this.config.rain_alert_mm : 3;
+    if (R && (R.storm || R.total >= thr)) {
+      const severe = !!R.storm || R.total >= thr * 2;
+      const vals = R.win.map((x) => x.f.precipitation || 0);
+      const mx = Math.max.apply(null, vals.concat([0.01]));
+      const pk = R.win[vals.indexOf(Math.max.apply(null, vals))];
+      const mm = '~' + R.total.toFixed(1).replace('.', ',') + ' mm';
+      const viz = '<div class="tp-al-viz"><div class="tp-mm" style="grid-template-columns:repeat(' + vals.length + ',1fr)">' +
+        vals.map((v) => '<i class="' + (v === mx ? 'pk' : '') + '" style="height:' + Math.max(6, (v / mx) * 100).toFixed(0) + '%"></i>').join('') +
+        '</div><div class="tp-mmx" style="grid-template-columns:repeat(' + vals.length + ',1fr)">' +
+        R.win.map((x, i) => '<span><b>' + vals[i].toFixed(1) + '</b>' + tpHH(x.t) + '</span>').join('') + '</div></div>';
+      const lvl = severe ? 'Alto' : 'Moderato';
+      list.push({
+        rank: severe ? 3 : 2, sev: severe ? 'r' : 'y', ic: R.storm ? 'storm' : 'rain',
+        k: (R.storm ? 'Temporali' : 'Pioggia') + ' · prossime ' + R.hours + ' ore',
+        t: R.storm ? 'Possibili temporali' : 'Pioggia intensa',
+        s: '<b>' + mm + '</b> previsti · ' + (R.storm ? 'fulmini dalle ' + tpHH(Math.max(R.storm.t, Date.now())) : 'picco alle ' + tpHH(Math.max(pk.t, Date.now()))) + ' · iLMeteo.it',
+        viz: viz, lvl: lvl,
+        row: { c: severe ? '--tp-crit' : '--tp-warn', t: (R.storm ? 'Possibili temporali' : 'Pioggia intensa') + ' · ' + R.hours + ' ore', s: 'iLMeteo.it · ' + mm, tg: lvl },
+      });
+    }
+    const dpc = this._dpc();
+    const tags = { 2: 'Ordinaria', 3: 'Moderata', 4: 'Elevata' };
+    const days = [];
+    dpc.forEach((x) => { if (x.day && days.indexOf(x.day) < 0) days.push(x.day); });
+    const dayLv = (d) => {
+      const l = dpc.filter((x) => x.day === d);
+      if (!l.length || l.every((x) => !x.lv)) return 0;
+      return Math.max.apply(null, l.map((x) => x.lv));
+    };
+    dpc.filter((x) => x.lv >= 2).forEach((x) => {
+      const name = TP_LV[x.lv][1];
+      const strip = '<div class="tp-days3" style="grid-template-columns:repeat(' + days.length + ',1fr)">' + days.map((d) => {
+        const l = dayLv(d);
+        return '<div class="tp-d3' + (d === x.day ? ' on' : '') + '" style="--c:var(' + (l ? TP_LV[l][0] : '--tp-tx3') + ')"><div class="k">' + d + '</div><div class="v">' + (l ? TP_LV[l][1] : 'n.d.') + '</div></div>';
+      }).join('') + '</div>';
+      const lvl = x.known ? tags[x.lv] : 'Attiva';
+      list.push({
+        rank: x.lv + 0.5, sev: TP_SEV[x.lv], ic: 'dpc',
+        k: 'Protezione Civile' + (x.day ? ' · ' + x.day.toLowerCase() : ''),
+        t: x.risk + (x.known ? ' — allerta ' + name : ''),
+        s: tpEsc(x.zone || 'Protezione Civile'),
+        viz: days.length ? strip : '', lvl: lvl,
+        row: { c: TP_LV[x.lv][0], t: x.risk + (x.known ? ' — ' + name : '') + (x.day ? ' · ' + x.day.toLowerCase() : ''), s: 'Protezione Civile' + (x.zone ? ' · ' + tpEsc(x.zone) : ''), tg: lvl },
+      });
+    });
+    list.sort((a, b) => b.rank - a.rank);
+    return list;
+  }
+
+  _alertsHtml() {
+    const list = this._alerts();
+    if (!list.length) {
+      const at = this._fcDone ? new Date(this._fcDone).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+      return '<div class="tp-calm"><i></i><span><b>Nessuna allerta</b> · iLMeteo.it e Protezione Civile' + (at ? ', controllato alle ' + at : '') + '</span></div>';
+    }
+    const m = list[0];
+    const more = list.slice(1);
+    return '<div class="tp-al ' + m.sev + '" role="alert"><div class="tp-al-main">' +
+      '<div class="tp-al-ic">' + TP_AL_IC[m.ic] + '</div>' +
+      '<div class="tp-al-tx"><div class="tp-al-k">' + m.k + '</div><div class="tp-al-t">' + m.t + '</div><div class="tp-al-s">' + m.s + '</div></div>' +
+      m.viz + '<span class="tp-lvl"><i></i>' + m.lvl + '</span></div>' +
+      (more.length ? '<div class="tp-al-more">' + more.map((r) =>
+        '<div class="tp-am" style="--c:var(' + r.row.c + ')"><span class="dot"></span><span class="t">' + r.row.t + '</span><span class="s">' + r.row.s + '</span><span class="tg">' + r.row.tg + '</span></div>'
+      ).join('') + '</div>' : '') +
+      '</div>';
+  }
+
+  // ---------------------------------------------------------------- meteo
+  _weatherHtml() {
+    const c = this.config;
+    const w = this._hass.states[c.weather_entity];
+    const cond = w ? w.state : null;
+    const temp = w && w.attributes ? w.attributes.temperature : null;
+    const fc = this._fc || [];
+    const now = Date.now();
+    const slot = fc.length > 1 ? Math.max(3600e3, new Date(fc[1].datetime).getTime() - new Date(fc[0].datetime).getTime()) : 3600e3;
+    const i0 = Math.max(0, fc.findIndex((f) => new Date(f.datetime).getTime() + slot > now));
+    const next = fc.slice(i0).filter((f) => new Date(f.datetime).getTime() <= new Date(fc[i0] ? fc[i0].datetime : 0).getTime() + 12 * 3600e3);
+    // riga sotto la temperatura: percepita e quando cambia la pioggia
+    const bits = ['<b>' + (TP_COND[cond] || tpEsc(cond || '')) + '</b>'];
+    const app = w && w.attributes && w.attributes.apparent_temperature != null ? w.attributes.apparent_temperature : next[0] && next[0].apparent_temperature;
+    if (app != null) bits.push('percepita ' + Math.round(app) + '°');
+    const wetNow = TP_WET.indexOf(cond) >= 0;
+    const later = fc.slice(i0 + 1, i0 + 9);
+    if (wetNow) {
+      const stop = later.find((f) => (f.precipitation || 0) < 0.1 && TP_WET.indexOf(f.condition) < 0);
+      if (stop) bits.push('smette verso le ' + tpHH(new Date(stop.datetime).getTime()));
+    } else {
+      const start = later.find((f) => (f.precipitation || 0) >= 0.3 || TP_WET.indexOf(f.condition) >= 0);
+      if (start) bits.push('pioggia dalle ' + tpHH(new Date(start.datetime).getTime()));
+      else if (w && w.attributes && w.attributes.humidity != null) bits.push('umidità ' + Math.round(w.attributes.humidity) + '%');
+    }
+    // linea delle prossime ore
+    let chart = '';
+    const K = 'w';
+    if (next.length >= 2 && this._W[K]) {
+      const v = next.map((f) => +f.temperature);
+      const step = Math.max(1, Math.round(3 / (slot / 3600e3)));
+      const lab = [];
+      for (let i = 0; i < next.length; i += step) lab.push(i);
+      const tms = next.map((f) => new Date(f.datetime).getTime());
+      const r = tpCurve('tp' + this._uid + K, {
+        W: this._W[K], H: 150, pad: { t: 26, b: 46, l: 16, r: 16 }, ypad: 0.35, fade: false,
+        v: v, col: 'var(--tp-warn)', area: true, a0: 0.22,
+        points: lab.map((i) => ({ i: i, lab: Math.round(v[i]) + '°' })),
+        xl: lab.map((i) => [i, i ? tpHH(tms[i]) : 'ora']), xlMid: true,
+        icons: lab.map((i) => [i, tpIcon(next[i].condition)]), iconTop: 102,
+        tips: next.map((f, i) => '<b>' + (+f.temperature).toFixed(1) + '°</b>' + (f.precipitation ? ' · ' + (+f.precipitation).toFixed(1) + ' mm' : '') +
+          '<span>' + (i ? tpHH(tms[i]) + ':00' : 'adesso') + '</span>'),
+      });
+      chart = r.html;
+      this._cvm[K] = r.meta;
+    }
+    const hrs = next.length >= 2 ? Math.round((new Date(next[next.length - 1].datetime) - new Date(next[0].datetime)) / 3600e3) : 12;
+    // giorni a barre su scala comune
+    const fd = (this._fd || []).slice(0, (c.daily_count || 4) + 1);
+    let days = '';
+    if (fd.length) {
+      const lo = Math.min.apply(null, fd.map((f) => +f.templow).concat(temp != null ? [temp] : []));
+      const hi = Math.max.apply(null, fd.map((f) => +f.temperature).concat(temp != null ? [temp] : []));
+      const span = hi - lo || 1;
+      const names = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
+      const today = new Date().toDateString();
+      days = fd.map((f, i) => {
+        const dd = new Date(f.datetime);
+        const isToday = dd.toDateString() === today;
+        const label = isToday ? 'Oggi' : new Date(now + 86400e3).toDateString() === dd.toDateString() ? 'Domani' : names[dd.getDay()];
+        const l = ((+f.templow - lo) / span) * 100;
+        const wd = Math.max(2, ((+f.temperature - +f.templow) / span) * 100);
+        const bg = wd >= 99.9 ? '' : ';background-size:' + tpF((100 / wd) * 100) + '% 100%;background-position:' + tpF((l / (100 - wd)) * 100) + '% 0';
+        const dot = isToday && temp != null ? '<b style="left:' + tpF(((temp - lo) / span) * 100) + '%"></b>' : '';
+        return '<div class="tp-dr"><span class="k">' + label + '</span>' + tpIcon(f.condition) + '<span class="lo">' + Math.round(f.templow) + '°</span>' +
+          '<div class="tp-rb"><i style="left:' + tpF(l) + '%;width:' + tpF(wd) + '%' + bg + '"></i>' + dot + '</div><span class="hi">' + Math.round(f.temperature) + '°</span></div>';
+      }).join('');
+    } else {
+      days = '<div class="tp-load">Caricamento…</div>';
+    }
+    return '<div class="tp-card tp-wx tp-a" data-mi="' + tpEsc(c.weather_entity) + '">' +
+      '<div class="tp-wx-h"><div><div class="tp-ch"><h3>' + tpEsc(c.title || 'Casa') + ' · iLMeteo.it</h3></div>' +
+      '<div class="tp-wx-t"><span data-cnt>' + (temp != null ? Math.round(temp) : '--') + '</span><sup>°C</sup></div>' +
+      '<div class="tp-wx-c">' + bits.join(' · ') + '</div></div><div class="tp-wx-big">' + tpIcon(cond) + '</div></div>' +
+      '<div class="tp-lab">Prossime ' + hrs + ' ore</div>' +
+      '<div class="tp-cv" data-k="' + K + '" style="height:150px">' + chart + '</div>' +
+      '<div class="tp-lab">Prossimi giorni <span>minima · massima</span></div>' +
+      '<div class="tp-dl">' + days + '</div></div>';
+  }
+
+  // ---------------------------------------------------------------- media casa
+  _avgHtml() {
+    const rooms = this.config.rooms.filter((r) => r.media !== false);
+    const rows = rooms.map((r) => ({ r: r, t: this._num(r.temp), h: this._num(r.hum) })).filter((x) => x.t !== null);
+    const avg = rows.length ? rows.reduce((s, x) => s + x.t, 0) / rows.length : null;
+    const hums = rows.map((x) => x.h).filter((x) => x !== null);
+    const hAvg = hums.length ? hums.reduce((a, b) => a + b, 0) / hums.length : null;
+    const hot = rows.length ? Math.max.apply(null, rows.map((x) => x.t)) : null;
+    const cold = rows.length ? Math.min.apply(null, rows.map((x) => x.t)) : null;
+    // gauge a tacche, 270 gradi, 14..26 gradi
+    const GMIN = 14, GMAX = 26, N = 40, START = 225, SPAN = 270;
+    const pt = (cx, cy, r, a) => { const rad = ((a - 90) * Math.PI) / 180; return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)]; };
+    const ang = (t) => START + ((Math.max(GMIN, Math.min(GMAX, t)) - GMIN) / (GMAX - GMIN)) * SPAN;
+    const cx = 100, cy = 100, r1 = 66, r2 = 90, step = SPAN / N, w = step * 0.62;
+    let g = '<svg viewBox="0 0 200 184">';
+    if (hot !== null && hot - cold > 0.05) {
+      const p0 = pt(cx, cy, 97, ang(cold)), p1 = pt(cx, cy, 97, ang(hot));
+      const large = ang(hot) - ang(cold) > 180 ? 1 : 0;
+      g += '<path d="M' + tpF(p0[0]) + ' ' + tpF(p0[1]) + ' A97 97 0 ' + large + ' 1 ' + tpF(p1[0]) + ' ' + tpF(p1[1]) + '" fill="none" style="stroke:var(--tp-tx3)" stroke-width="2.2" stroke-linecap="round" opacity=".55"/>';
+    }
+    for (let i = 0; i < N; i++) {
+      const a = START + step * i + step / 2;
+      const v = GMIN + ((i + 0.5) / N) * (GMAX - GMIN);
+      const taper = 0.55 + 0.45 * (i / (N - 1));
+      const ww = (w * taper) / 2;
+      const P = [pt(cx, cy, r1 + 4 * (1 - taper), a - ww * 0.7), pt(cx, cy, r2, a - ww), pt(cx, cy, r2, a + ww), pt(cx, cy, r1 + 4 * (1 - taper), a + ww * 0.7)];
+      const lit = avg !== null && v <= avg;
+      g += '<path class="tp-n" d="M' + P.map((q) => tpF(q[0]) + ' ' + tpF(q[1])).join(' L') + 'Z" style="fill:' + (lit ? tpTvar(v) : 'var(--tp-trk)') + '"/>';
+    }
+    if (hot !== null) {
+      [[cold, 'var(--tp-ac)'], [hot, 'var(--tp-warn)']].forEach((m) => {
+        const a = ang(m[0]);
+        const q = pt(cx, cy, 104, a);
+        g += '<g class="tp-mk" transform="translate(' + tpF(q[0]) + ' ' + tpF(q[1]) + ') rotate(' + tpF(a + 180) + ')"><path d="M0 -4 L4 3 L-4 3Z" style="fill:' + m[1] + '"/></g>';
+      });
+    }
+    g += '</svg>';
+    // scostamento di ogni stanza dalla media
+    const sorted = rows.slice().sort((a, b) => b.t - a.t);
+    const maxD = sorted.reduce((m, x) => Math.max(m, Math.abs(x.t - avg)), 0);
+    const S = Math.max(2.5, Math.ceil(maxD * 2) / 2);
+    const sS = String(S).replace('.', ',');
+    const dv = sorted.map((x) => {
+      const d = Math.round((x.t - avg) * 10) / 10;
+      const col = d > 0.05 ? 'var(--tp-warn)' : d < -0.05 ? 'var(--tp-ac)' : 'var(--tp-tx3)';
+      const wd = Math.min(50, (Math.abs(d) / S) * 50);
+      const bar = Math.abs(d) < 0.05 ? '<i class="z" style="left:50%"></i>'
+        : '<i style="' + (d > 0 ? 'left:50%' : 'right:50%') + ';width:' + tpF(wd) + '%;transform-origin:' + (d > 0 ? 'left' : 'right') + '"></i>';
+      return '<div class="tp-dvr" style="--c:' + col + '" data-mi="' + tpEsc(x.r.temp) + '"><span class="k"><b>' + x.t.toFixed(1) + '°</b>' + tpEsc(x.r.name) + '</span>' +
+        '<div class="tp-dvt">' + bar + '</div><span class="v">' + (d > 0 ? '+' : d < 0 ? '−' : '±') + Math.abs(d).toFixed(1) + '°</span></div>';
+    }).join('');
+    return '<div class="tp-card tp-avgc tp-a">' +
+      '<div class="tp-ch"><h3>' + TP_HOME + 'Media casa</h3><small>' + rows.length + ' stanze</small></div>' +
+      '<div class="tp-avg"><div><div class="tp-gz">' + g +
+      '<div class="tp-gz-c"><div class="tp-gz-v"><b data-cnt>' + (avg !== null ? avg.toFixed(1) : '--') + '</b><span>°C</span></div><div class="tp-gz-l">media</div></div></div>' +
+      '<div class="tp-scale"><span>' + GMIN + '°</span><span>' + GMAX + '°</span></div></div>' +
+      '<div class="tp-ext">' +
+      '<div class="tp-ex" style="--c:var(--tp-rain)"><div class="k">Umidità media</div><div class="v"><span data-cnt>' + (hAvg !== null ? Math.round(hAvg) : '--') + '</span>%</div>' +
+      '<div class="s">' + (hums.length ? 'da ' + Math.round(Math.min.apply(null, hums)) + ' a ' + Math.round(Math.max.apply(null, hums)) + '%' : '') + '</div></div>' +
+      '<div class="tp-ex" style="--c:var(--tp-tx2)"><div class="k">Tra le stanze</div><div class="v"><span data-cnt>' + (hot !== null ? (hot - cold).toFixed(1) : '--') + '</span>°</div>' +
+      '<div class="s">dalla più fredda alla più calda</div></div></div></div>' +
+      '<div class="tp-lab">Rispetto alla media <span>−' + sS + '° · +' + sS + '°</span></div>' +
+      '<div class="tp-dv">' + dv + '</div></div>';
+  }
+
+  // ---------------------------------------------------------------- zone e stanze
+  _when(i, n) {
+    const t = Date.now() - (n - 1 - i) * 3600e3;
+    const d = new Date(t);
+    const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(t).setHours(0, 0, 0, 0)) / 86400e3);
+    const day = days <= 0 ? 'oggi' : days === 1 ? 'ieri' : days + ' giorni fa';
+    return day + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  _zoneHtml(eid, name, col, K) {
+    const hours = this.config.chart_hours || 48;
+    const v = this._series(eid);
+    const t = this._num(eid);
+    let chart = '';
+    if (v && this._W[K]) {
+      const n = v.length;
+      const r = tpCurve('tp' + this._uid + K, {
+        W: this._W[K], H: 118, pad: { t: 10, b: 18, l: 0, r: 6 }, grid: 2, fadeL: 0.12, v: v, col: col, area: true, end: true,
+        xl: [[0, hours + ' h fa'], [Math.round((n - 1) / 2), Math.round(hours / 2) + ' h fa'], [n - 1, 'ora']],
+        tips: v.map((x, i) => '<b>' + x.toFixed(1) + '°</b><span>' + this._when(i, n) + '</span>'),
+      });
+      chart = r.html;
+      this._cvm[K] = r.meta;
+    }
+    return '<div class="tp-card tp-zn tp-a" data-mi="' + tpEsc(eid) + '"><div class="tp-ch"><h3>' + name + '</h3><small>' + hours + ' h</small></div>' +
+      '<div class="v"><span data-cnt>' + (t !== null ? t.toFixed(1) : '--') + '</span>°C</div>' +
+      '<div class="tp-cv" data-k="' + K + '" style="height:118px">' + chart + '</div></div>';
+  }
+
+  _roomHtml(r, i) {
+    const t = this._num(r.temp);
+    const h = this._num(r.hum);
+    const hours = this.config.chart_hours || 48;
+    if (t === null) {
+      return '<div class="tp-card tp-rm off tp-a" style="--c:var(--tp-tx3)" data-mi="' + tpEsc(r.temp) + '"><div class="tp-rm-h"><div class="tp-rm-ic">' + TP_THERM + '</div>' +
+        '<div class="tp-rm-n"><b>' + tpEsc(r.name) + '</b><span>sensore non raggiungibile</span></div><div class="tp-rm-t">—</div></div>' +
+        '<div class="why">Nessun dato dal sensore</div></div>';
+    }
+    const K = 'r' + i;
+    const v = this._series(r.temp);
+    let chart = '';
+    if (v && this._W[K]) {
+      const n = v.length;
+      const res = tpCurve('tp' + this._uid + K, {
+        W: this._W[K], H: 58, pad: { t: 8, b: 4, l: 0, r: 8 }, fadeL: 0.14, v: v, col: tpTvar(t), area: true, a0: 0.3, end: true,
+        tips: v.map((x, j) => '<b>' + x.toFixed(1) + '°</b><span>' + this._when(j, n) + '</span>'),
+      });
+      chart = res.html;
+      this._cvm[K] = res.meta;
+    }
+    const mn = v ? Math.min.apply(null, v) : null;
+    const mx = v ? Math.max.apply(null, v) : null;
+    return '<div class="tp-card tp-rm tp-a" style="--c:' + tpTvar(t) + '" data-mi="' + tpEsc(r.temp) + '">' +
+      '<div class="tp-rm-h"><div class="tp-rm-ic">' + TP_THERM + '</div><div class="tp-rm-n"><b>' + tpEsc(r.name) + '</b>' +
+      '<span>' + (h !== null ? '💧 ' + Math.round(h) + '%' : '') + '</span></div>' +
+      '<div class="tp-rm-t"><span data-cnt>' + t.toFixed(1) + '</span><small>°</small></div></div>' +
+      '<div class="tp-cv" data-k="' + K + '" style="height:58px">' + chart + '</div>' +
+      '<div class="tp-rm-f"><span>min <b>' + (mn !== null ? mn.toFixed(1) + '°' : '—') + '</b></span><span>' + hours + ' h</span>' +
+      '<span>max <b>' + (mx !== null ? mx.toFixed(1) + '°' : '—') + '</b></span></div></div>';
+  }
+
+  // ---------------------------------------------------------------- disegno
+  _ready() {
+    return !!(this._fcDone && this._histOk && Object.keys(this._W).length);
+  }
+
+  _render() {
+    if (!this._hass || !this.config) return;
+    const c = this.config;
+    if (!this._t0) {
+      this._t0 = Date.now();
+      // al massimo 1,5 s di attesa dei dati, poi si mostra comunque
+      setTimeout(() => this._render(), 1500);
+    }
+    const dark = !!(this._hass.themes && this._hass.themes.darkMode);
+    const show = this._shown || this._ready() || Date.now() - this._t0 >= 1450;
+    this._cvm = {};
+    const zones = (c.zona_giorno ? this._zoneHtml(c.zona_giorno, 'Zona giorno', 'var(--tp-warn)', 'zg') : '') +
+      (c.zona_notte ? this._zoneHtml(c.zona_notte, 'Zona notte', 'var(--tp-ac)', 'zn') : '');
+    const html = '<div class="tp' + (dark ? ' dk' : '') + (show ? '' : ' wait') + '">' +
+      '<div class="tp-alerts">' + this._alertsHtml() + '</div>' +
+      '<div class="tp-top">' + this._weatherHtml() +
+      '<div class="tp-col">' + this._avgHtml() + '</div>' +
+      (zones ? '<div class="tp-col z">' + zones + '</div>' : '') + '</div>' +
+      '<div class="tp-rooms">' + c.rooms.map((r, i) => this._roomHtml(r, i)).join('') + '</div></div>';
+    mgddPaint(this, TP_STYLES, html);
+    if (show && !this._shown) {
+      this._shown = true;
+      mgddIntro(this, (seq) => this._intro(seq));
+    }
+    requestAnimationFrame(() => this._measure());
+  }
+
+  // Larghezza vera di ogni grafico: se cambia si ridisegna (le curve sono in pixel).
+  _measure() {
+    let changed = false;
+    this.querySelectorAll('.tp-cv[data-k]').forEach((h) => {
+      const w = Math.round(h.clientWidth);
+      if (w && w !== this._W[h.dataset.k]) { this._W[h.dataset.k] = w; changed = true; }
+    });
+    if (changed) this._render();
+  }
+
+  _intro(seq) {
+    const q = (s) => this.querySelectorAll(s);
+    const E = 'cubic-bezier(.16,1,.3,1)';
+    seq.add(q('.tp-al,.tp-calm'), [{ opacity: 0, transform: 'translateY(-12px)' }, { opacity: 1, transform: 'none' }], { duration: 600, easing: E }, 80)
+      .add(q('.tp-al-ic'), [{ transform: 'scale(.4) rotate(-12deg)' }, { transform: 'none' }], { duration: 700, easing: 'cubic-bezier(.34,1.8,.64,1)' }, 230)
+      .add(q('.tp-al-tx>*'), [{ opacity: 0, transform: 'translateX(-10px)' }, { opacity: 1, transform: 'none' }], { duration: 500, stagger: 70 }, 280)
+      .add(q('.tp-mm i'), [{ transform: 'scaleY(0)' }, { transform: 'none' }], { duration: 650, stagger: 60, easing: 'cubic-bezier(.34,1.5,.64,1)' }, 430)
+      .add(q('.tp-d3'), [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 500, stagger: 80 }, 430)
+      .add(q('.tp-lvl'), [{ opacity: 0, transform: 'scale(.5)' }, { opacity: 1, transform: 'none' }], { duration: 600, easing: 'cubic-bezier(.34,1.9,.64,1)' }, 580)
+      .add(q('.tp-am'), [{ opacity: 0, transform: 'translateX(-14px)' }, { opacity: 1, transform: 'none' }], { duration: 500, stagger: 80 }, 680)
+      .add(q('.tp-a'), [{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'none' }], { duration: 620, stagger: 40 }, 180)
+      .add(q('.tp-n'), [{ opacity: 0 }, { opacity: 1 }], { duration: 420, stagger: 20 }, 350)
+      .add(q('.tp-mk'), [{ opacity: 0 }, { opacity: 1 }], { duration: 400, stagger: 120 }, 1000)
+      .add(q('.tp-cv svg'), [{ clipPath: 'inset(-40px 100% -40px -20px)' }, { clipPath: 'inset(-40px -20px -40px -20px)' }], { duration: 1300, stagger: 45, easing: 'cubic-bezier(.77,0,.18,1)' }, 400)
+      .add(q('.tp-icrow span'), [{ opacity: 0, transform: 'translate(-50%,-6px)' }, { opacity: 1, transform: 'translate(-50%,0)' }], { duration: 500, stagger: 60 }, 600)
+      .add(q('.tp-pt'), [{ opacity: 0 }, { opacity: 1 }], { duration: 450, stagger: 90 }, 750)
+      .add(q('.tp-end'), [{ opacity: 0 }, { opacity: 1 }], { duration: 450 }, 1500)
+      .add(q('.tp-dr,.tp-dvr'), [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 500, stagger: 50 }, 600)
+      .add(q('.tp-rb i,.tp-dvt i:not(.z)'), [{ transform: 'scaleX(0)' }, { transform: 'none' }], { duration: 700, stagger: 60 }, 700)
+      .count(q('[data-cnt]'), { duration: 1100 }, 250);
+  }
+
+  // Mirino, tooltip e apertura del more-info: ascoltatori delegati sull'elemento,
+  // che sopravvivono ai ridisegni.
+  _wire() {
+    this._wired = true;
+    const hide = () => {
+      if (!this._hh) return;
+      const cur = this._hh.querySelector('.tp-cur');
+      const tt = this._hh.querySelector('.tp-tt');
+      if (cur) cur.setAttribute('opacity', '0');
+      if (tt) tt.classList.remove('on');
+      this._hh = null;
+    };
+    const move = (e) => {
+      const host = e.target && e.target.closest ? e.target.closest('.tp-cv[data-k]') : null;
+      if (this._hh && this._hh !== host) hide();
+      if (!host) return;
+      const m = this._cvm[host.dataset.k];
+      const svg = host.querySelector('svg');
+      if (!m || !svg) return;
+      clearTimeout(this._hhT);
+      const x = e.clientX - svg.getBoundingClientRect().left;
+      let i = 0, best = Infinity;
+      m.X.forEach((v, j) => { const d = Math.abs(v - x); if (d < best) { best = d; i = j; } });
+      const cur = svg.querySelector('.tp-cur');
+      const ln = cur.querySelector('line');
+      const dot = cur.querySelector('circle');
+      ln.setAttribute('x1', m.X[i]); ln.setAttribute('x2', m.X[i]);
+      dot.setAttribute('cx', m.X[i]); dot.setAttribute('cy', m.Y[i]);
+      cur.setAttribute('opacity', '1');
+      const tt = host.querySelector('.tp-tt');
+      tt.innerHTML = m.tips[i] || '';
+      tt.classList.add('on');
+      const tw = tt.offsetWidth / 2 + 4;
+      tt.style.left = Math.max(tw, Math.min(m.W - tw, m.X[i])) + 'px';
+      tt.style.top = Math.max(2, m.Y[i]) + 'px';
+      this._hh = host;
+    };
+    this.addEventListener('pointermove', move);
+    this.addEventListener('pointerdown', move);
+    this.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hide(); });
+    this.addEventListener('pointerup', (e) => {
+      if (e.pointerType !== 'mouse') { clearTimeout(this._hhT); this._hhT = setTimeout(hide, 2500); }
+    });
+    this.addEventListener('click', (e) => {
+      if (!e.target || !e.target.closest || e.target.closest('.tp-cv')) return;
+      const t = e.target.closest('[data-mi]');
+      if (!t || !t.dataset.mi) return;
+      this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: t.dataset.mi }, bubbles: true, composed: true }));
+    });
+  }
+}
+
+const TP_STYLES = '<style>' +
+  '.tp{--tp-card:var(--ha-card-background,var(--card-background-color,#fff));--tp-tx:var(--primary-text-color,#15181d);--tp-tx2:var(--secondary-text-color,#5b6270);' +
+  '--tp-tx3:color-mix(in srgb,var(--tp-tx2) 72%,var(--tp-card));--tp-line:var(--divider-color,rgba(0,0,0,.12));--tp-card2:color-mix(in srgb,var(--tp-tx) 5%,var(--tp-card));' +
+  '--tp-r:var(--ha-card-border-radius,16px);' +
+  '--tp-trk:rgba(20,30,50,.09);--tp-ac:#2f86e8;--tp-cold:#5a63e0;--tp-ok:#1fa865;--tp-warn:#c98500;--tp-org:#e0661f;--tp-crit:#d94040;--tp-rain:#2f86e8;--tp-ink:#fff;' +
+  'color:var(--tp-tx);font:14px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-feature-settings:"tnum" 1,"cv11" 1;}' +
+  '.tp.dk{--tp-trk:rgba(255,255,255,.09);--tp-ac:#6cb4ff;--tp-cold:#7d8cff;--tp-ok:#5fd39a;--tp-warn:#f4b740;--tp-org:#ff9f6b;--tp-crit:#f26d6d;--tp-rain:#5aa7ff;--tp-ink:#16110a;}' +
+  '.tp.wait{opacity:0;}' +
+  '.tp *{box-sizing:border-box;}' +
+  // fascia allerte
+  '.tp-alerts{margin-bottom:16px;}' +
+  '.tp-al{--sev:var(--tp-warn);position:relative;overflow:hidden;border-radius:var(--tp-r);border:1px solid color-mix(in srgb,var(--sev) 50%,transparent);' +
+  'background:linear-gradient(100deg,color-mix(in srgb,var(--sev) 24%,var(--tp-card)) 0%,color-mix(in srgb,var(--sev) 9%,var(--tp-card)) 55%,color-mix(in srgb,var(--sev) 5%,var(--tp-card)) 100%);' +
+  'box-shadow:0 0 0 1px color-mix(in srgb,var(--sev) 10%,transparent),0 10px 30px -14px color-mix(in srgb,var(--sev) 55%,transparent);}' +
+  '.tp-al::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--sev);}' +
+  '.tp-al.y{--sev:var(--tp-warn);}.tp-al.o{--sev:var(--tp-org);}.tp-al.r{--sev:var(--tp-crit);}' +
+  '.tp-al-main{display:grid;grid-template-columns:auto 1fr auto auto;gap:18px;align-items:center;padding:16px 20px 16px 24px;}' +
+  '.tp-al-ic{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;position:relative;background:color-mix(in srgb,var(--sev) 20%,transparent);color:var(--sev);}' +
+  '.tp-al-ic::after{content:"";position:absolute;inset:0;border-radius:inherit;animation:tp-ring 2.6s infinite;}' +
+  '@keyframes tp-ring{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--sev) 50%,transparent)}75%,100%{box-shadow:0 0 0 12px transparent}}' +
+  '.tp-al-ic svg{width:30px;height:30px;overflow:visible;}' +
+  '.tp-drop{animation:tp-fall 1.3s linear infinite;}.tp-drop:nth-child(2){animation-delay:-.45s;}.tp-drop:nth-child(3){animation-delay:-.9s;}' +
+  '@keyframes tp-fall{0%{transform:translateY(-3px);opacity:0}25%{opacity:1}100%{transform:translateY(6px);opacity:0}}' +
+  '.tp-bolt{animation:tp-flash 3.2s infinite;}' +
+  '@keyframes tp-flash{0%,82%,100%{opacity:1}86%{opacity:.25}90%{opacity:1}93%{opacity:.4}}' +
+  '.tp-al-tx{min-width:0;}' +
+  '.tp-al-k{font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--sev);}' +
+  '.tp-al-t{font-size:19px;font-weight:700;letter-spacing:-.01em;line-height:1.25;margin-top:1px;}' +
+  '.tp-al-s{color:var(--tp-tx2);font-size:13px;margin-top:3px;}.tp-al-s b{color:var(--tp-tx);font-weight:600;}' +
+  '.tp-lvl{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;padding:7px 14px;border-radius:99px;background:var(--sev);color:var(--tp-ink);white-space:nowrap;}' +
+  '.tp-lvl i{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.7;}' +
+  '.tp-al-viz{display:flex;flex-direction:column;gap:5px;min-width:250px;}' +
+  '.tp-mm{display:grid;gap:6px;align-items:end;height:46px;}' +
+  '.tp-mm i{display:block;border-radius:5px 5px 2px 2px;background:color-mix(in srgb,var(--sev) 70%,transparent);transform-origin:bottom;min-height:3px;}' +
+  '.tp-mm i.pk{background:var(--sev);}' +
+  '.tp-mmx{display:grid;gap:6px;font-size:11px;color:var(--tp-tx3);text-align:center;}' +
+  '.tp-mmx b{display:block;color:var(--tp-tx2);font-weight:600;font-size:11.5px;}' +
+  '.tp-days3{display:grid;gap:6px;min-width:250px;}' +
+  '.tp-d3{border-radius:10px;padding:7px 8px;text-align:center;background:color-mix(in srgb,var(--c) 16%,transparent);border:1px solid color-mix(in srgb,var(--c) 40%,transparent);}' +
+  '.tp-d3 .k{font-size:11px;color:var(--tp-tx2);}.tp-d3 .v{font-size:13px;font-weight:700;color:var(--c);}' +
+  '.tp-d3.on{outline:2px solid var(--c);outline-offset:1px;}' +
+  '.tp-al-more{border-top:1px solid color-mix(in srgb,var(--sev) 25%,transparent);padding:10px 20px 12px 24px;display:flex;flex-direction:column;gap:8px;}' +
+  '.tp-am{display:flex;align-items:center;gap:12px;font-size:13px;}' +
+  '.tp-am .dot{width:9px;height:9px;border-radius:50%;background:var(--c);flex:0 0 auto;box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 25%,transparent);}' +
+  '.tp-am .t{font-weight:600;}.tp-am .s{color:var(--tp-tx2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+  '.tp-am .tg{font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:99px;background:color-mix(in srgb,var(--c) 18%,transparent);color:var(--c);white-space:nowrap;}' +
+  '.tp-calm{display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:12px;border:1px solid var(--tp-line);background:var(--tp-card);color:var(--tp-tx2);font-size:13px;}' +
+  '.tp-calm i{width:8px;height:8px;border-radius:50%;background:var(--tp-ok);flex:0 0 auto;}.tp-calm b{color:var(--tp-tx);font-weight:600;}' +
+  // grafici
+  '.tp-cv{position:relative;width:100%;touch-action:pan-y;}' +
+  '.tp-cv svg{display:block;overflow:visible;cursor:crosshair;}' +
+  '.tp-gl{stroke:var(--tp-line);stroke-dasharray:2 5;}' +
+  '.tp-xl{fill:var(--tp-tx3);font-size:10.5px;}' +
+  '.tp-pl{fill:var(--tp-tx);font-size:11.5px;font-weight:600;}' +
+  '.tp-cur line{stroke:var(--tp-tx3);stroke-width:1;}' +
+  '.tp-halo{transform-box:fill-box;transform-origin:center;animation:tp-halo 2.4s ease-out infinite;}' +
+  '@keyframes tp-halo{0%{transform:scale(1);opacity:.55}100%{transform:scale(3.4);opacity:0}}' +
+  '.tp-tt{position:absolute;z-index:3;pointer-events:none;background:color-mix(in srgb,var(--tp-card2) 92%,transparent);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+  'border:1px solid var(--tp-line);border-radius:9px;padding:4px 9px;font-size:11.5px;white-space:nowrap;box-shadow:0 8px 18px -8px rgba(0,0,0,.55);opacity:0;transition:opacity .12s;transform:translate(-50%,calc(-100% - 10px));}' +
+  '.tp-tt b{color:var(--tp-tx);font-weight:700;}.tp-tt span{color:var(--tp-tx3);margin-left:6px;}.tp-tt.on{opacity:1;}' +
+  '.tp-icrow{position:absolute;left:0;right:0;height:0;pointer-events:none;}' +
+  '.tp-icrow span{position:absolute;top:0;transform:translateX(-50%);display:flex;}' +
+  '.tp-icrow svg{width:24px;height:24px;}' +
+  // griglia
+  '.tp-top{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:16px;margin-bottom:16px;align-items:stretch;}' +
+  '.tp-col{display:flex;flex-direction:column;gap:16px;min-width:0;}' +
+  '.tp-card{background:var(--tp-card);border:1px solid var(--tp-line);border-radius:var(--tp-r);padding:16px 18px;min-width:0;position:relative;box-shadow:var(--ha-card-box-shadow,none);}' +
+  '.tp-card[data-mi]{cursor:pointer;}' +
+  '.tp-ch{display:flex;justify-content:space-between;align-items:center;gap:10px;}' +
+  '.tp-ch h3{margin:0;font-size:13px;font-weight:600;color:var(--tp-tx2);display:flex;align-items:center;gap:7px;}' +
+  '.tp-ch small{color:var(--tp-tx3);font-size:12px;}' +
+  '.tp-lab{display:flex;justify-content:space-between;font-size:11.5px;color:var(--tp-tx3);margin:14px 0 6px;}' +
+  '.tp-load{font-size:12px;color:var(--tp-tx3);padding:8px 0;}' +
+  // meteo
+  '.tp-wx{display:flex;flex-direction:column;}' +
+  '.tp-wx-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}' +
+  '.tp-wx-t{font-size:48px;font-weight:700;letter-spacing:-.035em;line-height:1;margin-top:8px;}' +
+  '.tp-wx-t sup{font-size:.45em;font-weight:600;vertical-align:top;position:relative;top:.25em;color:var(--tp-tx2);}' +
+  '.tp-wx-c{color:var(--tp-tx2);font-size:13.5px;margin-top:6px;}.tp-wx-c b{color:var(--tp-tx);font-weight:600;}' +
+  '.tp-wx-big{width:66px;height:66px;flex:0 0 auto;}.tp-wx-big svg{width:100%;height:100%;}' +
+  '.tp-dl{display:flex;flex-direction:column;}' +
+  '.tp-dr{display:grid;grid-template-columns:62px 26px 30px 1fr 30px;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--tp-line);font-size:13px;}' +
+  '.tp-dr:first-child{border-top:0;}' +
+  '.tp-dr .k{color:var(--tp-tx2);}.tp-dr svg{width:22px;height:22px;}' +
+  '.tp-dr .lo{color:var(--tp-tx3);text-align:right;}.tp-dr .hi{font-weight:700;}' +
+  '.tp-rb{position:relative;height:6px;border-radius:99px;background:var(--tp-trk);}' +
+  '.tp-rb i{position:absolute;top:0;bottom:0;border-radius:99px;background:linear-gradient(90deg,var(--tp-cold),var(--tp-ac) 35%,var(--tp-ok) 65%,var(--tp-warn));transform-origin:left;}' +
+  '.tp-rb b{position:absolute;top:50%;width:9px;height:9px;border-radius:50%;background:var(--tp-tx);border:2px solid var(--tp-card);transform:translate(-50%,-50%);}' +
+  // media casa
+  '.tp-avgc{display:flex;flex-direction:column;flex:1;}' +
+  '.tp-avg{display:grid;grid-template-columns:minmax(140px,190px) 1fr;gap:14px;align-items:center;margin-top:4px;}' +
+  '.tp-gz{position:relative;width:100%;container-type:inline-size;}' +
+  '.tp-gz svg{display:block;width:100%;height:auto;overflow:visible;}' +
+  '.tp-gz-c{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);text-align:center;white-space:nowrap;}' +
+  '.tp-gz-v{font-weight:800;letter-spacing:-.03em;line-height:1;font-size:clamp(20px,22cqw,44px);}' +
+  '.tp-gz-v b{font-weight:800;}.tp-gz-v span{font-size:.4em;color:var(--tp-tx2);font-weight:500;letter-spacing:0;margin-left:1px;}' +
+  '.tp-gz-l{color:var(--tp-tx3);font-size:12px;margin-top:4px;}' +
+  '.tp-scale{display:flex;justify-content:space-between;font-size:11px;color:var(--tp-tx3);margin-top:8px;}' +
+  '.tp-ext{display:flex;flex-direction:column;gap:8px;}' +
+  '.tp-ex{border-radius:12px;padding:10px 12px;background:color-mix(in srgb,var(--c) 12%,var(--tp-card2));border:1px solid color-mix(in srgb,var(--c) 28%,transparent);}' +
+  '.tp-ex .k{font-size:11.5px;color:var(--c);font-weight:600;}' +
+  '.tp-ex .v{font-size:24px;font-weight:800;letter-spacing:-.02em;line-height:1.15;color:var(--c);}' +
+  '.tp-ex .s{font-size:12px;color:var(--tp-tx2);}' +
+  '.tp-dv{flex:1;display:flex;flex-direction:column;justify-content:space-between;gap:4px;min-height:0;}' +
+  '.tp-dvr{display:grid;grid-template-columns:minmax(0,1.7fr) 1fr 42px;align-items:center;gap:10px;font-size:12.5px;padding:3px 0;cursor:pointer;}' +
+  '.tp-dvr .k{color:var(--tp-tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.tp-dvr .k b{color:var(--tp-tx);font-weight:600;margin-right:6px;}' +
+  '.tp-dvr .v{text-align:right;font-weight:700;color:var(--c);}' +
+  '.tp-dvt{position:relative;height:8px;border-radius:99px;background:var(--tp-trk);}' +
+  '.tp-dvt::before{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:var(--tp-tx3);opacity:.6;}' +
+  '.tp-dvt i{position:absolute;top:0;bottom:0;border-radius:99px;background:var(--c);}' +
+  '.tp-dvt i.z{width:6px;margin-left:-3px;background:var(--tp-tx3);}' +
+  // zone
+  '.tp-zn{flex:1;display:flex;flex-direction:column;}' +
+  '.tp-zn .v{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-top:2px;}' +
+  '.tp-zn .tp-cv{margin-top:auto;}' +
+  // stanze
+  '.tp-rooms{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}' +
+  '.tp-rm{padding:14px 0 12px;overflow:hidden;display:flex;flex-direction:column;}' +
+  '.tp-rm-h{display:flex;align-items:center;gap:10px;padding:0 16px;}' +
+  '.tp-rm-ic{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:color-mix(in srgb,var(--c) 16%,transparent);color:var(--c);flex:0 0 auto;}' +
+  '.tp-rm-ic svg{width:16px;height:16px;}' +
+  '.tp-rm-n{min-width:0;flex:1;}.tp-rm-n b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.tp-rm-n span{font-size:12px;color:var(--tp-tx3);}' +
+  '.tp-rm-t{font-size:28px;font-weight:700;letter-spacing:-.03em;color:var(--c);line-height:1;white-space:nowrap;}' +
+  '.tp-rm-t small{font-size:.55em;font-weight:600;vertical-align:top;margin-left:1px;}' +
+  '.tp-rm .tp-cv{margin-top:10px;}' +
+  '.tp-rm-f{display:flex;justify-content:space-between;padding:4px 16px 0;font-size:11.5px;color:var(--tp-tx3);}' +
+  '.tp-rm-f b{color:var(--tp-tx2);font-weight:600;}' +
+  '.tp-rm.off{border-style:dashed;justify-content:center;}' +
+  '.tp-rm.off .tp-rm-t{color:var(--tp-tx3);font-size:20px;}' +
+  '.tp-rm.off .why{padding:10px 16px 0;font-size:12px;color:var(--tp-tx3);}' +
+  // stretto
+  '@container tp (max-width:1000px){.tp-top{grid-template-columns:1fr 1fr;}.tp-top .tp-col.z{grid-column:1/-1;flex-direction:row;}.tp-top .tp-col.z>*{flex:1;}.tp-rooms{grid-template-columns:repeat(3,1fr);}}' +
+  '@container tp (max-width:760px){.tp-al-main{grid-template-columns:auto 1fr auto;row-gap:12px;}.tp-al-viz,.tp-days3{grid-column:1/-1;min-width:0;}}' +
+  '@container tp (max-width:640px){' +
+  '.tp-top{grid-template-columns:1fr;}.tp-top .tp-col.z{flex-direction:column;}' +
+  '.tp-rooms{grid-template-columns:1fr 1fr;gap:10px;}' +
+  '.tp-al-main{grid-template-columns:auto 1fr;gap:12px;padding:14px 14px 14px 18px;}' +
+  '.tp-al-ic{width:42px;height:42px;border-radius:12px;}.tp-al-ic svg{width:24px;height:24px;}' +
+  '.tp-al-t{font-size:16px;}' +
+  '.tp-al-main .tp-lvl{grid-column:1/-1;justify-self:start;order:3;}' +
+  '.tp-al-viz,.tp-days3{order:4;}' +
+  '.tp-al-more{padding:10px 14px 12px 18px;}.tp-am .s{display:none;}' +
+  '.tp-avg{grid-template-columns:1fr 1fr;}' +
+  '.tp-rm-h{padding:0 12px;display:grid;grid-template-columns:1fr;gap:4px;}.tp-rm-ic{display:none;}.tp-rm-t{font-size:24px;}' +
+  '.tp-rm-n b{white-space:normal;font-size:13px;line-height:1.25;}' +
+  '.tp-rm-f{padding:4px 12px 0;}.tp-rm-f span:nth-child(2){display:none;}}' +
+  '@media (prefers-reduced-motion:reduce){.tp-al-ic::after,.tp-drop,.tp-bolt,.tp-halo{animation:none;}}' +
+  '</style>';
+
+TemperaturePageCard.getStubConfig = function () {
+  return { weather_entity: 'weather.home', rooms: [{ name: 'Soggiorno', temp: 'sensor.temperature', hum: 'sensor.humidity' }] };
+};
+
+customElements.define('casa-mgdd-temperature-card', TemperaturePageCard);
+window.customCards.push({
+  type: 'casa-mgdd-temperature-card',
+  name: 'Casa MGDD Temperature',
+  description: 'Vista temperature in una card: fascia allerte (pioggia iLMeteo e Protezione Civile), meteo delle prossime ore e dei giorni, Media casa con scostamento delle stanze, zone e stanze con curve delle ultime 48 h. Opzioni: title, weather_entity, dpc_entities, dpc_zone_entity, rain_alert_mm, rain_alert_hours, zona_giorno, zona_notte, chart_hours, rooms (name, temp, hum, media).',
 });
