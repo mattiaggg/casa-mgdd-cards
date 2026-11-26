@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banco tile robot</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+<style>
+  body { margin: 0; font-family: Inter, -apple-system, "Segoe UI", sans-serif; }
+  body.dark { background: #111; --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --divider-color: rgba(225,225,225,.12); }
+  body.light { background: #f3f4f5; --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272; --divider-color: rgba(0,0,0,.12); }
+  .bar { display: flex; gap: 6px; padding: 10px 16px; font-size: 12px; background: #222; color: #ddd; align-items: center; }
+  .bar button { font: inherit; }
+  #host { display: grid; grid-template-columns: repeat(2, 384px); gap: 4px 16px; padding: 8px; align-items: start; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--secondary-text-color); margin: 14px 0 6px; }
+  ha-card { display: block; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 12px; }
+  ha-icon { display: inline-flex; align-items: center; justify-content: center; }
+  ha-icon i { font-size: var(--mdc-icon-size, 24px); line-height: 1; }
+  #log { font: 12px monospace; color: var(--secondary-text-color); margin: 16px; white-space: pre-wrap; }
+</style>
+</head>
+<body class="dark">
+<div class="bar">
+  <button id="dark">Chiaro / scuro</button>
+  <button id="classic">Mostra anche il layout classico</button>
+</div>
+<div id="host"></div>
+<div id="log"></div>
+<script>
+  window.customCards = window.customCards || [];
+  customElements.define('ha-icon', class extends HTMLElement {
+    static get observedAttributes() { return ['icon']; }
+    connectedCallback() { this._draw(); }
+    attributeChangedCallback() { this._draw(); }
+    _draw() { this.innerHTML = '<i class="mdi mdi-' + (this.getAttribute('icon') || '').replace('mdi:', '') + '"></i>'; }
+  });
+</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+  const V = 'vacuum.dreamebot_l20_ultra_complete';
+  const NOMI = ['Aspira + Lava tutta la casa', 'Aspira tutta la casa', 'Aspira Zona giorno', 'Aspira Zona notte', 'Aspira + Lava approfondita', 'Aspira Camera + Bagno'];
+  function base(over, run, scOff) {
+    const sc = {};
+    NOMI.forEach((n, i) => { sc[32 + i] = { id: 32 + i, index: i + 1, name: n, running: run === i + 1 }; });
+    const a = Object.assign({ friendly_name: 'DreameBot L20 Ultra Complete', battery: 100, charging: false, paused: false, running: false, returning: false,
+      has_error: false, error: 'No error', washing: false, drying: false, returning_to_wash: false, cleaning_mode: 'Sweeping',
+      cleaning_progress: 0, cleaned_area: 58, cleaning_time: 115, shortcuts: sc }, over.a || {});
+    const st = { [V]: { state: over.s || 'docked', attributes: a } };
+    NOMI.forEach((n, i) => { st['button.dreamebot_l20_ultra_complete_shortcut_' + (i + 1)] = { state: scOff ? 'unavailable' : 'unknown', attributes: { friendly_name: 'DreameBot shortcut ' + n } }; });
+    if (over.room) st['sensor.dreamebot_l20_ultra_complete_current_room'] = { state: over.room, attributes: {} };
+    return st;
+  }
+  const CASI = [
+    ['Aspira (routine in corso)', base({ s: 'cleaning', room: 'Soggiorno', a: { running: true, battery: 92, cleaning_progress: 32, cleaned_area: 22, cleaning_time: 23 } }, 2, true)],
+    ['Aspira e lava', base({ s: 'cleaning', room: 'Cucina', a: { running: true, battery: 71, cleaning_mode: 'Sweeping and mopping', cleaning_progress: 64, cleaned_area: 41, cleaning_time: 52 } }, 1, true)],
+    ['Lava i moci in base', base({ s: 'cleaning', a: { running: true, washing: true, battery: 80, cleaning_progress: 45, cleaned_area: 30, cleaning_time: 35 } }, 1, true)],
+    ['In pausa', base({ s: 'paused', room: 'Corridoio', a: { paused: true, battery: 65, cleaning_progress: 50, cleaned_area: 33, cleaning_time: 40 } }, 2, true)],
+    ['Rientro', base({ s: 'returning', room: 'Camera', a: { returning: true, battery: 40, cleaned_area: 58, cleaning_time: 115 } })],
+    ['In base', base({})],
+    ['In carica', base({ a: { charging: true, battery: 46 } })],
+    ['Asciuga i moci', base({ a: { drying: true } })],
+    ['Errore', base({ s: 'error', a: { has_error: true, error: 'Spazzola principale bloccata', battery: 55 } })],
+    ['Non disponibile', { [V]: { state: 'unavailable', attributes: { friendly_name: 'DreameBot' } } }],
+    ['Aspira, routine aperte', base({ s: 'cleaning', room: 'Soggiorno', a: { running: true, battery: 92, cleaning_progress: 32, cleaned_area: 22, cleaning_time: 23 } }, 2, true), true],
+    ['In base, routine aperte', base({}), true],
+  ];
+  let dark = true;
+  let classic = false;
+  const cards = [];
+  const host = document.getElementById('host');
+  const log = (t) => { document.getElementById('log').textContent = new Date().toLocaleTimeString() + '  ' + t + '\n' + document.getElementById('log').textContent; };
+  function mount() {
+    host.innerHTML = '';
+    cards.length = 0;
+    CASI.forEach(([titolo, states, open]) => {
+      (classic ? [null, 'tile'] : ['tile']).forEach((layout) => {
+        const d = document.createElement('div');
+        const h2 = document.createElement('h2');
+        h2.textContent = titolo + (classic ? (layout ? ' · tile' : ' · classico') : '');
+        d.appendChild(h2);
+        const c = document.createElement('casa-mgdd-vacuum-card');
+        c.setConfig(Object.assign({ entity: V, name: 'Dreame L20 Ultra', expanded: !!open }, layout ? { layout } : {}));
+        d.appendChild(c);
+        host.appendChild(d);
+        cards.push({ c, states });
+      });
+    });
+    push();
+  }
+  function push() {
+    cards.forEach(({ c, states }) => {
+      c.hass = { states, themes: { darkMode: dark }, callService: (d, s, x) => { log(d + '.' + s + ' ' + JSON.stringify(x)); return Promise.resolve(); } };
+    });
+  }
+  mount();
+  document.getElementById('dark').onclick = () => { dark = !dark; document.body.className = dark ? 'dark' : 'light'; push(); };
+  document.getElementById('classic').onclick = () => { classic = !classic; mount(); };
+</script>
+</body>
+</html>

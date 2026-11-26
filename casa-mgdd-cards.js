@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.114.8
+ * Version: 1.115.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -12456,8 +12456,111 @@ class VacuumCard extends HTMLElement {
 
   _render() {
     if (!this.config || !this._hass) return;
-    mgddPaint(this, this._styles(), this._html());
+    if (this.config.layout === 'tile') mgddPaint(this, vacTileStyles(), this._htmlTile());
+    else mgddPaint(this, this._styles(), this._html());
     this._wire();
+  }
+
+  // v1.115.0, `layout: tile`: lo stampo della tile lavatrice (icona quadrata colorata,
+  // nome + fase in pillola, due righe, un pulsante a destra, barra in fondo), cosi' i
+  // due elettrodomestici della Home si somigliano. Stessi stati e comandi del layout
+  // classico; il tocco sulla tessera apre ancora le routine.
+  _htmlTile() {
+    const h = this._hass;
+    const v = h.states[this.config.entity];
+    const a = (v && v.attributes) || {};
+    const ph = this._phase();
+    const nm = this._name();
+    const dark = this._isDark();
+    if (ph.k === 'na') {
+      return '<div class="ltq' + (dark ? ' lt-dark' : '') + '"><div class="lt lt-z vac-t" role="button" tabindex="0" aria-label="' +
+        mgddEsc(nm + ': ' + ph.w) + '"><div class="lt-zi">' + ldIco('robot-vacuum-off') + '</div>' +
+        '<div class="lt-txt"><div class="lt-zn">' + mgddEsc(nm) + '</div><div class="lt-zs">' + mgddEsc(ph.w) + '</div></div></div></div>';
+    }
+    const bat = this._num(a.battery);
+    const prog = this._num(a.cleaning_progress);
+    const area = this._num(a.cleaned_area);
+    const min = this._num(a.cleaning_time);
+    const rs = h.states[this._roomId()];
+    const room = rs && rs.state && rs.state !== 'unknown' && rs.state !== 'unavailable' ? rs.state : '';
+    const routines = this._routines();
+    const cur = routines.find((r) => r.running);
+    const sent = (this._sent.cmd || 0) > Date.now();
+    const stats = [];
+    if (area != null) stats.push(area + ' m²');
+    if (min != null) stats.push(min + ' min');
+    const batT = bat != null ? 'batteria ' + bat + '%' : '';
+
+    // colori della tile lavatrice: b blu, g verde, a ambra, r rosso, n neutro
+    const C = { sweep: 'b', mop: 'g', pause: 'a', ret: 'a', err: 'r', dock: 'n' };
+    const c = C[ph.k] || 'n';
+    let ico = 'robot-vacuum';
+    let l2 = '';
+    let l3 = '';
+    // Il pulsante a destra apre solo la tendina delle routine (scelta dell'utente,
+    // 26/11/2026); i comandi del robot stanno sotto, come nel layout classico.
+    const cb = (cmd, i, t, on) => '<button class="vt-c' + (on ? ' vt-on vt-on-' + c : '') + '" data-cmd="' + cmd + '">' + ldIco(i) + '<span>' + t + '</span></button>';
+    let cmds = '';
+    if (ph.k === 'err') {
+      ico = 'robot-vacuum-alert';
+      l2 = a.error && a.error !== 'No error' ? a.error : 'Controllare il robot';
+      l3 = batT ? batT.charAt(0).toUpperCase() + batT.slice(1) : '';
+      cmds = cb('return_to_base', 'home-import-outline', 'Base', true);
+    } else if (ph.task) {
+      l2 = cur ? cur.name : [room].concat(stats).filter(Boolean).join(' · ');
+      l3 = (cur ? [room].concat(stats) : [batT]).filter(Boolean).join(' · ') + (cur && batT ? ' · ' + batT : '');
+      cmds = cb('return_to_base', 'home-import-outline', 'Base') +
+        (ph.k === 'pause' ? cb('start', 'play', 'Riprendi', true) : cb('pause', 'pause', 'Pausa', true));
+    } else if (ph.k === 'ret') {
+      ico = 'home-import-outline';
+      l2 = room || 'Torna alla base';
+      l3 = [stats.length ? 'Pulizia: ' + stats.join(' · ') : '', batT].filter(Boolean).join(' · ');
+      cmds = cb('stop', 'stop', 'Stop');
+    } else {
+      ico = 'robot-vacuum-variant';
+      l2 = bat != null ? 'Batteria ' + bat + '%' + (a.charging && bat < 100 ? ', in carica' : '') : '';
+      l3 = stats.length ? 'Ultima pulizia: ' + stats.join(' · ') : '';
+    }
+    const btn = { cmd: 'toggle', ico: 'lightning-bolt-outline', t: 'Routine', chev: true };
+    if (sent) l3 = 'Comando inviato';
+    const pct = ph.task && prog != null ? Math.min(100, Math.max(2, prog)) : null;
+
+    let panel = '';
+    if (this._open) {
+      const busy = routines.some((r) => !r.ok);
+      panel = '<div class="vt-pn"><div class="vt-rt">' +
+        (routines.length
+          ? routines.map((r) => {
+            const inv = (this._sent[r.entity] || 0) > Date.now();
+            const sub = r.running ? 'in corso' + (prog != null ? ' · ' + prog + '%' : '') : inv ? 'inviato' : '';
+            return '<button class="vt-r' + (r.running ? ' vt-run' : !r.ok ? ' vt-off' : '') + '" data-sc="' + mgddEsc(r.entity) + '"' +
+              (r.ok ? '' : ' aria-disabled="true" title="Disponibile con il robot in base"') + '>' +
+              '<ha-icon icon="' + mgddEsc(r.icon) + '"></ha-icon><span class="vt-rn">' + mgddEsc(r.name) +
+              (sub ? '<span class="vt-rs">' + sub + '</span>' : '') + '</span></button>';
+          }).join('')
+          : '<span class="lt-l3">Nessuna routine trovata</span>') +
+        '</div>' +
+        (busy && ph.task ? '<div class="lt-l3 vt-nt">Le routine tornano disponibili con il robot in base.</div>' : '') +
+        '</div>';
+    }
+
+    return '<div class="ltq' + (dark ? ' lt-dark' : '') + '">' +
+      '<div class="lt vac-t" role="button" tabindex="0" aria-expanded="' + this._open + '" aria-label="' +
+      mgddEsc(nm + ': ' + ph.w + (this._open ? ', chiudi le routine' : ', apri le routine')) + '">' +
+      '<div class="lt-row">' +
+      '<div class="lt-ic lt-' + c + '">' + ldIco(ico) + '</div>' +
+      '<div class="lt-txt">' +
+      '<div class="lt-l1"><b>' + mgddEsc(nm) + '</b><span class="lt-pill lt-p' + c + '">' + mgddEsc(ph.w) + '</span></div>' +
+      (l2 ? '<div class="lt-l2">' + mgddEsc(l2) + '</div>' : '') +
+      (l3 ? '<div class="lt-l3">' + mgddEsc(l3) + '</div>' : '') +
+      '</div>' +
+      (btn ? '<button class="lt-go" data-cmd="' + btn.cmd + '"' + (btn.chev ? ' aria-expanded="' + this._open + '"' : '') + '>' +
+        ldIco(btn.ico) + '<span>' + btn.t + '</span>' + (btn.chev ? ldIco(this._open ? 'chevron-up' : 'chevron-down') : '') + '</button>' : '') +
+      '</div>' +
+      (pct != null ? '<div class="lt-bar vt-bar-' + c + '"><span style="width:' + pct + '%"></span></div>' : '') +
+      (cmds ? '<div class="vt-cmds">' + cmds + '</div>' : '') +
+      panel +
+      '</div></div>';
   }
 
   // Stessa geometria della vmc e della air-card: 270 gradi da 135 a 405.
@@ -12697,6 +12800,37 @@ class VacuumCard extends HTMLElement {
       '</style>'
     );
   }
+}
+
+// Stili del `layout: tile`: quelli della tile lavatrice (LT_STYLES, definito piu'
+// avanti nel file: si legge solo al primo disegno) piu' il pannello delle routine.
+// Composti una volta: mgddPaint reinserisce il foglio solo se la stringa cambia.
+let VAC_TILE_CSS = null;
+function vacTileStyles() {
+  if (VAC_TILE_CSS) return VAC_TILE_CSS;
+  VAC_TILE_CSS = LT_STYLES.replace('</style>',
+    '.ltq .vt-bar-g span{background:var(--lt-g2);}.ltq .vt-bar-a span{background:var(--lt-a2);}' +
+    '.ltq .vt-pn{margin-top:11px;padding-top:11px;border-top:1px solid var(--divider-color,rgba(127,127,127,.2));display:flex;flex-direction:column;gap:8px;cursor:default;}' +
+    '.ltq .vt-cmds{display:flex;gap:8px;margin-top:11px;}' +
+    // comando principale con la tinta della fase, come i pulsanti del layout classico
+    '.ltq .vt-c.vt-on-b{background:var(--lt-bbg);color:var(--lt-b2);}.ltq .vt-c.vt-on-g{background:var(--lt-gbg);color:var(--lt-g2);}' +
+    '.ltq .vt-c.vt-on-a{background:var(--lt-abg);color:var(--lt-a2);}.ltq .vt-c.vt-on-r{background:var(--lt-rbg);color:var(--lt-r2);}' +
+    '.ltq .vt-c.vt-on ha-icon{color:inherit;}' +
+    '.ltq .vt-c,.ltq .vt-r{display:flex;align-items:center;gap:8px;border:none;border-radius:11px;background:var(--lt-n);color:var(--lt-t1);' +
+    'font:500 12.5px Inter,-apple-system,"Segoe UI",sans-serif;cursor:pointer;text-align:left;--mdc-icon-size:18px;}' +
+    '.ltq .vt-c{flex:1;justify-content:center;height:40px;font-weight:600;}' +
+    '.ltq .vt-c ha-icon,.ltq .vt-r ha-icon{width:18px;height:18px;display:inline-flex;flex:none;color:var(--lt-t2);}' +
+    '.ltq .vt-rt{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;}' +
+    '.ltq .vt-r{min-height:40px;padding:8px 10px;}' +
+    '.ltq .vt-rn{min-width:0;line-height:1.2;}' +
+    '.ltq .vt-rs{display:block;font-size:10.5px;font-weight:650;margin-top:2px;color:var(--lt-b2);}' +
+    '.ltq .vt-r.vt-run{background:var(--lt-bbg);color:var(--lt-b2);}.ltq .vt-r.vt-run ha-icon{color:var(--lt-b2);}' +
+    '.ltq .vt-r.vt-off{opacity:.45;cursor:default;}' +
+    '.ltq .vt-c:hover,.ltq .vt-r:not(.vt-off):hover{box-shadow:0 0 0 2px rgba(127,127,127,.22);}' +
+    '.ltq .vt-c:focus-visible,.ltq .vt-r:focus-visible{outline:2px solid var(--lt-p);outline-offset:2px;}' +
+    '.ltq .vt-nt{margin-top:0;white-space:normal;}' +
+    '</style>');
+  return VAC_TILE_CSS;
 }
 
 customElements.define('casa-mgdd-vacuum-card', VacuumCard);
