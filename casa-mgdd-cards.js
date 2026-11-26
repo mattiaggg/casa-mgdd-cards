@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.114.3
+ * Version: 1.114.4
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -13972,7 +13972,7 @@ const LD_STYLES_PAGINA = LD_STYLES.replace('</style>',
   '@property --ldp-a{syntax:"<angle>";inherits:false;initial-value:0deg;}' +
   '.ldq .ldp-best{outline:none;border:2px solid transparent;background:linear-gradient(var(--ld-neutral),var(--ld-neutral)) padding-box,linear-gradient(var(--ld-bg),var(--ld-bg)) padding-box,' +
   'conic-gradient(from var(--ldp-a),color-mix(in srgb,var(--ld-g) 45%,transparent) 0deg,var(--ld-g) 60deg,color-mix(in srgb,var(--ld-g) 45%,transparent) 120deg,color-mix(in srgb,var(--ld-g) 45%,transparent) 360deg) border-box;' +
-  'animation:ldp-spin 4.5s linear infinite;box-shadow:0 0 26px -12px var(--ld-g);}' +
+  'animation:ldp-spin 4.5s linear infinite;}' +
   '.ldq .ldp-best .ldp-d .ld-tiny{color:var(--ld-g2);font-weight:650;}' +
   '@keyframes ldp-spin{to{--ldp-a:360deg;}}' +
   // mirino sulla curva
