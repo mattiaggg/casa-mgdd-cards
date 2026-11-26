@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.114.1
+ * Version: 1.114.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -19364,8 +19364,6 @@ class TemperaturePageCard extends HTMLElement {
     const rooms = this.config.rooms.filter((r) => r.media !== false);
     const rows = rooms.map((r) => ({ r: r, t: this._num(r.temp), h: this._num(r.hum) })).filter((x) => x.t !== null);
     const avg = rows.length ? rows.reduce((s, x) => s + x.t, 0) / rows.length : null;
-    const hums = rows.map((x) => x.h).filter((x) => x !== null);
-    const hAvg = hums.length ? hums.reduce((a, b) => a + b, 0) / hums.length : null;
     const hot = rows.length ? Math.max.apply(null, rows.map((x) => x.t)) : null;
     const cold = rows.length ? Math.min.apply(null, rows.map((x) => x.t)) : null;
     // gauge a tacche, 270 gradi, 14..26 gradi
@@ -19411,15 +19409,18 @@ class TemperaturePageCard extends HTMLElement {
         '<div class="tp-dvt">' + bar + '</div><span class="v">' + (d > 0 ? '+' : d < 0 ? '−' : '±') + Math.abs(d).toFixed(1) + '°</span></div>';
     }).join('');
     return '<div class="tp-card tp-avgc tp-a">' +
-      '<div class="tp-ch"><h3>' + TP_HOME + 'Media casa</h3><small>' + rows.length + ' stanze</small></div>' +
+      '<div class="tp-ch"><h3>' + TP_HOME + 'Media casa</h3><small>' + rows.length + ' stanze' +
+      (hot !== null ? ' · scarto ' + (hot - cold).toFixed(1).replace('.', ',') + '°' : '') + '</small></div>' +
       '<div class="tp-avg"><div><div class="tp-gz">' + g +
       '<div class="tp-gz-c"><div class="tp-gz-v"><b data-cnt>' + (avg !== null ? avg.toFixed(1) : '--') + '</b><span>°C</span></div><div class="tp-gz-l">media</div></div></div>' +
       '<div class="tp-scale"><span>' + GMIN + '°</span><span>' + GMAX + '°</span></div></div>' +
       '<div class="tp-ext">' +
-      '<div class="tp-ex" style="--c:var(--tp-rain)"><div class="k">Umidità media</div><div class="v"><span data-cnt>' + (hAvg !== null ? Math.round(hAvg) : '--') + '</span>%</div>' +
-      '<div class="s">' + (hums.length ? 'da ' + Math.round(Math.min.apply(null, hums)) + ' a ' + Math.round(Math.max.apply(null, hums)) + '%' : '') + '</div></div>' +
-      '<div class="tp-ex" style="--c:var(--tp-tx2)"><div class="k">Tra le stanze</div><div class="v"><span data-cnt>' + (hot !== null ? (hot - cold).toFixed(1) : '--') + '</span>°</div>' +
-      '<div class="s">dalla più fredda alla più calda</div></div></div></div>' +
+      // v1.114.2: piu' calda e piu' fredda al posto di umidita' media e scarto
+      // (lo scarto e' passato nell'intestazione)
+      [[sorted[0], 'Più calda', 'var(--tp-warn)'], [sorted[sorted.length - 1], 'Più fredda', 'var(--tp-ac)']].map((e) =>
+        '<div class="tp-ex" style="--c:' + e[2] + '"' + (e[0] ? ' data-mi="' + tpEsc(e[0].r.temp) + '"' : '') + '><div class="k">' + e[1] + '</div>' +
+        '<div class="v"><span data-cnt>' + (e[0] ? e[0].t.toFixed(1) : '--') + '</span>°</div>' +
+        '<div class="s">' + (e[0] ? tpEsc(e[0].r.name) : '') + '</div></div>').join('') + '</div></div>' +
       '<div class="tp-lab">Rispetto alla media <span>−' + sS + '° · +' + sS + '°</span></div>' +
       '<div class="tp-dv">' + dv + '</div></div>';
   }
@@ -19691,21 +19692,21 @@ const TP_STYLES = '<style>' +
   '.tp-rb b{position:absolute;top:50%;width:9px;height:9px;border-radius:50%;background:var(--tp-tx);border:2px solid var(--tp-card);transform:translate(-50%,-50%);}' +
   // media casa
   '.tp-avgc{display:flex;flex-direction:column;flex:1;}' +
-  '.tp-avg{display:grid;grid-template-columns:minmax(140px,190px) 1fr;gap:14px;align-items:center;margin-top:4px;}' +
+  '.tp-avg{display:grid;grid-template-columns:minmax(150px,215px) 1fr;gap:14px;align-items:center;margin-top:6px;}' +
   '.tp-gz{position:relative;width:100%;container-type:inline-size;}' +
   '.tp-gz svg{display:block;width:100%;height:auto;overflow:visible;}' +
-  '.tp-gz-c{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);text-align:center;white-space:nowrap;}' +
-  '.tp-gz-v{font-weight:800;letter-spacing:-.03em;line-height:1;font-size:clamp(20px,22cqw,44px);}' +
-  '.tp-gz-v b{font-weight:800;}.tp-gz-v span{font-size:.4em;color:var(--tp-tx2);font-weight:500;letter-spacing:0;margin-left:1px;}' +
+  '.tp-gz-c{position:absolute;left:50%;top:54.3%;transform:translate(-50%,-50%);text-align:center;white-space:nowrap;}' +
+  '.tp-gz-v{position:relative;display:inline-block;font-weight:800;letter-spacing:-.03em;line-height:1;font-size:clamp(20px,22cqw,44px);}' +
+  '.tp-gz-v b{font-weight:800;}.tp-gz-v span{position:absolute;left:100%;top:.12em;font-size:.4em;color:var(--tp-tx2);font-weight:500;letter-spacing:0;margin-left:2px;}' +
   '.tp-gz-l{color:var(--tp-tx3);font-size:12px;margin-top:4px;}' +
   '.tp-scale{display:flex;justify-content:space-between;font-size:11px;color:var(--tp-tx3);margin-top:8px;}' +
   '.tp-ext{display:flex;flex-direction:column;gap:8px;}' +
   '.tp-ex{border-radius:12px;padding:10px 12px;background:color-mix(in srgb,var(--c) 12%,var(--tp-card2));border:1px solid color-mix(in srgb,var(--c) 28%,transparent);}' +
   '.tp-ex .k{font-size:11.5px;color:var(--c);font-weight:600;}' +
   '.tp-ex .v{font-size:24px;font-weight:800;letter-spacing:-.02em;line-height:1.15;color:var(--c);}' +
-  '.tp-ex .s{font-size:12px;color:var(--tp-tx2);}' +
-  '.tp-dv{flex:1;display:flex;flex-direction:column;justify-content:space-between;gap:4px;min-height:0;}' +
-  '.tp-dvr{display:grid;grid-template-columns:minmax(0,1.7fr) 1fr 42px;align-items:center;gap:10px;font-size:12.5px;padding:3px 0;cursor:pointer;}' +
+  '.tp-ex .s{font-size:12px;color:var(--tp-tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.tp-ex[data-mi]{cursor:pointer;}' +
+  '.tp-dv{display:flex;flex-direction:column;gap:2px;}.tp-avgc .tp-lab{margin-top:auto;padding-top:14px;}' +
+  '.tp-dvr{display:grid;grid-template-columns:minmax(0,1.7fr) 1fr 42px;align-items:center;gap:10px;font-size:12.5px;padding:4px 0;cursor:pointer;}' +
   '.tp-dvr .k{color:var(--tp-tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
   '.tp-dvr .k b{color:var(--tp-tx);font-weight:600;margin-right:6px;}' +
   '.tp-dvr .v{text-align:right;font-weight:700;color:var(--c);}' +
