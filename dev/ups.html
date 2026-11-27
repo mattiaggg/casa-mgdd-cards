@@ -22,7 +22,7 @@ h3{font-size:13px;margin:0 0 8px;color:#9b9b9b}
   <button data-m="na">Non disponibile</button><button id="th">Tema chiaro/scuro</button>
 </div>
 <div class="grid">
-  <div><h3>ups-tile</h3><div id="c1"></div><h3 style="margin-top:16px">ups-row (home)</h3><div id="c5"></div></div>
+  <div><h3>ups-tile</h3><div id="c1"></div><h3 style="margin-top:16px">ups-row (home)</h3><div id="c5"></div><h3 style="margin-top:16px">energy-scheme-card (home, stato in pillola)</h3><div id="c6"></div></div>
   <div><h3>ups-flow (energy, title: UPS)</h3><div id="c2"></div></div>
   <div style="width:340px"><h3>ups-flow a 340 px</h3><div id="c3"></div></div>
 </div>
@@ -46,20 +46,24 @@ function set(m) {
     'sensor.ups_potenza': st(57.71),
     'sensor.ups_tower_tensione_di_bypass': st(m === 'batteria' || m === 'scarica' ? 0 : 227.7),
     'sensor.ups_tower_tensione_di_uscita': st(227.7),
+    'sensor.pw_solar': st(0), 'sensor.pw_load': st(140), 'sensor.pw_site': st(6), 'sensor.pw_batt': st(144), 'sensor.pw_soc': st(18),
+    'binary_sensor.pw_grid': st('on'),
   };
-  const hass = { states: S, themes: { darkMode: true }, language: 'it', callService() {} };
+  const hass = { states: S, themes: { darkMode: !document.body.classList.contains('light') }, language: 'it', callService() {} };
   cards.forEach((c) => { c.hass = hass; });
 }
-const mk = (id, cfg) => { const el = document.createElement('energy-controls-card'); el.setConfig(cfg); document.getElementById(id).appendChild(el); return el; };
+const mk = (id, cfg, tag) => { const el = document.createElement(tag || 'energy-controls-card'); el.setConfig(cfg); document.getElementById(id).appendChild(el); return el; };
 const cards = [
   mk('c1', { layout: 'ups-tile', name: 'UPS Ubiquiti', ups: UPS }),
   mk('c2', { layout: 'ups-flow', title: 'UPS', ups: UPS }),
   mk('c3', { layout: 'ups-flow', ups: UPS }),
   mk('c4', { layout: 'ups-flow', title: 'UPS', ups: UPS }),
   mk('c5', { layout: 'ups-row', name: 'UPS Ubiquiti', ups: UPS }),
+  mk('c6', { title: 'Impianto', solar_power: 'sensor.pw_solar', house_power: 'sensor.pw_load', grid_power: 'sensor.pw_site', battery_power: 'sensor.pw_batt', battery_soc: 'sensor.pw_soc', grid_status: 'binary_sensor.pw_grid' }, 'casa-mgdd-energy-scheme-card'),
 ];
-document.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => set(b.dataset.m));
-document.getElementById('th').onclick = () => document.body.classList.toggle('light');
+let modo = 'rete';
+document.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => set(modo = b.dataset.m));
+document.getElementById('th').onclick = () => { document.body.classList.toggle('light'); set(modo); };
 set('rete');
 </script>
 </body>

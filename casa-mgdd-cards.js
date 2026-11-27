@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.117.0
+ * Version: 1.118.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -5205,15 +5205,29 @@ class EnergyControlsCard extends HTMLElement {
     const s = this._upsRiassunto();
     const nome = mgddEsc(this.config.name || this.config.title || 'UPS');
     const off = s.suBatteria;
-    const ok = '#0fb57e';
+    // v1.118: stessi colori delle card stato della home (porte, acqua, movimento)
+    const dark = !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+    const ok = dark ? '#35E0A1' : '#0E9B6C';
+    const chgC = dark ? '#9083FF' : '#6A57E0';
+    const badC = dark ? '#FF7B6E' : '#C2413E';
+    const ring = s.colore === '#0fb57e' ? ok : s.colore === '#8b7cf0' ? chgC : s.colore === '#e5484d' ? badC : s.colore;
     const C = 2 * Math.PI * 19;
     const dash = (s.liv / 100 * C).toFixed(1) + ' ' + C.toFixed(1);
     const ent = (e) => (e ? ' data-entity="' + e + '"' : '');
     const ico = (x, y, p) => '<g class="upf-ico" transform="translate(' + x + ' ' + y + ') scale(.667)">' + p + '</g>';
     // la pillola resta corta per non tagliare il nome; "da 3 min" va sotto la batteria
     const da = s.k === 'b' && s.verd.indexOf(' da ') > 0 ? ' · ' + s.verd.slice(s.verd.indexOf(' da ') + 1) : '';
+    // icona MDI a sinistra, 36 px come le card stato: spina a rete, batteria in
+    // carica, batteria con avviso su batteria, spina barrata se non si sa
+    const MDI = {
+      o: 'M16,7V3H14V7H10V3H8V7H8C7,7 6,8 6,9V14.5L9.5,18V21H14.5V18L18,14.5V9C18,8 17,7 16,7Z',
+      c: 'M23.05,11H20.05V4L15.05,14H18.05V22M12,20H4L4.05,6H12.05M12.72,4H11.05V2H5.05V4H3.38A1.33,1.33 0 0,0 2.05,5.33V20.67C2.05,21.4 2.65,22 3.38,22H12.72C13.45,22 14.05,21.4 14.05,20.67V5.33A1.33,1.33 0 0,0 12.72,4Z',
+      b: 'M14 20H6V6H14M14.67 4H13V2H7V4H5.33C4.6 4 4 4.6 4 5.33V20.67C4 21.4 4.6 22 5.33 22H14.67C15.4 22 16 21.4 16 20.67V5.33C16 4.6 15.4 4 14.67 4M21 7H19V13H21V8M21 15H19V17H21V15Z',
+      n: 'M22.11 21.46L2.39 1.73L1.11 3L6.25 8.14C6.1 8.41 6 8.7 6 9V14.5L9.5 18V21H14.5V18L15.31 17.2L20.84 22.73L22.11 21.46M13.09 16.59L12.67 17H11.33L10.92 16.59L8 13.67V9.89L13.89 15.78L13.09 16.59M12.2 9L10.2 7H14V3H16V7C17 7 18 8 18 9V14.5L17.85 14.65L16 12.8V9.09C16 9.06 15.95 9 15.92 9H12.2M10 6.8L8 4.8V3H10V6.8Z',
+    };
     const html =
-      '<div class="upr uk-' + s.k + '">' +
+      '<div class="upr uk-' + s.k + (dark ? ' upr-dark' : '') + '">' +
+      '<span class="upr-ic"' + ent(c.status_entity) + '><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="' + MDI[s.k] + '"/></svg></span>' +
       '<div class="upr-l">' +
       '<div class="upr-hd"' + ent(c.status_entity) + '><span class="upr-n">' + nome + '</span>' +
       '<span class="upr-pill">' + s.pill + '</span></div>' +
@@ -5223,12 +5237,12 @@ class EnergyControlsCard extends HTMLElement {
       '</div></div>' +
       '<svg class="upr-fl" viewBox="0 0 150 52" width="150" height="52" aria-hidden="true">' +
       '<path class="upf-trk" d="M32 26H57"/><path class="upf-trk" d="M93 26H118"/>' +
-      '<path class="upf-fl upq-fl" d="M32 26H57" stroke="' + (s.k === 'c' ? '#8b7cf0' : ok) + '" opacity="' + (off || !s.noto ? 0 : 1) + '"/>' +
-      '<path class="upf-fl upq-fl" d="M93 26H118" stroke="' + (off ? '#e5484d' : ok) + '" opacity="' + (s.noto ? 1 : 0) + '"/>' +
+      '<path class="upf-fl upq-fl" d="M32 26H57" stroke="' + (s.k === 'c' ? chgC : ok) + '" opacity="' + (off || !s.noto ? 0 : 1) + '"/>' +
+      '<path class="upf-fl upq-fl" d="M93 26H118" stroke="' + (off ? badC : ok) + '" opacity="' + (s.noto ? 1 : 0) + '"/>' +
       '<g opacity="' + (off ? .35 : 1) + '"><circle class="upf-nd" cx="16" cy="26" r="15"/>' +
       ico(8, 18, '<path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>') + '</g>' +
       '<circle class="upf-rt" cx="75" cy="26" r="19" stroke-width="3"/>' +
-      '<circle class="upf-rg" cx="75" cy="26" r="19" stroke-width="3" transform="rotate(-90 75 26)" stroke="' + s.colore + '" stroke-dasharray="' + dash + '"/>' +
+      '<circle class="upf-rg" cx="75" cy="26" r="19" stroke-width="3" transform="rotate(-90 75 26)" stroke="' + ring + '" stroke-dasharray="' + dash + '"/>' +
       '<circle class="upf-nd" cx="75" cy="26" r="14"/>' + ico(67, 18, '<rect width="16" height="10" x="2" y="7" rx="2"/><path d="M22 11v2"/>') +
       '<circle class="upf-nd" cx="134" cy="26" r="15"/>' +
       ico(126, 18, '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/>') +
@@ -5413,22 +5427,28 @@ class EnergyControlsCard extends HTMLElement {
       '.upq-fl{stroke-width:3.4;stroke-dasharray:0 9;animation-name:upqFlow;}' +
       '@keyframes upqFlow{to{stroke-dashoffset:-9;}}' +
       '.upq-dt{fill:var(--uf-t2);transition:opacity .3s;}' +
-      // v1.117 ups-row (D2)
-      '.upr{--uf-s:#0fb57e;--uf-n:rgba(127,127,127,.1);--uf-t2:var(--secondary-text-color,#6b6f76);' +
-      'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--ha-card-border-color,var(--divider-color,rgba(127,127,127,.2)));' +
-      'border-radius:var(--ha-card-border-radius,12px);box-shadow:var(--ha-card-box-shadow,none);font-variant-numeric:tabular-nums;transition:border-color .3s;' +
-      'color:var(--uf-t2);box-sizing:border-box;padding:12px 14px;display:flex;align-items:center;gap:12px;}' +
-      '.upr.uk-c{--uf-s:#8b7cf0;}.upr.uk-b{--uf-s:#e5484d;border-color:rgba(229,72,77,.6);}.upr.uk-n{--uf-s:#8a8d93;}' +
+      // v1.117 ups-row (D2); v1.118 allineata alle card stato (.mc): icona 36 px,
+      // titolo 13,5 px, pillola 9,5 px maiuscola, stessi colori chiaro/scuro
+      '.upr{--uf-s:#0E9B6C;--uf-n:rgba(127,127,127,.1);--uf-t2:var(--secondary-text-color,#6b6f76);' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color,rgba(0,0,0,.08));' +
+      'border-radius:var(--ha-card-border-radius,16px);box-shadow:var(--ha-card-box-shadow,none);font-variant-numeric:tabular-nums;transition:border-color .3s;' +
+      'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'color:var(--uf-t2);box-sizing:border-box;padding:10px 12px;display:flex;align-items:center;gap:11px;}' +
+      '.upr.uk-c{--uf-s:#6A57E0;}.upr.uk-b{--uf-s:#C2413E;border-color:rgba(194,65,62,.6);}.upr.uk-n{--uf-s:#858b95;}' +
+      '.upr.upr-dark{--uf-s:#35E0A1;}.upr.upr-dark.uk-c{--uf-s:#9083FF;}.upr.upr-dark.uk-b{--uf-s:#FF7B6E;border-color:rgba(255,123,110,.55);}.upr.upr-dark.uk-n{--uf-s:#9b9b9b;}' +
+      '.upr-ic{width:36px;height:36px;border-radius:11px;flex:none;display:grid;place-items:center;cursor:pointer;' +
+      'color:var(--uf-s);background:color-mix(in srgb,var(--uf-s) 13%,transparent);}' +
+      '.upr-ic svg{display:block;fill:currentColor;}' +
       '.upr-l{flex:1;min-width:0;}' +
       '.upr-hd{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;}' +
-      '.upr-n{font-size:15px;font-weight:650;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}' +
-      '.upr-pill{flex:none;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border-radius:20px;padding:4px 10px;white-space:nowrap;' +
-      'color:var(--uf-s);background:color-mix(in srgb,var(--uf-s) 16%,transparent);}' +
-      '.upr-num{display:flex;gap:18px;margin-top:8px;}' +
+      '.upr-n{font-size:13.5px;font-weight:580;letter-spacing:-.01em;line-height:1.25;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}' +
+      '.upr-pill{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;border-radius:99px;padding:4px 9px;line-height:1.35;white-space:nowrap;' +
+      'color:var(--uf-s);background:color-mix(in srgb,var(--uf-s) 13%,transparent);}' +
+      '.upr-num{display:flex;gap:16px;margin-top:5px;}' +
       '.upr-num>div{cursor:pointer;}' +
-      '.upr-num b{font-size:22px;font-weight:800;letter-spacing:-.02em;line-height:1;color:var(--primary-text-color,#1c1c1e);}' +
-      '.upr-u{font-size:12px;font-weight:600;margin-left:2px;}' +
-      '.upr-lb{display:block;margin-top:3px;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;}' +
+      '.upr-num b{font-size:20px;font-weight:800;letter-spacing:-.02em;line-height:1;color:var(--primary-text-color,#1c1c1e);}' +
+      '.upr-u{font-size:11px;font-weight:600;margin-left:2px;}' +
+      '.upr-lb{display:block;margin-top:3px;font-size:9.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;}' +
       '.upr-fl{flex:none;display:block;overflow:visible;}' +
       '@media (prefers-reduced-motion:reduce){.upf-pg,.upf-fl,.upf-ln i{animation:none;}}' +
       '</style>'
@@ -11162,8 +11182,9 @@ class EnergySchemeCard extends HTMLElement {
       'font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
       '.es .es-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;}' +
       '.es .es-t{font-size:11px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--eng-t2);}' +
-      '.es .es-st{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;text-align:right;}' +
-      '.es .es-st i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}' +
+      // v1.118: lo stato e' una pillola maiuscola come nelle card stato della home
+      '.es .es-st{display:inline-flex;align-items:center;flex:none;white-space:nowrap;font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;border-radius:99px;padding:4px 9px;line-height:1.35;background:color-mix(in srgb,currentColor 13%,transparent);}' +
+      '.es .es-st i{display:none;}' +
       // il blackout non e' uno stato come gli altri: piu' nero e maiuscoletto
       '.es .es-st.es-alarm{font-weight:800;letter-spacing:.09em;text-transform:uppercase;}' +
       // Lo schema non scala mai oltre la sua misura nativa (340x224). Su
@@ -18957,7 +18978,7 @@ const LT_STYLES = '<style>' +
   '.ltq .lt-txt{flex:1;min-width:0;}' +
   '.ltq .lt-l1{display:flex;align-items:center;gap:8px;min-width:0;}' +
   '.ltq .lt-l1 b{font-size:15px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-  '.ltq .lt-pill{display:inline-flex;align-items:center;font-size:11px;font-weight:650;border-radius:20px;padding:3px 8px;white-space:nowrap;flex:none;}' +
+  '.ltq .lt-pill{display:inline-flex;align-items:center;font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;border-radius:99px;padding:4px 9px;line-height:1.35;white-space:nowrap;flex:none;}' +
   '.ltq .lt-pb{color:var(--lt-b2);background:var(--lt-bbg);}.ltq .lt-pp{color:var(--lt-p);background:var(--lt-pbg);}.ltq .lt-pg{color:var(--lt-g2);background:var(--lt-gbg);}' +
   '.ltq .lt-pa{color:var(--lt-a2);background:var(--lt-abg);}.ltq .lt-pr{color:var(--lt-r2);background:var(--lt-rbg);}.ltq .lt-pn{color:var(--lt-t2);background:var(--lt-n);}' +
   '.ltq .lt-l2{font-size:13px;font-weight:550;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
@@ -19227,7 +19248,7 @@ const PU_STYLES = '<style>' +
   '.puq .pu-txt{flex:1;min-width:0;}' +
   '.puq .pu-l1{display:flex;align-items:center;gap:8px;min-width:0;}' +
   '.puq .pu-l1 b{font-size:15px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-  '.puq .pu-pill{display:inline-flex;align-items:center;font-size:11px;font-weight:650;border-radius:20px;padding:3px 8px;white-space:nowrap;flex:none;}' +
+  '.puq .pu-pill{display:inline-flex;align-items:center;font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;border-radius:99px;padding:4px 9px;line-height:1.35;white-space:nowrap;flex:none;}' +
   '.puq .pu-pg{color:var(--pu-g);background:var(--pu-gbg);}.puq .pu-pb{color:var(--pu-b);background:var(--pu-bbg);}.puq .pu-pp{color:var(--pu-p);background:var(--pu-pbg);}' +
   '.puq .pu-l3{font-size:12.5px;color:var(--pu-t2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
   '.puq .pu-l3 b{color:var(--pu-t1);font-weight:650;}.puq .pu-warn{color:var(--pu-a);font-weight:650;}' +
