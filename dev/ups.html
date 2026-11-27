@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Banco UPS: ups-flow e ups-tile</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;padding:20px;background:#111;color:#e6e6e6;font:13px Inter,system-ui,sans-serif;
+  --primary-text-color:#e1e1e1;--secondary-text-color:#9b9b9b;--card-background-color:#1c1c1c;--ha-card-background:#1c1c1c;--divider-color:rgba(225,225,225,.12)}
+body.light{background:#f3f4f5;color:#1c1c1e;--primary-text-color:#212121;--secondary-text-color:#727272;--card-background-color:#fff;--ha-card-background:#fff;--divider-color:rgba(0,0,0,.12)}
+.bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px}
+button{font:600 12px Inter,sans-serif;padding:6px 12px;border-radius:99px;border:1px solid #444;background:#222;color:#eee;cursor:pointer}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,400px));gap:24px}
+h3{font-size:13px;margin:0 0 8px;color:#9b9b9b}
+</style>
+</head>
+<body>
+<div class="bar">
+  <button data-m="rete">A rete</button><button data-m="batteria">Su batteria (3 min)</button>
+  <button data-m="scarica">Su batteria 15%</button><button data-m="carica">In carica 72%</button>
+  <button data-m="na">Non disponibile</button><button id="th">Tema chiaro/scuro</button>
+</div>
+<div class="grid">
+  <div><h3>ups-tile (home)</h3><div id="c1"></div></div>
+  <div><h3>ups-flow (energy, title: UPS)</h3><div id="c2"></div></div>
+  <div style="width:340px"><h3>ups-flow a 340 px</h3><div id="c3"></div></div>
+</div>
+<script>window.customCards = window.customCards || [];</script>
+<script src="../casa-mgdd-cards.js"></script>
+<script>
+const UPS = {
+  status_entity: 'binary_sensor.ups_tower_rete', battery_entity: 'sensor.ups_tower_livello_della_batteria',
+  time_left_entity: 'sensor.ups_tower_durata_della_batteria', power_entity: 'sensor.ups_potenza',
+  voltage_entity: 'sensor.ups_tower_tensione_di_bypass', output_voltage_entity: 'sensor.ups_tower_tensione_di_uscita',
+};
+const st = (s, extra) => Object.assign({ state: String(s), attributes: {}, last_changed: new Date().toISOString() }, extra || {});
+let S = {};
+function set(m) {
+  const lc = new Date(Date.now() - 3 * 60000).toISOString();
+  S = {
+    'binary_sensor.ups_tower_rete': st(m === 'na' ? 'unavailable' : (m === 'batteria' || m === 'scarica') ? 'off' : 'on', { last_changed: lc }),
+    'sensor.ups_tower_livello_della_batteria': st(m === 'scarica' ? 15 : m === 'carica' ? 72 : 100),
+    'sensor.ups_tower_durata_della_batteria': st(60),
+    'sensor.ups_potenza': st(57.71),
+    'sensor.ups_tower_tensione_di_bypass': st(m === 'batteria' || m === 'scarica' ? 0 : 227.7),
+    'sensor.ups_tower_tensione_di_uscita': st(227.7),
+  };
+  const hass = { states: S, themes: { darkMode: true }, language: 'it', callService() {} };
+  cards.forEach((c) => { c.hass = hass; });
+}
+const mk = (id, cfg) => { const el = document.createElement('energy-controls-card'); el.setConfig(cfg); document.getElementById(id).appendChild(el); return el; };
+const cards = [
+  mk('c1', { layout: 'ups-tile', name: 'UPS Ubiquiti', ups: UPS }),
+  mk('c2', { layout: 'ups-flow', title: 'UPS', ups: UPS }),
+  mk('c3', { layout: 'ups-flow', ups: UPS }),
+];
+document.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => set(b.dataset.m));
+document.getElementById('th').onclick = () => document.body.classList.toggle('light');
+set('rete');
+</script>
+</body>
+</html>
