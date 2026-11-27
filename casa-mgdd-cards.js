@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.116.0
+ * Version: 1.116.1
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -5120,29 +5120,35 @@ class EnergyControlsCard extends HTMLElement {
     const ent = (e) => (e ? ' data-entity="' + e + '"' : '');
     const badge = s.k === 'o' ? 'M-3.5 0l2.3 2.3 4.2-4.6' : s.k === 'c' ? 'M1 -4.5l-3 4.5h4l-3 4.5' : s.k === 'n' ? 'M-3 0h6' : 'M0 -4v4.2M0 3.6v.1';
     const bcol = s.k === 'o' ? ok : s.k === 'c' ? '#8b7cf0' : s.k === 'n' ? '#8a8d93' : '#e5484d';
-    const ico = (x, y, p) => '<g class="upf-ico" transform="translate(' + x + ' ' + y + ')">' + p + '</g>';
+    const ico = (p) => '<g class="upf-ico" transform="translate(20 20)">' + p + '</g>';
     const titolo = this.config.title ? '<div class="upf-t">' + mgddEsc(this.config.title) + '</div>' : '';
+    // v1.116.1: nodi di misura fissa (64 px) e linee che si allungano. Prima era un
+    // solo SVG largo quanto la card, che su una colonna larga ingrandiva tutto.
+    const nodo = (entity, op, svg, valore, cls, label) =>
+      '<div class="upf-nod"' + ent(entity) + ' style="opacity:' + op + '">' +
+      '<svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true">' + svg + '</svg>' +
+      '<b' + (cls ? ' class="' + cls + '"' : '') + '>' + valore + '</b><span>' + label + '</span></div>';
+    const linea = (col, op) => '<div class="upf-ln"><i style="--fc:' + col + ';opacity:' + op + '"></i></div>';
     const html =
       '<div class="upf uk-' + s.k + '">' + titolo +
       '<div class="upf-hd"' + ent(c.status_entity) + '><i class="upf-pg"></i><div class="upf-tx">' +
       '<div class="upf-v">' + s.verd + '</div><div class="upf-s">' + s.sub + '</div></div></div>' +
-      '<svg class="upf-svg" viewBox="0 0 360 124" aria-hidden="true">' +
-      '<path class="upf-trk" d="M72 46H146"/><path class="upf-trk" d="M214 46H288"/>' +
-      '<path class="upf-fl" d="M72 46H146" stroke="' + (s.k === 'c' ? '#8b7cf0' : ok) + '" opacity="' + (off || !s.noto ? 0 : 1) + '"/>' +
-      '<path class="upf-fl" d="M214 46H288" stroke="' + (off ? '#e5484d' : ok) + '" opacity="' + (s.noto ? 1 : 0) + '"/>' +
-      '<g' + ent(c.voltage_entity || c.status_entity) + ' opacity="' + (off ? .35 : 1) + '"><circle class="upf-nd" cx="46" cy="46" r="26"/>' +
-      ico(34, 34, '<path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>') + '</g>' +
-      '<g' + ent(c.battery_entity) + '><circle class="upf-rt" cx="180" cy="46" r="31"/>' +
-      '<circle class="upf-rg" cx="180" cy="46" r="31" transform="rotate(-90 180 46)" stroke="' + s.colore + '" stroke-dasharray="' + dash + '"/>' +
-      '<circle class="upf-nd" cx="180" cy="46" r="25"/>' +
-      ico(168, 34, '<rect width="16" height="10" x="2" y="7" rx="2"/><path d="M22 11v2"/>') +
-      '<g class="upf-bd" transform="translate(203 22)"><circle r="8" fill="' + bcol + '"/><path d="' + badge + '"/></g></g>' +
-      '<g' + ent(c.power_entity) + '><circle class="upf-nd" cx="314" cy="46" r="26"/>' +
-      ico(302, 34, '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/>') + '</g>' +
-      '<text x="46" y="100"' + (off ? ' class="upf-bad"' : '') + '>' + (off ? 'assente' : s.V || '--') + '</text><text class="upf-l" x="46" y="116">RETE</text>' +
-      '<text x="180" y="100">' + (s.batteria === null ? '--' : this._fmt(s.batteria, '%', 0)) + '</text><text class="upf-l" x="180" y="116">BATTERIA</text>' +
-      '<text x="314" y="100">' + s.W + ' W</text><text class="upf-l" x="314" y="116">CARICO</text>' +
-      '</svg></div>';
+      '<div class="upf-row">' +
+      nodo(c.voltage_entity || c.status_entity, off ? .35 : 1,
+        '<circle class="upf-nd" cx="32" cy="32" r="26"/>' + ico('<path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>'),
+        off ? 'assente' : s.V || '--', off ? 'upf-bad' : '', 'RETE') +
+      linea(s.k === 'c' ? '#8b7cf0' : ok, off || !s.noto ? 0 : 1) +
+      nodo(c.battery_entity, 1,
+        '<circle class="upf-rt" cx="32" cy="32" r="30"/>' +
+        '<circle class="upf-rg" cx="32" cy="32" r="30" transform="rotate(-90 32 32)" stroke="' + s.colore + '" stroke-dasharray="' + dash + '"/>' +
+        '<circle class="upf-nd" cx="32" cy="32" r="24"/>' + ico('<rect width="16" height="10" x="2" y="7" rx="2"/><path d="M22 11v2"/>') +
+        '<g class="upf-bd" transform="translate(55 9)"><circle r="8" fill="' + bcol + '"/><path d="' + badge + '"/></g>',
+        s.batteria === null ? '--' : this._fmt(s.batteria, '%', 0), '', 'BATTERIA') +
+      linea(off ? '#e5484d' : ok, s.noto ? 1 : 0) +
+      nodo(c.power_entity, 1,
+        '<circle class="upf-nd" cx="32" cy="32" r="26"/>' + ico('<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/>'),
+        s.W + ' W', '', 'CARICO') +
+      '</div></div>';
     mgddPaint(this, this._styles(), html);
     this._upsWire();
     this._upsTick(s.suBatteria);
@@ -5333,8 +5339,17 @@ class EnergyControlsCard extends HTMLElement {
       '.upf-pg{width:8px;height:8px;border-radius:50%;background:var(--uf-s);flex:0 0 auto;animation:upfPing 2s infinite;}' +
       '.uk-b .upf-pg{animation-duration:1.1s;}.uk-n .upf-pg{animation:none;}' +
       '@keyframes upfPing{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--uf-s) 60%,transparent);}70%{box-shadow:0 0 0 7px transparent;}100%{box-shadow:0 0 0 0 transparent;}}' +
-      '.upf-svg{display:block;width:100%;height:auto;margin-top:6px;}' +
-      '.upf-svg g[data-entity]{cursor:pointer;}' +
+      '.upf{padding-bottom:12px;}' +
+      '.upf-row{display:flex;align-items:flex-start;max-width:520px;margin:14px auto 0;}' +
+      '.upf-nod{flex:none;width:78px;display:flex;flex-direction:column;align-items:center;cursor:pointer;transition:opacity .3s;}' +
+      '.upf-nod svg{display:block;overflow:visible;}' +
+      '.upf-nod b{font-size:15px;font-weight:700;line-height:1.2;margin-top:8px;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;}' +
+      '.upf-nod b.upf-bad{color:#e5484d;}' +
+      '.upf-nod span{font-size:9.5px;font-weight:700;letter-spacing:.08em;margin-top:2px;}' +
+      '.upf-ln{flex:1;min-width:20px;height:2px;margin-top:31px;background:var(--uf-n);border-radius:1px;position:relative;}' +
+      '.upf-ln i{position:absolute;left:0;right:0;top:-2px;height:6px;transition:opacity .3s;' +
+      'background:radial-gradient(circle,var(--fc) 2.2px,transparent 2.8px) 0 50%/13px 6px repeat-x;animation:upfDots .75s linear infinite;}' +
+      '@keyframes upfDots{to{background-position:13px 50%;}}' +
       '.upf-trk{stroke:var(--uf-n);stroke-width:2;fill:none;}' +
       '.upf-fl{fill:none;stroke-width:4.5;stroke-linecap:round;stroke-dasharray:0 13;animation:upfFlow .75s linear infinite;transition:opacity .3s;}' +
       '@keyframes upfFlow{to{stroke-dashoffset:-13;}}' +
@@ -5343,9 +5358,6 @@ class EnergyControlsCard extends HTMLElement {
       '.upf-rt{fill:none;stroke:var(--uf-n);stroke-width:4;}' +
       '.upf-rg{fill:none;stroke-width:4;stroke-linecap:round;transition:stroke-dasharray .6s,stroke .3s;}' +
       '.upf-bd path{fill:none;stroke:var(--ha-card-background,var(--card-background-color,#fff));stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}' +
-      '.upf-svg text{fill:var(--primary-text-color,#1c1c1e);font:700 15px Inter,-apple-system,"Segoe UI",sans-serif;text-anchor:middle;}' +
-      '.upf-svg text.upf-l{fill:var(--uf-t2);font-size:9.5px;letter-spacing:.08em;}' +
-      '.upf-svg text.upf-bad{fill:#e5484d;}' +
       '.upq{padding:12px 12px 8px 14px;cursor:pointer;-webkit-tap-highlight-color:transparent;outline:none;}' +
       '.upq:focus-visible{box-shadow:0 0 0 2px var(--uf-s);}' +
       '.upq-row{display:flex;align-items:center;gap:12px;}' +
@@ -5359,7 +5371,7 @@ class EnergyControlsCard extends HTMLElement {
       '.upq-fl{stroke-width:3.4;stroke-dasharray:0 9;animation-name:upqFlow;}' +
       '@keyframes upqFlow{to{stroke-dashoffset:-9;}}' +
       '.upq-dt{fill:var(--uf-t2);transition:opacity .3s;}' +
-      '@media (prefers-reduced-motion:reduce){.upf-pg,.upf-fl{animation:none;}}' +
+      '@media (prefers-reduced-motion:reduce){.upf-pg,.upf-fl,.upf-ln i{animation:none;}}' +
       '</style>'
     );
   }

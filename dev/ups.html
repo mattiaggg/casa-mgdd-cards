@@ -26,6 +26,7 @@ h3{font-size:13px;margin:0 0 8px;color:#9b9b9b}
   <div><h3>ups-flow (energy, title: UPS)</h3><div id="c2"></div></div>
   <div style="width:340px"><h3>ups-flow a 340 px</h3><div id="c3"></div></div>
 </div>
+<div style="width:700px;margin-top:24px"><h3>ups-flow a 700 px (colonna larga)</h3><div id="c4"></div></div>
 <script>window.customCards = window.customCards || [];</script>
 <script src="../casa-mgdd-cards.js"></script>
 <script>
@@ -54,6 +55,7 @@ const cards = [
   mk('c1', { layout: 'ups-tile', name: 'UPS Ubiquiti', ups: UPS }),
   mk('c2', { layout: 'ups-flow', title: 'UPS', ups: UPS }),
   mk('c3', { layout: 'ups-flow', ups: UPS }),
+  mk('c4', { layout: 'ups-flow', title: 'UPS', ups: UPS }),
 ];
 document.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => set(b.dataset.m));
 document.getElementById('th').onclick = () => document.body.classList.toggle('light');
