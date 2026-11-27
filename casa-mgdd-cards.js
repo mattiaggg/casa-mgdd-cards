@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.116.1
+ * Version: 1.116.2
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -12747,7 +12747,7 @@ class VacuumCard extends HTMLElement {
       (l2 ? '<div class="lt-l2">' + mgddEsc(l2) + '</div>' : '') +
       (l3 ? '<div class="lt-l3">' + mgddEsc(l3) + '</div>' : '') +
       '</div>' +
-      (btn ? '<button class="lt-go" data-cmd="' + btn.cmd + '"' + (btn.chev ? ' aria-expanded="' + this._open + '"' : '') + '>' +
+      (btn ? '<button class="lt-go' + (c !== 'n' ? ' vt-go-' + c : '') + '" data-cmd="' + btn.cmd + '"' + (btn.chev ? ' aria-expanded="' + this._open + '"' : '') + '>' +
         ldIco(btn.ico) + '<span>' + btn.t + '</span>' + (btn.chev ? ldIco(this._open ? 'chevron-up' : 'chevron-down') : '') + '</button>' : '') +
       '</div>' +
       (pct != null ? '<div class="lt-bar vt-bar-' + c + '"><span style="width:' + pct + '%"></span></div>' : '') +
@@ -13009,6 +13009,10 @@ function vacTileStyles() {
     '.ltq .vt-c.vt-on-b{background:var(--lt-bbg);color:var(--lt-b2);}.ltq .vt-c.vt-on-g{background:var(--lt-gbg);color:var(--lt-g2);}' +
     '.ltq .vt-c.vt-on-a{background:var(--lt-abg);color:var(--lt-a2);}.ltq .vt-c.vt-on-r{background:var(--lt-rbg);color:var(--lt-r2);}' +
     '.ltq .vt-c.vt-on ha-icon{color:inherit;}' +
+    // pulsante Routine con la tinta della fase (a riposo resta neutro)
+    '.ltq .lt-go.vt-go-b{background:var(--lt-bbg);color:var(--lt-b2);border-color:transparent;}.ltq .lt-go.vt-go-g{background:var(--lt-gbg);color:var(--lt-g2);border-color:transparent;}' +
+    '.ltq .lt-go.vt-go-a{background:var(--lt-abg);color:var(--lt-a2);border-color:transparent;}.ltq .lt-go.vt-go-r{background:var(--lt-rbg);color:var(--lt-r2);border-color:transparent;}' +
+    '.ltq .lt-go[class*="vt-go-"] ha-icon{color:inherit;}' +
     '.ltq .vt-c,.ltq .vt-r{display:flex;align-items:center;gap:8px;border:none;border-radius:11px;background:var(--lt-n);color:var(--lt-t1);' +
     'font:500 12.5px Inter,-apple-system,"Segoe UI",sans-serif;cursor:pointer;text-align:left;--mdc-icon-size:18px;}' +
     '.ltq .vt-c{flex:1;justify-content:center;height:40px;font-weight:600;}' +
