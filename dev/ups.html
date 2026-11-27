@@ -22,7 +22,7 @@ h3{font-size:13px;margin:0 0 8px;color:#9b9b9b}
   <button data-m="na">Non disponibile</button><button id="th">Tema chiaro/scuro</button>
 </div>
 <div class="grid">
-  <div><h3>ups-tile (home)</h3><div id="c1"></div></div>
+  <div><h3>ups-tile</h3><div id="c1"></div><h3 style="margin-top:16px">ups-row (home)</h3><div id="c5"></div></div>
   <div><h3>ups-flow (energy, title: UPS)</h3><div id="c2"></div></div>
   <div style="width:340px"><h3>ups-flow a 340 px</h3><div id="c3"></div></div>
 </div>
@@ -56,6 +56,7 @@ const cards = [
   mk('c2', { layout: 'ups-flow', title: 'UPS', ups: UPS }),
   mk('c3', { layout: 'ups-flow', ups: UPS }),
   mk('c4', { layout: 'ups-flow', title: 'UPS', ups: UPS }),
+  mk('c5', { layout: 'ups-row', name: 'UPS Ubiquiti', ups: UPS }),
 ];
 document.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => set(b.dataset.m));
 document.getElementById('th').onclick = () => document.body.classList.toggle('light');

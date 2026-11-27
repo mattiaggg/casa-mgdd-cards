@@ -13,7 +13,7 @@
  * casa-mgdd-laundry-program-card, casa-mgdd-laundry-tile-card,
  * casa-mgdd-purifier-tile-card, casa-mgdd-temperature-card.
  *
- * Version: 1.116.3
+ * Version: 1.117.0
  */
 
 // Inter, chiesto una volta sola per pagina.
@@ -4715,6 +4715,7 @@ class EnergyControlsCard extends HTMLElement {
     else if (this.config.layout === 'ups-tiles') this._renderUpsTiles();
     else if (this.config.layout === 'ups-flow') this._renderUpsFlow();
     else if (this.config.layout === 'ups-tile') this._renderUpsTile();
+    else if (this.config.layout === 'ups-row') this._renderUpsRow();
     else if (this.config.layout === 'ups') this._renderUps();
     else this._renderSwitches();
   }
@@ -5196,6 +5197,47 @@ class EnergyControlsCard extends HTMLElement {
     this._upsTick(s.suBatteria);
   }
 
+  // layout ups-row (v1.117, D2 di docs/mockup-ups-5-2026-11-27.html): a sinistra nome
+  // con la pillola dello stato in maiuscolo (come le card porte/acqua/movimento) e i
+  // due numeri grandi, batteria e watt; a destra un percorso piccolo di misura fissa.
+  _renderUpsRow() {
+    const c = this.config.ups || {};
+    const s = this._upsRiassunto();
+    const nome = mgddEsc(this.config.name || this.config.title || 'UPS');
+    const off = s.suBatteria;
+    const ok = '#0fb57e';
+    const C = 2 * Math.PI * 19;
+    const dash = (s.liv / 100 * C).toFixed(1) + ' ' + C.toFixed(1);
+    const ent = (e) => (e ? ' data-entity="' + e + '"' : '');
+    const ico = (x, y, p) => '<g class="upf-ico" transform="translate(' + x + ' ' + y + ') scale(.667)">' + p + '</g>';
+    // la pillola resta corta per non tagliare il nome; "da 3 min" va sotto la batteria
+    const da = s.k === 'b' && s.verd.indexOf(' da ') > 0 ? ' · ' + s.verd.slice(s.verd.indexOf(' da ') + 1) : '';
+    const html =
+      '<div class="upr uk-' + s.k + '">' +
+      '<div class="upr-l">' +
+      '<div class="upr-hd"' + ent(c.status_entity) + '><span class="upr-n">' + nome + '</span>' +
+      '<span class="upr-pill">' + s.pill + '</span></div>' +
+      '<div class="upr-num">' +
+      '<div' + ent(c.battery_entity) + '><b data-tw>' + (s.batteria === null ? '--' : this._fmt(s.batteria, '', 0)) + '</b><span class="upr-u">%</span><span class="upr-lb">batteria' + da + '</span></div>' +
+      '<div' + ent(c.power_entity) + '><b data-tw>' + s.W + '</b><span class="upr-u">W</span><span class="upr-lb">carico</span></div>' +
+      '</div></div>' +
+      '<svg class="upr-fl" viewBox="0 0 150 52" width="150" height="52" aria-hidden="true">' +
+      '<path class="upf-trk" d="M32 26H57"/><path class="upf-trk" d="M93 26H118"/>' +
+      '<path class="upf-fl upq-fl" d="M32 26H57" stroke="' + (s.k === 'c' ? '#8b7cf0' : ok) + '" opacity="' + (off || !s.noto ? 0 : 1) + '"/>' +
+      '<path class="upf-fl upq-fl" d="M93 26H118" stroke="' + (off ? '#e5484d' : ok) + '" opacity="' + (s.noto ? 1 : 0) + '"/>' +
+      '<g opacity="' + (off ? .35 : 1) + '"><circle class="upf-nd" cx="16" cy="26" r="15"/>' +
+      ico(8, 18, '<path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>') + '</g>' +
+      '<circle class="upf-rt" cx="75" cy="26" r="19" stroke-width="3"/>' +
+      '<circle class="upf-rg" cx="75" cy="26" r="19" stroke-width="3" transform="rotate(-90 75 26)" stroke="' + s.colore + '" stroke-dasharray="' + dash + '"/>' +
+      '<circle class="upf-nd" cx="75" cy="26" r="14"/>' + ico(67, 18, '<rect width="16" height="10" x="2" y="7" rx="2"/><path d="M22 11v2"/>') +
+      '<circle class="upf-nd" cx="134" cy="26" r="15"/>' +
+      ico(126, 18, '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/>') +
+      '</svg></div>';
+    mgddPaint(this, this._styles(), html);
+    this._upsWire();
+    this._upsTick(s.suBatteria);
+  }
+
   _renderUps() {
     const c = this.config.ups || {};
     const battery = this._num(c.battery_entity);
@@ -5371,6 +5413,23 @@ class EnergyControlsCard extends HTMLElement {
       '.upq-fl{stroke-width:3.4;stroke-dasharray:0 9;animation-name:upqFlow;}' +
       '@keyframes upqFlow{to{stroke-dashoffset:-9;}}' +
       '.upq-dt{fill:var(--uf-t2);transition:opacity .3s;}' +
+      // v1.117 ups-row (D2)
+      '.upr{--uf-s:#0fb57e;--uf-n:rgba(127,127,127,.1);--uf-t2:var(--secondary-text-color,#6b6f76);' +
+      'background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--ha-card-border-color,var(--divider-color,rgba(127,127,127,.2)));' +
+      'border-radius:var(--ha-card-border-radius,12px);box-shadow:var(--ha-card-box-shadow,none);font-variant-numeric:tabular-nums;transition:border-color .3s;' +
+      'color:var(--uf-t2);box-sizing:border-box;padding:12px 14px;display:flex;align-items:center;gap:12px;}' +
+      '.upr.uk-c{--uf-s:#8b7cf0;}.upr.uk-b{--uf-s:#e5484d;border-color:rgba(229,72,77,.6);}.upr.uk-n{--uf-s:#8a8d93;}' +
+      '.upr-l{flex:1;min-width:0;}' +
+      '.upr-hd{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;}' +
+      '.upr-n{font-size:15px;font-weight:650;color:var(--primary-text-color,#1c1c1e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}' +
+      '.upr-pill{flex:none;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border-radius:20px;padding:4px 10px;white-space:nowrap;' +
+      'color:var(--uf-s);background:color-mix(in srgb,var(--uf-s) 16%,transparent);}' +
+      '.upr-num{display:flex;gap:18px;margin-top:8px;}' +
+      '.upr-num>div{cursor:pointer;}' +
+      '.upr-num b{font-size:22px;font-weight:800;letter-spacing:-.02em;line-height:1;color:var(--primary-text-color,#1c1c1e);}' +
+      '.upr-u{font-size:12px;font-weight:600;margin-left:2px;}' +
+      '.upr-lb{display:block;margin-top:3px;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;}' +
+      '.upr-fl{flex:none;display:block;overflow:visible;}' +
       '@media (prefers-reduced-motion:reduce){.upf-pg,.upf-fl,.upf-ln i{animation:none;}}' +
       '</style>'
     );
